@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vScanner 2.0</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+    <div class="aurora aurora-a"></div>
+    <div class="aurora aurora-b"></div>
+    <div class="grid-overlay"></div>
+
+    <main class="app-shell">
+        <section class="hero">
+            <div class="hero-badge">vScanner 2.0</div>
+            <h1>Next-Level Vulnerability Recon</h1>
+            <p>
+                Professioneller Sicherheits-Scanner fuer Domains, Hosts und Netzwerke.
+                Service-Erkennung, Exposures, Login-Flaechen und forensische Hinweise in einem Report.
+            </p>
+        </section>
+
+        <section class="scan-panel card">
+            <div class="panel-header">
+                <h2>Scan starten</h2>
+                <button id="ipButton" class="ghost-button" type="button">Meine IP anzeigen</button>
+            </div>
+
+            <form id="scanForm" class="scan-form">
+                <label for="target">Ziel (IP, Domain oder CIDR)</label>
+                <input
+                    id="target"
+                    name="target"
+                    type="text"
+                    placeholder="z. B. 192.168.1.1, example.com, 10.0.0.0/24"
+                    required
+                />
+
+                <label for="profile">Scan-Profil</label>
+                <select id="profile" name="profile">
+                    <option value="quick">Quick: schnelle Port- und Service-Uebersicht</option>
+                    <option value="deep">Deep: Versions-Checks + NSE-Skripte</option>
+                    <option value="network">Network: Host Discovery im Netz</option>
+                </select>
+
+                <p class="disclaimer">
+                    Rechtlicher Hinweis: Nur auf Systeme scannen, fuer die du eine explizite Berechtigung hast.
+                </p>
+
+                <button id="scanButton" class="primary-button" type="submit">Scan ausfuehren</button>
+            </form>
+        </section>
+
+        <section class="results-grid">
+            <article class="card summary-card">
+                <h3>Risk Summary</h3>
+                <div id="riskSummary" class="risk-list"></div>
+                <div id="scanMeta" class="meta"></div>
+            </article>
+
+            <article class="card output-card">
+                <div class="panel-header">
+                    <h3>Scan-Ausgabe</h3>
+                    <span id="statusPill" class="pill idle">Idle</span>
+                </div>
+                <div id="errorBox" class="error-box hidden"></div>
+                <div id="resultOutput" class="result-output">
+                    Starte einen Scan, um Ergebnisse zu sehen.
+                </div>
+            </article>
+        </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

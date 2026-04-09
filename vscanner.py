@@ -1,340 +1,455 @@
-from flask import Flask, render_template_string, request, jsonify
+from __future__ import annotations
+
+import ipaddress
+import re
+import socket
+from datetime import datetime, timezone
+from typing import Any
+
 import nmap
 import requests
+from flask import Flask, jsonify, render_template, request
+from urllib3.exceptions import InsecureRequestWarning
+
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 app = Flask(__name__)
 
-# Function to run the nmap scan
-def scannn(target):
-    print(f"Starting scan for {target}")
+TARGET_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))+\.?$"
+)
+TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+COMMON_LOGIN_PATHS = [
+    "/login",
+    "/signin",
+    "/admin",
+    "/admin/login",
+    "/auth/login",
+    "/user/login",
+    "/wp-login.php",
+    "/account/login",
+]
+
+RISKY_PORTS = {
+    21: ("FTP service exposed", "high"),
+    23: ("Telnet service exposed", "critical"),
+    445: ("SMB service exposed", "high"),
+    3389: ("RDP service exposed", "high"),
+    5900: ("VNC service exposed", "high"),
+    6379: ("Redis service exposed", "critical"),
+    9200: ("Elasticsearch service exposed", "critical"),
+    27017: ("MongoDB service exposed", "critical"),
+    11211: ("Memcached service exposed", "critical"),
+    2375: ("Docker daemon API exposed", "critical"),
+}
+
+SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+
+class ScanInputError(ValueError):
+    """Raised when a user supplied scan target is invalid."""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def normalize_target(raw_target: str) -> tuple[str, str]:
+    target = (raw_target or "").strip()
+    if not target:
+        raise ScanInputError("Bitte ein Ziel angeben.")
+
+    try:
+        if "/" in target:
+            network = ipaddress.ip_network(target, strict=False)
+            return str(network), "network"
+
+        ip = ipaddress.ip_address(target)
+        return str(ip), "host"
+    except ValueError:
+        pass
+
+    target_no_dot = target[:-1] if target.endswith(".") else target
+    if TARGET_DOMAIN_RE.match(target_no_dot):
+        return target_no_dot.lower(), "domain"
+
+    raise ScanInputError(
+        "Ungueltiges Ziel. Erlaubt sind IP, Domain oder CIDR-Netz (z. B. 192.168.1.0/24)."
+    )
+
+
+def safe_reverse_dns(ip: str) -> str | None:
+    try:
+        host, _, _ = socket.gethostbyaddr(ip)
+        return host
+    except Exception:
+        return None
+
+
+def parse_version_tuple(version: str) -> tuple[int, int, int] | None:
+    match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", version or "")
+    if not match:
+        return None
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    patch = int(match.group(3) or 0)
+    return major, minor, patch
+
+
+def evaluate_version_findings(product: str, version: str, port: int) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+
+    if port in RISKY_PORTS:
+        msg, severity = RISKY_PORTS[port]
+        findings.append(
+            {
+                "type": "exposed_port",
+                "severity": severity,
+                "title": msg,
+                "evidence": f"Port {port} ist offen und von ausserhalb erreichbar.",
+            }
+        )
+
+    product_l = (product or "").lower()
+    version_tuple = parse_version_tuple(version)
+    if not version_tuple:
+        return findings
+
+    if "openssh" in product_l and version_tuple < (8, 8, 0):
+        findings.append(
+            {
+                "type": "outdated_service",
+                "severity": "medium",
+                "title": "OpenSSH Version wirkt veraltet",
+                "evidence": f"Gefunden: {product} {version}",
+            }
+        )
+    elif "nginx" in product_l and version_tuple < (1, 20, 0):
+        findings.append(
+            {
+                "type": "outdated_service",
+                "severity": "medium",
+                "title": "Nginx Version wirkt veraltet",
+                "evidence": f"Gefunden: {product} {version}",
+            }
+        )
+    elif "apache httpd" in product_l and version_tuple < (2, 4, 57):
+        findings.append(
+            {
+                "type": "outdated_service",
+                "severity": "medium",
+                "title": "Apache HTTPD Version wirkt veraltet",
+                "evidence": f"Gefunden: {product} {version}",
+            }
+        )
+    elif "mysql" in product_l and version_tuple < (8, 0, 0):
+        findings.append(
+            {
+                "type": "outdated_service",
+                "severity": "medium",
+                "title": "MySQL Version wirkt veraltet",
+                "evidence": f"Gefunden: {product} {version}",
+            }
+        )
+
+    return findings
+
+
+def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    headers = {"User-Agent": "vScanner/2.0"}
+
+    for path in COMMON_LOGIN_PATHS:
+        url = f"{base_url}{path}"
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=4,
+                verify=False,
+                allow_redirects=True,
+            )
+        except requests.RequestException:
+            continue
+
+        content = response.text.lower()[:4000]
+        is_login_like = any(
+            marker in content
+            for marker in ["login", "signin", "username", "password", "anmelden", "passwort"]
+        )
+        interesting_status = response.status_code in {200, 301, 302, 401, 403}
+
+        if is_login_like and interesting_status:
+            found.append(
+                {
+                    "url": response.url,
+                    "status": response.status_code,
+                    "path": path,
+                }
+            )
+
+    return found[:10]
+
+
+def probe_http_service(ip: str, port: int) -> dict[str, Any] | None:
+    schemes = ["https", "http"] if port in {443, 8443} else ["http", "https"]
+    headers = {"User-Agent": "vScanner/2.0"}
+
+    for scheme in schemes:
+        url = f"{scheme}://{ip}:{port}"
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=6,
+                verify=False,
+                allow_redirects=True,
+            )
+        except requests.RequestException:
+            continue
+
+        body = response.text[:6000]
+        title_match = TITLE_RE.search(body)
+        title = title_match.group(1).strip() if title_match else None
+
+        server = response.headers.get("Server")
+        powered_by = response.headers.get("X-Powered-By")
+
+        findings: list[dict[str, Any]] = []
+        if powered_by:
+            findings.append(
+                {
+                    "type": "information_leak",
+                    "severity": "low",
+                    "title": "X-Powered-By Header sichtbar",
+                    "evidence": f"{powered_by}",
+                }
+            )
+
+        if server and re.search(r"\d", server):
+            findings.append(
+                {
+                    "type": "version_disclosure",
+                    "severity": "low",
+                    "title": "Server Header verraet Version",
+                    "evidence": server,
+                }
+            )
+
+        logins = discover_login_pages(f"{scheme}://{ip}:{port}")
+        if logins:
+            findings.append(
+                {
+                    "type": "login_surface",
+                    "severity": "info",
+                    "title": "Login-Endpunkte gefunden",
+                    "evidence": f"{len(logins)} moegliche Login-Seiten erkannt",
+                }
+            )
+
+        return {
+            "url": response.url,
+            "status": response.status_code,
+            "title": title,
+            "headers": {
+                "Server": server,
+                "X-Powered-By": powered_by,
+                "Content-Type": response.headers.get("Content-Type"),
+            },
+            "login_pages": logins,
+            "findings": findings,
+        }
+
+    return None
+
+
+def run_nmap_scan(target: str, profile: str) -> dict[str, Any]:
     scanner = nmap.PortScanner()
 
-    # Run the scan on the given target IP
-    scanner.scan(target, arguments='-p-')  # Use -p- to scan all ports
+    scan_profiles = {
+        "quick": "-Pn -T4 --open -sS --top-ports 200",
+        "deep": "-Pn -T4 --open -sS -sV --version-all --script=default,safe,banner,vuln",
+        "network": "-sn",
+    }
+    arguments = scan_profiles.get(profile, scan_profiles["quick"])
 
-    results = []
+    scan_result = scanner.scan(hosts=target, arguments=arguments)
+
+    hosts: list[dict[str, Any]] = []
     for host in scanner.all_hosts():
-        results.append(f"Host: {host}")
-        results.append(f"State: {scanner[host].state()}")
+        host_state = scanner[host].state()
+        hostnames = [item.get("name") for item in scanner[host].get("hostnames", []) if item.get("name")]
+
+        port_entries: list[dict[str, Any]] = []
+        host_findings: list[dict[str, Any]] = []
+
         for proto in scanner[host].all_protocols():
-            results.append(f"Protocol: {proto}")
-            ports = scanner[host][proto].keys()
-            for port in ports:
-                results.append(
-                    f"Port: {port} State: {scanner[host][proto][port]['state']}"
-                )
-    print("Scan Results:", results)
-    return results
+            proto_ports = sorted(scanner[host][proto].keys())
+            for port in proto_ports:
+                data = scanner[host][proto][port]
+                service_product = data.get("product") or ""
+                service_version = data.get("version") or ""
+                service_name = data.get("name") or "unknown"
 
-# Function to get the client IP address using an external API
-def get_client_ip():
-    try:
-        # Use an external API to get the real public IP address
-        response = requests.get('https://api.ipify.org?format=json')
-        ip_data = response.json()
-        return ip_data['ip']
-    except requests.RequestException:
-        # Fallback to Flask's remote_addr if the external request fails
-        return request.remote_addr
+                entry = {
+                    "protocol": proto,
+                    "port": port,
+                    "state": data.get("state", "unknown"),
+                    "name": service_name,
+                    "product": service_product,
+                    "version": service_version,
+                    "extra_info": data.get("extrainfo") or "",
+                    "cpe": data.get("cpe") or "",
+                }
+                port_entries.append(entry)
 
-# Define the main route for the website
-@app.route("/")
-def index():
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Nmap Scanner</title>
-        <style>
-            /* General Reset */
-            body {
-                margin: 0;
-                padding: 0;
-                font-family: Arial, sans-serif;
-                background-color: #f4f4f9;
-                color: #333;
-                line-height: 1.6;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                flex-direction: column;
+                if entry["state"] == "open":
+                    host_findings.extend(
+                        evaluate_version_findings(
+                            product=service_product or service_name,
+                            version=service_version,
+                            port=port,
+                        )
+                    )
+
+        hosts.append(
+            {
+                "host": host,
+                "state": host_state,
+                "hostnames": hostnames,
+                "reverse_dns": safe_reverse_dns(host),
+                "ports": port_entries,
+                "findings": host_findings,
             }
+        )
 
-            /* Page Layout */
-            h1 {
-                color: #0056b3;
-                margin-bottom: 20px;
+    return {
+        "command": scan_result.get("nmap", {}).get("command_line", ""),
+        "summary": scan_result.get("nmap", {}).get("scanstats", {}),
+        "hosts": hosts,
+    }
+
+
+def build_risk_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
+    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for finding in findings:
+        severity = finding.get("severity", "info")
+        if severity not in summary:
+            severity = "info"
+        summary[severity] += 1
+    return summary
+
+
+def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
+    target, target_type = normalize_target(raw_target)
+
+    if target_type == "network" and profile == "deep":
+        raise ScanInputError(
+            "Deep Profile ist fuer grosse Netze nicht geeignet. Nutze quick oder network."
+        )
+
+    started_at = utc_now()
+    nmap_data = run_nmap_scan(target, profile)
+
+    all_findings: list[dict[str, Any]] = []
+    host_results: list[dict[str, Any]] = []
+
+    for host in nmap_data["hosts"]:
+        host_findings = list(host.get("findings", []))
+
+        open_ports = [
+            entry["port"]
+            for entry in host.get("ports", [])
+            if entry.get("state") == "open"
+        ]
+
+        web_evidence: list[dict[str, Any]] = []
+        for port in open_ports:
+            if port in {80, 81, 443, 8000, 8080, 8443, 3000, 5000}:
+                web_result = probe_http_service(host["host"], port)
+                if web_result:
+                    web_evidence.append({"port": port, **web_result})
+                    host_findings.extend(web_result.get("findings", []))
+
+        host_findings.sort(
+            key=lambda item: SEVERITY_ORDER.get(item.get("severity", "info"), 0),
+            reverse=True,
+        )
+
+        all_findings.extend(host_findings)
+        host_results.append(
+            {
+                **host,
+                "web_evidence": web_evidence,
+                "finding_count": len(host_findings),
             }
+        )
 
-            /* Input Field and Button */
-            input[type="text"] {
-                width: 300px;
-                padding: 10px;
-                margin: 10px 0;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                font-size: 16px;
-            }
+    finished_at = utc_now()
 
-            button {
-                padding: 10px 20px;
-                background-color: #0056b3;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-                cursor: pointer;
-            }
+    return {
+        "meta": {
+            "scanner": "vScanner 2.0",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "target": target,
+            "target_type": target_type,
+            "profile": profile,
+            "authorization_notice": (
+                "Nur auf Systeme scannen, fuer die eine explizite Berechtigung vorliegt."
+            ),
+        },
+        "nmap": {
+            "command": nmap_data.get("command", ""),
+            "summary": nmap_data.get("summary", {}),
+        },
+        "hosts": host_results,
+        "risk_summary": build_risk_summary(all_findings),
+        "total_findings": len(all_findings),
+    }
 
-            button:hover {
-                background-color: #004494;
-            }
-
-            /* Result Section */
-            pre#result {
-                width: 90%;
-                max-width: 600px;
-                margin-top: 20px;
-                padding: 15px;
-                border: 1px solid #ccc;
-                border-radius: 5px;
-                background-color: #fff;
-                white-space: pre-wrap;
-                word-wrap: break-word;
-                font-family: "Courier New", Courier, monospace;
-                font-size: 14px;
-                color: #222;
-                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            }
-
-            /* Modern Button for Code Page */
-            .code-button {
-                position: fixed;
-                bottom: 20px;
-                right: 20px;
-                padding: 15px 25px;
-                background-color: #28a745;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-                cursor: pointer;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                transition: background-color 0.3s ease;
-            }
-
-            .code-button:hover {
-                background-color: #218838;
-            }
-
-            /* Client IP Button */
-            .ip-button {
-                position: fixed;
-                bottom: 80px;  /* Adjusted the gap to increase space between buttons */
-                right: 20px;
-                padding: 15px 25px;
-                background-color: #007bff;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-                cursor: pointer;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-                transition: background-color 0.3s ease;
-            }
-
-            .ip-button:hover {
-                background-color: #0056b3;
-            }
-        </style>
-        <script>
-            function callFunction() {
-                // Get the IP address from the input field
-                const ip = document.getElementById('ip_address').value;
-
-                // Show a loading message
-                document.getElementById("result").innerText = "Processing...";
-
-                // Make an AJAX request to the /scan endpoint
-                fetch('/scan', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ ip_address: ip })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.results && Array.isArray(data.results)) {
-                        // Display the scan results
-                        let resultText = "Scan Results:\\n\\n";
-                        data.results.forEach(line => {
-                            resultText += line + "\\n";
-                        });
-                        document.getElementById("result").innerText = resultText;
-                    } else {
-                        document.getElementById("result").innerText = "Error: Invalid scan results.";
-                    }
-                })
-                .catch(error => {
-                    document.getElementById("result").innerText = "Error: " + error;
-                });
-            }
-
-            function showClientIp() {
-                // Make an AJAX request to the /get-client-ip endpoint
-                fetch('/get-client-ip')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.ip) {
-                        alert("Client IP: " + data.ip);
-                    } else {
-                        alert("Could not retrieve client IP.");
-                    }
-                })
-                .catch(error => {
-                    alert("Error: " + error);
-                });
-            }
-        </script>
-    </head>
-    <body>
-        <h1>Run Nmap Scan</h1>
-        <input type="text" id="ip_address" placeholder="Enter IP Address" required>
-        <button onclick="callFunction()">Run Scan</button>
-        <pre id="result"></pre>
-        
-        <!-- Button to navigate to code page -->
-        <a href="/code"><button class="code-button">View Source Code</button></a>
-
-        <!-- Button to show client IP -->
-        <button class="ip-button" onclick="showClientIp()">Show Client IP</button>
-    </body>
-    </html>
-    """
-    return render_template_string(html_content)
-
-# Route to handle the scan
-@app.route("/scan", methods=["POST"])
-def scan():
-    try:
-        data = request.get_json()
-        print("Received data:", data)  # Debugging output
-        target = data["ip_address"]
-        results = scannn(target)
-        
-        # Return scan results
-        return jsonify({"results": results})
-    except Exception as e:
-        print("Error during scanning:", str(e))
-        return jsonify({"error": str(e)}), 500
-
-# Route to get the client IP
-@app.route("/get-client-ip", methods=["GET"])
-def get_client_ip_route():
-    ip = get_client_ip()
-    return jsonify({"ip": ip})
-
-# Route to show the source code
-@app.route("/code")
-def code_page():
-    html_content = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Source Code</title>
-        <style>
-            body {
-                font-family: Arial, sans-serif;
-                background-color: #f4f4f9;
-                color: #333;
-                margin: 0;
-                padding: 20px;
-            }
-
-            h1 {
-                text-align: center;
-                color: #0056b3;
-            }
-
-            pre {
-                background-color: #fff;
-                border: 1px solid #ccc;
-                padding: 15px;
-                font-family: "Courier New", Courier, monospace;
-                font-size: 14px;
-                color: #333;
-                white-space: pre-wrap;
-                word-wrap: break-word;
-                max-width: 100%;
-                box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-            }
-
-            button {
-                background-color: #0056b3;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                border-radius: 5px;
-                cursor: pointer;
-                font-size: 16px;
-                margin-top: 20px;
-            }
-
-            button:hover {
-                background-color: #004494;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Source Code</h1>
-        <pre id="sourceCode">
-from flask import Flask, render_template_string, request, jsonify
-import nmap
-import requests
-
-app = Flask(__name__)
-
-def scannn(target):
-    # Nmap scanning logic here...
-    pass
 
 @app.route("/")
-def index():
-    # Main page HTML...
-    pass
+def index() -> str:
+    return render_template("index.html")
 
-@app.route("/scan", methods=["POST"])
-def scan():
-    # Scan handling logic...
-    pass
 
-@app.route("/code")
-def code_page():
-    # Code page display...
-    pass
+@app.route("/api/health")
+def health() -> Any:
+    return jsonify({"status": "ok", "timestamp": utc_now()})
 
-if __name__ == "__main__":
-    app.run(debug=True)
-        </pre>
-        <button onclick="copyCode()">Copy Code</button>
 
-        <script>
-            function copyCode() {
-                const code = document.getElementById("sourceCode");
-                const range = document.createRange();
-                range.selectNode(code);
-                window.getSelection().removeAllRanges();
-                window.getSelection().addRange(range);
-                document.execCommand("copy");
-                alert("Code copied to clipboard!");
+@app.route("/api/client-ip")
+def client_ip() -> Any:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
+    return jsonify({"ip": candidate})
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    target = payload.get("target", "")
+    profile = (payload.get("profile") or "quick").lower()
+
+    if profile not in {"quick", "deep", "network"}:
+        return jsonify({"error": "Ungueltiges Profil. Erlaubt: quick, deep, network."}), 400
+
+    try:
+        result = orchestrate_scan(target, profile)
+        return jsonify(result)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except nmap.PortScannerError as exc:
+        return jsonify(
+            {
+                "error": "Nmap konnte nicht ausgefuehrt werden. Stelle sicher, dass nmap installiert ist.",
+                "details": str(exc),
             }
-        </script>
-    </body>
-    </html>
-    """
-    return render_template_string(html_content)
+        ), 500
+    except Exception as exc:
+        return jsonify({"error": "Scan fehlgeschlagen.", "details": str(exc)}), 500
+
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
