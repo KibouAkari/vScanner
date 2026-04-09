@@ -1,6 +1,7 @@
 const form = document.getElementById("scanForm");
 const targetInput = document.getElementById("target");
 const profileSelect = document.getElementById("profile");
+const portStrategySelect = document.getElementById("portStrategy");
 const scanButton = document.getElementById("scanButton");
 const statusPill = document.getElementById("statusPill");
 const resultOutput = document.getElementById("resultOutput");
@@ -8,6 +9,9 @@ const errorBox = document.getElementById("errorBox");
 const riskSummary = document.getElementById("riskSummary");
 const scanMeta = document.getElementById("scanMeta");
 const ipButton = document.getElementById("ipButton");
+const kpiEngine = document.getElementById("kpiEngine");
+const kpiPorts = document.getElementById("kpiPorts");
+const kpiFindings = document.getElementById("kpiFindings");
 
 function setStatus(status, text) {
     statusPill.className = `pill ${status}`;
@@ -43,6 +47,8 @@ function renderMeta(meta = {}) {
         `Target: ${meta.target || "-"}`,
         `Type: ${meta.target_type || "-"}`,
         `Profile: ${meta.profile || "-"}`,
+        `Coverage: ${meta.port_strategy || "-"}`,
+        `Engine: ${meta.engine || "-"}`,
         `Started: ${meta.started_at || "-"}`,
         `Finished: ${meta.finished_at || "-"}`,
     ];
@@ -52,6 +58,18 @@ function renderMeta(meta = {}) {
         el.textContent = line;
         scanMeta.appendChild(el);
     });
+}
+
+function renderKpis(data) {
+    const hosts = data.hosts || [];
+    const openPortCount = hosts.reduce((acc, host) => {
+        const openPorts = (host.ports || []).filter((p) => p.state === "open");
+        return acc + openPorts.length;
+    }, 0);
+
+    kpiEngine.textContent = data.meta?.engine || "-";
+    kpiPorts.textContent = String(openPortCount);
+    kpiFindings.textContent = String(data.total_findings || 0);
 }
 
 function formatHost(host) {
@@ -70,6 +88,9 @@ function formatHost(host) {
     openPorts.forEach((p) => {
         const svc = [p.name, p.product, p.version].filter(Boolean).join(" ");
         lines.push(`  - ${p.protocol}/${p.port}: ${svc || "service unknown"}`);
+        if (p.banner) {
+            lines.push(`    banner: ${p.banner}`);
+        }
     });
 
     if (host.web_evidence && host.web_evidence.length) {
@@ -114,6 +135,7 @@ function renderResult(data) {
     resultOutput.textContent = blocks.join("\n");
     renderRiskSummary(data.risk_summary || {});
     renderMeta(data.meta || {});
+    renderKpis(data);
 }
 
 form.addEventListener("submit", async (event) => {
@@ -123,12 +145,13 @@ form.addEventListener("submit", async (event) => {
     const payload = {
         target: targetInput.value.trim(),
         profile: profileSelect.value,
+        port_strategy: portStrategySelect.value,
     };
 
     setStatus("running", "Scanning");
     scanButton.disabled = true;
     scanButton.textContent = "Running...";
-    resultOutput.textContent = "Scan laeuft. Das kann je nach Profil etwas dauern...";
+    resultOutput.textContent = "Scan running. This may take some time depending on profile and coverage.";
 
     try {
         const response = await fetch("/api/scan", {
@@ -161,10 +184,11 @@ ipButton.addEventListener("click", async () => {
     try {
         const response = await fetch("/api/client-ip");
         const data = await response.json();
-        alert(`Deine erkannte IP: ${data.ip || "unbekannt"}`);
+        alert(`Detected IP: ${data.ip || "unknown"}`);
     } catch (error) {
-        showError("IP konnte nicht geladen werden.");
+        showError("IP could not be loaded.");
     }
 });
 
 renderRiskSummary({});
+renderKpis({});

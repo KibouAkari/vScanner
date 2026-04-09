@@ -11,8 +11,12 @@ It has now evolved into a much larger project: a modern, full-featured vulnerabi
   - `quick` for fast port and service visibility
   - `deep` for deeper service/version analysis with NSE scripts
   - `network` for host discovery in local network segments
+- Support port coverage strategies:
+  - `standard` for fast and balanced scanning
+  - `aggressive` for broader open-port discovery
 - Detect exposed services and versions
 - Flag potentially outdated services (heuristic checks)
+- Perform banner-based service fingerprinting in lightweight mode
 - Perform HTTP/HTTPS fingerprinting including header analysis
 - Discover login surfaces (for example `/login`, `/admin`, `/wp-login.php`)
 - Provide forensic indicators such as reverse DNS, open ports, and scan timestamps

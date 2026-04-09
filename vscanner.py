@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import os
 import re
@@ -22,6 +23,8 @@ TARGET_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))+\.?$"
 )
 TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?")
+
 COMMON_LOGIN_PATHS = [
     "/login",
     "/signin",
@@ -31,6 +34,8 @@ COMMON_LOGIN_PATHS = [
     "/user/login",
     "/wp-login.php",
     "/account/login",
+    "/backend",
+    "/cpanel",
 ]
 
 RISKY_PORTS = {
@@ -47,6 +52,7 @@ RISKY_PORTS = {
 }
 
 COMMON_SERVICE_NAMES = {
+    20: "ftp-data",
     21: "ftp",
     22: "ssh",
     23: "telnet",
@@ -54,21 +60,61 @@ COMMON_SERVICE_NAMES = {
     53: "dns",
     80: "http",
     110: "pop3",
+    111: "rpcbind",
+    135: "msrpc",
+    139: "netbios-ssn",
     143: "imap",
+    389: "ldap",
     443: "https",
     445: "microsoft-ds",
+    587: "smtp-submission",
+    636: "ldaps",
+    993: "imaps",
+    995: "pop3s",
+    1433: "mssql",
+    1521: "oracle",
+    2049: "nfs",
+    2375: "docker",
+    3000: "node",
     3306: "mysql",
-    3389: "ms-wbt-server",
+    3389: "rdp",
+    5000: "web-alt",
     5432: "postgresql",
+    5601: "kibana",
     5900: "vnc",
     6379: "redis",
+    7001: "weblogic",
     8080: "http-proxy",
+    8081: "http-alt",
     8443: "https-alt",
+    8888: "http-alt",
+    9000: "php-fpm-or-web",
+    9200: "elasticsearch",
+    9300: "elasticsearch-transport",
+    11211: "memcached",
+    27017: "mongodb",
+}
+
+WEB_CANDIDATE_PORTS = {
+    80,
+    81,
+    443,
+    591,
+    8000,
+    8008,
+    8080,
+    8081,
+    8443,
+    8888,
+    3000,
+    5000,
+    5601,
+    7001,
+    9000,
+    9200,
 }
 
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
-
-# In serverless this cache is best-effort and per-instance.
 REQUEST_LOG: dict[str, list[float]] = {}
 
 
@@ -129,7 +175,7 @@ def safe_reverse_dns(ip: str) -> str | None:
 
 
 def parse_version_tuple(version: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", version or "")
+    match = VERSION_RE.search(version or "")
     if not match:
         return None
     major = int(match.group(1))
@@ -190,7 +236,40 @@ def enforce_public_safety(target: str, target_type: str) -> None:
             )
 
 
-def evaluate_version_findings(product: str, version: str, port: int) -> list[dict[str, Any]]:
+def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
+    text = (banner or "").strip()
+    text_l = text.lower()
+
+    signatures = [
+        ("OpenSSH", r"openssh[_/ -]([\w\.-]+)"),
+        ("nginx", r"nginx[/ ]([\w\.-]+)"),
+        ("Apache httpd", r"apache(?:/|\s)([\w\.-]+)"),
+        ("Microsoft-IIS", r"microsoft-iis/([\w\.-]+)"),
+        ("Postfix", r"postfix"),
+        ("Exim", r"exim"),
+        ("vsftpd", r"vsftpd\s*([\w\.-]+)?"),
+        ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
+        ("MySQL", r"mysql"),
+        ("PostgreSQL", r"postgresql"),
+    ]
+
+    for product, pattern in signatures:
+        match = re.search(pattern, text_l)
+        if match:
+            version = ""
+            if match.groups():
+                version = match.group(1) or ""
+            return product, version
+
+    return "", ""
+
+
+def evaluate_version_findings(
+    product: str,
+    version: str,
+    port: int,
+    banner: str | None = None,
+) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
 
     if port in RISKY_PORTS:
@@ -206,10 +285,8 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
 
     product_l = (product or "").lower()
     version_tuple = parse_version_tuple(version)
-    if not version_tuple:
-        return findings
 
-    if "openssh" in product_l and version_tuple < (8, 8, 0):
+    if "openssh" in product_l and version_tuple and version_tuple < (8, 8, 0):
         findings.append(
             {
                 "type": "outdated_service",
@@ -218,7 +295,7 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
                 "evidence": f"Found: {product} {version}",
             }
         )
-    elif "nginx" in product_l and version_tuple < (1, 20, 0):
+    elif "nginx" in product_l and version_tuple and version_tuple < (1, 20, 0):
         findings.append(
             {
                 "type": "outdated_service",
@@ -227,7 +304,7 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
                 "evidence": f"Found: {product} {version}",
             }
         )
-    elif "apache httpd" in product_l and version_tuple < (2, 4, 57):
+    elif "apache" in product_l and version_tuple and version_tuple < (2, 4, 57):
         findings.append(
             {
                 "type": "outdated_service",
@@ -236,7 +313,7 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
                 "evidence": f"Found: {product} {version}",
             }
         )
-    elif "mysql" in product_l and version_tuple < (8, 0, 0):
+    elif "mysql" in product_l and version_tuple and version_tuple < (8, 0, 0):
         findings.append(
             {
                 "type": "outdated_service",
@@ -246,12 +323,33 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
             }
         )
 
+    banner_l = (banner or "").lower()
+    if "docker" in banner_l and port in {2375, 2376}:
+        findings.append(
+            {
+                "type": "misconfiguration",
+                "severity": "critical",
+                "title": "Docker API may be exposed",
+                "evidence": "Banner indicates Docker-related endpoint exposure.",
+            }
+        )
+
+    if port == 21 and "anonymous" in banner_l:
+        findings.append(
+            {
+                "type": "weak_configuration",
+                "severity": "high",
+                "title": "Potential anonymous FTP access",
+                "evidence": "FTP banner suggests anonymous or weak FTP configuration.",
+            }
+        )
+
     return findings
 
 
 def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    headers = {"User-Agent": "vScanner/2.1"}
+    headers = {"User-Agent": "vScanner/2.2"}
 
     for path in COMMON_LOGIN_PATHS:
         url = f"{base_url}{path}"
@@ -266,10 +364,10 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
         except requests.RequestException:
             continue
 
-        content = response.text.lower()[:4000]
+        content = response.text.lower()[:5000]
         is_login_like = any(
             marker in content
-            for marker in ["login", "signin", "username", "password", "anmelden", "passwort"]
+            for marker in ["login", "signin", "username", "password", "admin", "auth"]
         )
         interesting_status = response.status_code in {200, 301, 302, 401, 403}
 
@@ -282,12 +380,12 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
                 }
             )
 
-    return found[:10]
+    return found[:12]
 
 
 def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
-    schemes = ["https", "http"] if port in {443, 8443} else ["http", "https"]
-    headers = {"User-Agent": "vScanner/2.1"}
+    schemes = ["https", "http"] if port in {443, 8443, 9443} else ["http", "https"]
+    headers = {"User-Agent": "vScanner/2.2"}
 
     for scheme in schemes:
         url = f"{scheme}://{host_or_ip}:{port}"
@@ -302,7 +400,7 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         except requests.RequestException:
             continue
 
-        body = response.text[:6000]
+        body = response.text[:8000]
         title_match = TITLE_RE.search(body)
         title = title_match.group(1).strip() if title_match else None
 
@@ -327,6 +425,16 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
                     "severity": "low",
                     "title": "Server header discloses version",
                     "evidence": server,
+                }
+            )
+
+        if response.headers.get("Strict-Transport-Security") is None and scheme == "https":
+            findings.append(
+                {
+                    "type": "hardening_gap",
+                    "severity": "low",
+                    "title": "HSTS header missing",
+                    "evidence": "HTTPS endpoint does not set Strict-Transport-Security.",
                 }
             )
 
@@ -357,33 +465,133 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     return None
 
 
-def lightweight_port_scan(host_or_ip: str, ports: list[int], timeout_s: float = 1.5) -> list[dict[str, Any]]:
-    port_entries: list[dict[str, Any]] = []
+def build_port_list(profile: str, port_strategy: str) -> list[int]:
+    base_common = [
+        20,
+        21,
+        22,
+        23,
+        25,
+        53,
+        80,
+        110,
+        111,
+        135,
+        139,
+        143,
+        389,
+        443,
+        445,
+        587,
+        636,
+        993,
+        995,
+        1433,
+        1521,
+        2049,
+        2375,
+        3000,
+        3306,
+        3389,
+        5000,
+        5432,
+        5601,
+        5900,
+        6379,
+        7001,
+        8080,
+        8081,
+        8443,
+        8888,
+        9000,
+        9200,
+        9300,
+        11211,
+        27017,
+    ]
 
-    for port in ports:
+    ranges = set(base_common)
+    if profile == "deep":
+        ranges.update(range(1, 2049))
+    else:
+        ranges.update(range(1, 1025))
+
+    if port_strategy == "aggressive":
+        ranges.update(range(2049, 4097))
+        ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565])
+
+    return sorted(ranges)
+
+
+def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
+    request_data = (
+        f"HEAD / HTTP/1.1\r\nHost: {host_or_ip}\r\n"
+        "User-Agent: vScanner/2.2\r\nConnection: close\r\n\r\n"
+    )
+    sock.sendall(request_data.encode())
+    return sock.recv(320).decode(errors="ignore").strip()
+
+
+def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str, Any]:
+    state = "closed"
+    banner = ""
+
+    try:
+        with socket.create_connection((host_or_ip, port), timeout=timeout_s) as sock:
+            state = "open"
+            sock.settimeout(timeout_s)
+            try:
+                if port in WEB_CANDIDATE_PORTS:
+                    banner = _grab_http_banner(sock, host_or_ip)
+                else:
+                    data = sock.recv(256)
+                    if data:
+                        banner = data.decode(errors="ignore").strip()
+                    else:
+                        sock.sendall(b"\r\n")
+                        data = sock.recv(256)
+                        if data:
+                            banner = data.decode(errors="ignore").strip()
+            except Exception:
+                banner = ""
+    except Exception:
         state = "closed"
-        try:
-            with socket.create_connection((host_or_ip, port), timeout=timeout_s):
-                state = "open"
-        except Exception:
-            state = "closed"
 
-        entry = {
-            "protocol": "tcp",
-            "port": port,
-            "state": state,
-            "name": COMMON_SERVICE_NAMES.get(port, "unknown"),
-            "product": "",
-            "version": "",
-            "extra_info": "",
-            "cpe": "",
-        }
-        port_entries.append(entry)
+    service_name = COMMON_SERVICE_NAMES.get(port, "unknown")
+    product = ""
+    version = ""
 
-    return port_entries
+    if banner:
+        inferred_product, inferred_version = infer_service_version_from_banner(banner)
+        if inferred_product:
+            product = inferred_product
+            version = inferred_version
+            service_name = service_name if service_name != "unknown" else inferred_product.lower()
+
+    return {
+        "protocol": "tcp",
+        "port": port,
+        "state": state,
+        "name": service_name,
+        "product": product,
+        "version": version,
+        "extra_info": "",
+        "cpe": "",
+        "banner": banner[:180],
+    }
 
 
-def run_lightweight_scan(target: str, target_type: str) -> dict[str, Any]:
+def lightweight_port_scan(host_or_ip: str, ports: list[int], timeout_s: float = 0.9) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=180) as executor:
+        futures = [executor.submit(_scan_single_port, host_or_ip, port, timeout_s) for port in ports]
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+
+    return sorted(results, key=lambda item: item["port"])
+
+
+def run_lightweight_scan(target: str, target_type: str, profile: str, port_strategy: str) -> dict[str, Any]:
     if target_type == "network":
         raise ScanInputError("Network scans require nmap and are not available in lightweight mode.")
 
@@ -392,19 +600,21 @@ def run_lightweight_scan(target: str, target_type: str) -> dict[str, Any]:
         raise ScanInputError("Target could not be resolved.")
 
     hosts: list[dict[str, Any]] = []
-    scan_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 5900, 6379, 8080, 8443]
+    scan_ports = build_port_list(profile=profile, port_strategy=port_strategy)
+    timeout_s = 0.35 if port_strategy == "standard" else 0.45
 
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
-        port_entries = lightweight_port_scan(ip_s, scan_ports)
+        port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s)
 
         for entry in port_entries:
             if entry["state"] == "open":
                 host_findings.extend(
                     evaluate_version_findings(
-                        product=entry.get("name", ""),
+                        product=entry.get("product") or entry.get("name", ""),
                         version=entry.get("version", ""),
                         port=entry["port"],
+                        banner=entry.get("banner", ""),
                     )
                 )
 
@@ -420,7 +630,7 @@ def run_lightweight_scan(target: str, target_type: str) -> dict[str, Any]:
         )
 
     return {
-        "command": "lightweight-scan",
+        "command": f"lightweight-scan ports={len(scan_ports)} strategy={port_strategy}",
         "summary": {
             "uphosts": str(len(hosts)),
             "downhosts": "0",
@@ -430,16 +640,24 @@ def run_lightweight_scan(target: str, target_type: str) -> dict[str, Any]:
     }
 
 
-def run_nmap_scan(target: str, profile: str) -> dict[str, Any]:
+def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
+    if profile == "network":
+        return "-sn"
+
+    if profile == "quick":
+        if port_strategy == "aggressive":
+            return "-Pn -T4 --open -sS --top-ports 3000"
+        return "-Pn -T4 --open -sS --top-ports 1000"
+
+    if port_strategy == "aggressive" and not is_public_mode():
+        return "-Pn -T4 --open -sS -sV --version-all -p- --script=default,safe,banner,vuln"
+
+    return "-Pn -T4 --open -sS -sV --version-all --top-ports 3000 --script=default,safe,banner,vuln"
+
+
+def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
     scanner = nmap.PortScanner()
-
-    scan_profiles = {
-        "quick": "-Pn -T4 --open -sS --top-ports 200",
-        "deep": "-Pn -T4 --open -sS -sV --version-all --script=default,safe,banner,vuln",
-        "network": "-sn",
-    }
-    arguments = scan_profiles.get(profile, scan_profiles["quick"])
-
+    arguments = resolve_nmap_arguments(profile, port_strategy)
     scan_result = scanner.scan(hosts=target, arguments=arguments)
 
     hosts: list[dict[str, Any]] = []
@@ -467,6 +685,7 @@ def run_nmap_scan(target: str, profile: str) -> dict[str, Any]:
                     "version": service_version,
                     "extra_info": data.get("extrainfo") or "",
                     "cpe": data.get("cpe") or "",
+                    "banner": "",
                 }
                 port_entries.append(entry)
 
@@ -521,7 +740,17 @@ def enforce_rate_limit(client_ip: str) -> None:
     REQUEST_LOG[client_ip] = hits
 
 
-def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
+def is_likely_web_port(port_entry: dict[str, Any]) -> bool:
+    if port_entry.get("port") in WEB_CANDIDATE_PORTS:
+        return True
+    service_name = (port_entry.get("name") or "").lower()
+    product = (port_entry.get("product") or "").lower()
+    banner = (port_entry.get("banner") or "").lower()
+    markers = ["http", "nginx", "apache", "iis", "tomcat", "jetty"]
+    return any(marker in service_name or marker in product or marker in banner for marker in markers)
+
+
+def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[str, Any]:
     target, target_type = normalize_target(raw_target)
 
     if target_type == "network" and profile == "deep":
@@ -533,10 +762,10 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
     use_lightweight = should_force_light_scan() or not nmap_available()
 
     if use_lightweight:
-        nmap_data = run_lightweight_scan(target, target_type)
+        nmap_data = run_lightweight_scan(target, target_type, profile, port_strategy)
         engine = "lightweight"
     else:
-        nmap_data = run_nmap_scan(target, profile)
+        nmap_data = run_nmap_scan(target, profile, port_strategy)
         engine = "nmap"
 
     all_findings: list[dict[str, Any]] = []
@@ -545,14 +774,14 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
     for host in nmap_data["hosts"]:
         host_findings = list(host.get("findings", []))
 
-        open_ports = [entry["port"] for entry in host.get("ports", []) if entry.get("state") == "open"]
+        open_ports = [entry for entry in host.get("ports", []) if entry.get("state") == "open"]
 
         web_evidence: list[dict[str, Any]] = []
-        for port in open_ports:
-            if port in {80, 81, 443, 8000, 8080, 8443, 3000, 5000}:
-                web_result = probe_http_service(host["host"], port)
+        for entry in open_ports:
+            if is_likely_web_port(entry):
+                web_result = probe_http_service(host["host"], entry["port"])
                 if web_result:
-                    web_evidence.append({"port": port, **web_result})
+                    web_evidence.append({"port": entry["port"], **web_result})
                     host_findings.extend(web_result.get("findings", []))
 
         host_findings.sort(
@@ -566,6 +795,7 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
                 **host,
                 "web_evidence": web_evidence,
                 "finding_count": len(host_findings),
+                "open_port_count": len(open_ports),
             }
         )
 
@@ -573,13 +803,14 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
 
     return {
         "meta": {
-            "scanner": "vScanner 2.1",
+            "scanner": "vScanner 2.2",
             "engine": engine,
             "started_at": started_at,
             "finished_at": finished_at,
             "target": target,
             "target_type": target_type,
             "profile": profile,
+            "port_strategy": port_strategy,
             "public_mode": is_public_mode(),
             "authorization_notice": "Only scan systems you are explicitly authorized to test.",
         },
@@ -643,16 +874,20 @@ def scan_api() -> Any:
     payload = request.get_json(silent=True) or {}
     target = payload.get("target", "")
     profile = (payload.get("profile") or "quick").lower()
+    port_strategy = (payload.get("port_strategy") or "standard").lower()
 
     if profile not in {"quick", "deep", "network"}:
         return jsonify({"error": "Invalid profile. Allowed: quick, deep, network."}), 400
+
+    if port_strategy not in {"standard", "aggressive"}:
+        return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
 
     client = request.headers.get("X-Forwarded-For", "")
     client_ip = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
         enforce_rate_limit(client_ip)
-        result = orchestrate_scan(target, profile)
+        result = orchestrate_scan(target, profile, port_strategy)
         return jsonify(result)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400

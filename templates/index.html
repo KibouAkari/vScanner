@@ -3,73 +3,103 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vScanner 2.0</title>
+    <title>vScanner | Security Console</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
-    <div class="aurora aurora-a"></div>
-    <div class="aurora aurora-b"></div>
-    <div class="grid-overlay"></div>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <div class="ambient ambient-c"></div>
 
     <main class="app-shell">
-        <section class="hero">
-            <div class="hero-badge">vScanner 2.0</div>
-            <h1>Next-Level Vulnerability Recon</h1>
-            <p>
-                Professioneller Sicherheits-Scanner fuer Domains, Hosts und Netzwerke.
-                Service-Erkennung, Exposures, Login-Flaechen und forensische Hinweise in einem Report.
-            </p>
+        <section class="topbar card">
+            <div>
+                <div class="hero-badge">vScanner Command</div>
+                <h1>External Attack Surface Console</h1>
+                <p>
+                    Vulnerability reconnaissance, service fingerprinting, and exposure reporting
+                    for authorized targets.
+                </p>
+            </div>
+            <div class="kpi-grid">
+                <article class="kpi-card">
+                    <span>Engine</span>
+                    <strong id="kpiEngine">-</strong>
+                </article>
+                <article class="kpi-card">
+                    <span>Open Ports</span>
+                    <strong id="kpiPorts">0</strong>
+                </article>
+                <article class="kpi-card">
+                    <span>Findings</span>
+                    <strong id="kpiFindings">0</strong>
+                </article>
+            </div>
         </section>
 
         <section class="scan-panel card">
             <div class="panel-header">
-                <h2>Scan starten</h2>
-                <button id="ipButton" class="ghost-button" type="button">Meine IP anzeigen</button>
+                <h2>Scan Profile</h2>
+                <button id="ipButton" class="ghost-button" type="button">Show My IP</button>
             </div>
 
             <form id="scanForm" class="scan-form">
-                <label for="target">Ziel (IP, Domain oder CIDR)</label>
-                <input
-                    id="target"
-                    name="target"
-                    type="text"
-                    placeholder="z. B. 192.168.1.1, example.com, 10.0.0.0/24"
-                    required
-                />
+                <div class="field-grid">
+                    <div>
+                        <label for="target">Target (IP, Domain, CIDR)</label>
+                        <input
+                            id="target"
+                            name="target"
+                            type="text"
+                            placeholder="example.com or 203.0.113.10"
+                            required
+                        />
+                    </div>
 
-                <label for="profile">Scan-Profil</label>
-                <select id="profile" name="profile">
-                    <option value="quick">Quick: schnelle Port- und Service-Uebersicht</option>
-                    <option value="deep">Deep: Versions-Checks + NSE-Skripte</option>
-                    <option value="network">Network: Host Discovery im Netz</option>
-                </select>
+                    <div>
+                        <label for="profile">Detection Profile</label>
+                        <select id="profile" name="profile">
+                            <option value="quick">Quick Discovery</option>
+                            <option value="deep">Deep Service Analysis</option>
+                            <option value="network">Network Host Discovery</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label for="portStrategy">Port Coverage</label>
+                        <select id="portStrategy" name="portStrategy">
+                            <option value="standard">Standard</option>
+                            <option value="aggressive">Aggressive</option>
+                        </select>
+                    </div>
+                </div>
 
                 <p class="disclaimer">
-                    Rechtlicher Hinweis: Nur auf Systeme scannen, fuer die du eine explizite Berechtigung hast.
+                    Legal notice: scan only systems you are explicitly authorized to test.
                 </p>
 
-                <button id="scanButton" class="primary-button" type="submit">Scan ausfuehren</button>
+                <button id="scanButton" class="primary-button" type="submit">Launch Scan</button>
             </form>
         </section>
 
         <section class="results-grid">
             <article class="card summary-card">
-                <h3>Risk Summary</h3>
+                <h3>Risk Matrix</h3>
                 <div id="riskSummary" class="risk-list"></div>
                 <div id="scanMeta" class="meta"></div>
             </article>
 
             <article class="card output-card">
                 <div class="panel-header">
-                    <h3>Scan-Ausgabe</h3>
+                    <h3>Findings Stream</h3>
                     <span id="statusPill" class="pill idle">Idle</span>
                 </div>
                 <div id="errorBox" class="error-box hidden"></div>
                 <div id="resultOutput" class="result-output">
-                    Starte einen Scan, um Ergebnisse zu sehen.
+                    Launch a scan to populate findings.
                 </div>
             </article>
         </section>
