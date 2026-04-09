@@ -48,7 +48,7 @@
                 <h2>Scan-Konfiguration</h2>
                 <div class="header-actions">
                     <button id="ipButton" class="ghost-button" type="button">Meine IP</button>
-                    <button id="exportPdfButton" class="primary-button" type="button" disabled>PDF-Report exportieren</button>
+                    <button id="exportPdfButton" class="primary-button" type="button" disabled>Download Report</button>
                 </div>
             </div>
 
@@ -103,6 +103,18 @@
                 <div class="panel-headline">
                     <h3>Findings</h3>
                     <span id="statusPill" class="pill idle">Idle</span>
+                </div>
+                <div class="finding-toolbar">
+                    <label for="severityFilter">Severity</label>
+                    <select id="severityFilter">
+                        <option value="all">Alle</option>
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                    </select>
+                    <label for="findingSearch">Suche</label>
+                    <input id="findingSearch" type="text" placeholder="Titel, Evidence oder Host" />
                 </div>
                 <div id="errorBox" class="error-box hidden"></div>
                 <div id="resultOutput" class="result-output">

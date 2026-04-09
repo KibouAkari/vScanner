@@ -75,11 +75,11 @@ p {
 .app-shell {
     position: relative;
     z-index: 1;
-    max-width: 1280px;
+    max-width: 1500px;
     margin: 0 auto;
-    padding: 1rem;
+    padding: 1rem 1.1rem 1.2rem;
     display: grid;
-    gap: 0.9rem;
+    gap: 1rem;
 }
 
 .card {
@@ -244,6 +244,7 @@ select:focus {
     display: grid;
     grid-template-columns: 340px 1fr;
     gap: 0.9rem;
+    min-height: calc(100vh - 325px);
 }
 
 .sidebar,
@@ -327,6 +328,80 @@ select:focus {
     display: grid;
     gap: 0.75rem;
 }
+
+.finding-toolbar {
+    display: grid;
+    grid-template-columns: auto 160px auto 1fr;
+    gap: 0.55rem;
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.finding-toolbar label {
+    margin: 0;
+    font-size: 0.72rem;
+}
+
+.finding-toolbar select,
+.finding-toolbar input {
+    padding: 0.5rem 0.62rem;
+    font-size: 0.85rem;
+}
+
+.summary-banner {
+    border: 1px solid rgba(104, 145, 193, 0.35);
+    border-radius: 11px;
+    background: rgba(8, 14, 21, 0.82);
+    padding: 0.7rem;
+    color: #cfe0f4;
+    font-size: 0.9rem;
+}
+
+.table-wrap {
+    border: 1px solid rgba(96, 132, 175, 0.28);
+    border-radius: 10px;
+    overflow: auto;
+    background: rgba(6, 10, 16, 0.88);
+}
+
+.findings-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.83rem;
+}
+
+.findings-table th,
+.findings-table td {
+    border-bottom: 1px solid rgba(80, 112, 153, 0.25);
+    text-align: left;
+    padding: 0.54rem 0.6rem;
+    vertical-align: top;
+}
+
+.findings-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #0a1625;
+    color: #c9dcf4;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.sev-pill {
+    border-radius: 999px;
+    padding: 0.12rem 0.42rem;
+    font-size: 0.7rem;
+    border: 1px solid transparent;
+    display: inline-flex;
+    text-transform: uppercase;
+}
+
+.sev-critical { color: #ffd7df; background: rgba(255, 75, 104, 0.18); border-color: rgba(255, 75, 104, 0.4); }
+.sev-high { color: #ffe2cf; background: rgba(255, 142, 74, 0.17); border-color: rgba(255, 142, 74, 0.4); }
+.sev-medium { color: #ffedcb; background: rgba(240, 196, 95, 0.16); border-color: rgba(240, 196, 95, 0.35); }
+.sev-low { color: #d4eeff; background: rgba(100, 204, 255, 0.16); border-color: rgba(100, 204, 255, 0.35); }
 
 .empty-hint {
     color: #93a8c3;
@@ -434,6 +509,12 @@ select:focus {
 
     .results-layout {
         grid-template-columns: 1fr;
+        min-height: auto;
+    }
+
+    .finding-toolbar {
+        grid-template-columns: 1fr;
+        align-items: stretch;
     }
 }
 

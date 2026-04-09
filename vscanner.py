@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import io
 import ipaddress
 import os
 import re
@@ -12,12 +11,7 @@ from typing import Any
 
 import nmap
 import requests
-from flask import Flask, jsonify, make_response, render_template, request
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from flask import Flask, jsonify, render_template, request
 from urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
@@ -120,7 +114,7 @@ WEB_CANDIDATE_PORTS = {
     9200,
 }
 
-SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
 
 
@@ -722,12 +716,17 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
     }
 
 
+def normalize_severity(raw: str) -> str:
+    severity = (raw or "").lower().strip()
+    if severity in {"critical", "high", "medium", "low"}:
+        return severity
+    return "low"
+
+
 def build_risk_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for finding in findings:
-        severity = finding.get("severity", "info")
-        if severity not in summary:
-            severity = "info"
+        severity = normalize_severity(str(finding.get("severity", "low")))
         summary[severity] += 1
     return summary
 
@@ -739,174 +738,9 @@ def compute_risk_level(summary: dict[str, int]) -> str:
         return "high"
     if summary.get("medium", 0) > 0:
         return "medium"
-    if summary.get("low", 0) > 0:
-        return "low"
-    return "info"
+    return "low"
 
 
-def _safe_pdf_text(value: Any, max_len: int = 200) -> str:
-    text = str(value or "-")
-    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    if len(text) > max_len:
-        return text[: max_len - 3] + "..."
-    return text
-
-
-def _severity_chart_table(summary: dict[str, int]) -> Table:
-    levels = ["critical", "high", "medium", "low", "info"]
-    max_value = max([summary.get(level, 0) for level in levels] + [1])
-
-    rows = [["Severity", "Count", "Bar"]]
-    for level in levels:
-        count = int(summary.get(level, 0))
-        bar_len = int((count / max_value) * 30)
-        bar = "■" * bar_len if bar_len > 0 else ""
-        rows.append([level.upper(), str(count), bar])
-
-    table = Table(rows, colWidths=[35 * mm, 20 * mm, 110 * mm])
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f2238")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#88a4c5")),
-                ("BACKGROUND", (0, 1), (-1, -1), colors.HexColor("#f6f9fc")),
-                ("TEXTCOLOR", (0, 1), (-1, -1), colors.HexColor("#10233a")),
-            ]
-        )
-    )
-    return table
-
-
-def generate_pdf_report(scan_result: dict[str, Any]) -> bytes:
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=15 * mm,
-        leftMargin=15 * mm,
-        topMargin=12 * mm,
-        bottomMargin=12 * mm,
-        title="vScanner Report",
-    )
-
-    styles = getSampleStyleSheet()
-    story: list[Any] = []
-
-    meta = scan_result.get("meta", {})
-    summary = scan_result.get("risk_summary", {})
-    hosts = scan_result.get("hosts", [])
-
-    level = compute_risk_level(summary)
-
-    story.append(Paragraph("vScanner Security Report", styles["Title"]))
-    story.append(Spacer(1, 6))
-    story.append(
-        Paragraph(
-            f"Target: <b>{_safe_pdf_text(meta.get('target', '-'))}</b> | "
-            f"Profile: <b>{_safe_pdf_text(meta.get('profile', '-'))}</b> | "
-            f"Risk Level: <b>{level.upper()}</b>",
-            styles["Normal"],
-        )
-    )
-    story.append(Paragraph(f"Generated at: {_safe_pdf_text(utc_now())}", styles["Normal"]))
-    story.append(Spacer(1, 8))
-
-    story.append(Paragraph("Severity Distribution", styles["Heading2"]))
-    story.append(_severity_chart_table(summary))
-    story.append(Spacer(1, 8))
-
-    meta_table = Table(
-        [
-            ["Engine", _safe_pdf_text(meta.get("engine", "-"))],
-            ["Port Strategy", _safe_pdf_text(meta.get("port_strategy", "-"))],
-            ["Scan Start", _safe_pdf_text(meta.get("started_at", "-"))],
-            ["Scan End", _safe_pdf_text(meta.get("finished_at", "-"))],
-            ["Total Findings", _safe_pdf_text(scan_result.get("total_findings", 0))],
-        ],
-        colWidths=[45 * mm, 120 * mm],
-    )
-    meta_table.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9bb2d1")),
-                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#edf3fa")),
-                ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ]
-        )
-    )
-    story.append(meta_table)
-    story.append(Spacer(1, 8))
-
-    story.append(Paragraph("Host Overview", styles["Heading2"]))
-    host_rows = [["Host", "State", "Open Ports", "Findings"]]
-    for host in hosts[:30]:
-        host_rows.append(
-            [
-                _safe_pdf_text(host.get("host", "-"), 50),
-                _safe_pdf_text(host.get("state", "-"), 20),
-                str(host.get("open_port_count", 0)),
-                str(host.get("finding_count", 0)),
-            ]
-        )
-
-    host_table = Table(host_rows, colWidths=[70 * mm, 25 * mm, 35 * mm, 35 * mm])
-    host_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f2238")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9ab5d8")),
-                ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-            ]
-        )
-    )
-    story.append(host_table)
-    story.append(Spacer(1, 8))
-
-    story.append(Paragraph("Top Findings", styles["Heading2"]))
-    finding_rows = [["Severity", "Title", "Evidence"]]
-    finding_count = 0
-    for host in hosts:
-        for finding in host.get("findings", [])[:20]:
-            finding_rows.append(
-                [
-                    _safe_pdf_text(str(finding.get("severity", "info")).upper(), 12),
-                    _safe_pdf_text(finding.get("title", "-"), 60),
-                    _safe_pdf_text(finding.get("evidence", "-"), 95),
-                ]
-            )
-            finding_count += 1
-            if finding_count >= 70:
-                break
-        if finding_count >= 70:
-            break
-
-    if len(finding_rows) == 1:
-        finding_rows.append(["INFO", "No findings", "No finding details available for this scan."])
-
-    finding_table = Table(finding_rows, colWidths=[25 * mm, 55 * mm, 85 * mm])
-    finding_table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f2238")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#9bb5d5")),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ]
-        )
-    )
-    story.append(finding_table)
-
-    doc.build(story)
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
-    return pdf_bytes
 
 
 def enforce_rate_limit(client_ip: str) -> None:
@@ -952,6 +786,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         engine = "nmap"
 
     all_findings: list[dict[str, Any]] = []
+    finding_items: list[dict[str, Any]] = []
     host_results: list[dict[str, Any]] = []
 
     for host in nmap_data["hosts"]:
@@ -973,6 +808,16 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         )
 
         all_findings.extend(host_findings)
+        for finding in host_findings:
+            finding_items.append(
+                {
+                    "host": host.get("host", "-"),
+                    "severity": normalize_severity(str(finding.get("severity", "low"))),
+                    "title": finding.get("title", "Finding"),
+                    "evidence": finding.get("evidence", "-"),
+                    "type": finding.get("type", "-"),
+                }
+            )
         host_results.append(
             {
                 **host,
@@ -986,6 +831,10 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
 
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
+    finding_items.sort(
+        key=lambda item: SEVERITY_ORDER.get(item.get("severity", "low"), 1),
+        reverse=True,
+    )
 
     return {
         "meta": {
@@ -1006,6 +855,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
             "summary": nmap_data.get("summary", {}),
         },
         "hosts": host_results,
+        "finding_items": finding_items,
         "risk_summary": risk_summary,
         "total_findings": len(all_findings),
     }
@@ -1025,7 +875,7 @@ def set_security_headers(response: Any) -> Any:
         "style-src 'self' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
-        "connect-src 'self'; "
+        "connect-src 'self' https://api64.ipify.org https://api.ipify.org; "
         "frame-ancestors 'none'"
     )
     response.headers["Content-Security-Policy"] = csp
@@ -1087,24 +937,6 @@ def scan_api() -> Any:
         ), 500
     except Exception as exc:
         return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
-
-
-@app.route("/api/report/pdf", methods=["POST"])
-def export_report_pdf() -> Any:
-    payload = request.get_json(silent=True) or {}
-    scan_result = payload.get("scan_result")
-
-    if not isinstance(scan_result, dict):
-        return jsonify({"error": "scan_result payload is required."}), 400
-
-    try:
-        pdf_bytes = generate_pdf_report(scan_result)
-        response = make_response(pdf_bytes)
-        response.headers["Content-Type"] = "application/pdf"
-        response.headers["Content-Disposition"] = "attachment; filename=vscanner-report.pdf"
-        return response
-    except Exception as exc:
-        return jsonify({"error": "PDF generation failed.", "details": str(exc)}), 500
 
 
 if __name__ == "__main__":

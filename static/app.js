@@ -10,6 +10,8 @@ const riskSummary = document.getElementById("riskSummary");
 const scanMeta = document.getElementById("scanMeta");
 const ipButton = document.getElementById("ipButton");
 const exportPdfButton = document.getElementById("exportPdfButton");
+const severityFilter = document.getElementById("severityFilter");
+const findingSearch = document.getElementById("findingSearch");
 const kpiEngine = document.getElementById("kpiEngine");
 const kpiPorts = document.getElementById("kpiPorts");
 const kpiFindings = document.getElementById("kpiFindings");
@@ -18,31 +20,15 @@ const riskChart = document.getElementById("riskChart");
 
 let lastScanResult = null;
 
-const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
-const SEVERITY_COLORS = {
+const ORDER = ["critical", "high", "medium", "low"];
+const COLORS = {
     critical: "#ff4b68",
     high: "#ff8e4a",
     medium: "#f0c45f",
     low: "#64ccff",
-    info: "#8ea3be",
 };
 
-function setStatus(status, text) {
-    statusPill.className = `pill ${status}`;
-    statusPill.textContent = text;
-}
-
-function showError(message) {
-    errorBox.textContent = message;
-    errorBox.classList.remove("hidden");
-}
-
-function clearError() {
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
-}
-
-function escapeHtml(value) {
+function esc(value) {
     return String(value ?? "")
         .replaceAll("&", "&amp;")
         .replaceAll("<", "&lt;")
@@ -51,32 +37,37 @@ function escapeHtml(value) {
         .replaceAll("'", "&#039;");
 }
 
-function getRiskLevel(summary = {}) {
-    if ((summary.critical || 0) > 0) {
-        return "Kritisch";
-    }
-    if ((summary.high || 0) > 0) {
-        return "Hoch";
-    }
-    if ((summary.medium || 0) > 0) {
-        return "Mittel";
-    }
-    if ((summary.low || 0) > 0) {
-        return "Niedrig";
-    }
-    return "Info";
+function setStatus(status, text) {
+    statusPill.className = `pill ${status}`;
+    statusPill.textContent = text;
 }
 
-function renderRiskSummary(summary = {}) {
-    riskSummary.innerHTML = "";
+function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.remove("hidden");
+}
 
-    SEVERITY_ORDER.forEach((key) => {
-        const value = Number(summary[key] || 0);
-        const row = document.createElement("div");
-        row.className = "risk-item";
-        row.innerHTML = `<span>${key.toUpperCase()}</span><strong>${value}</strong>`;
-        riskSummary.appendChild(row);
-    });
+function clearError() {
+    errorBox.classList.add("hidden");
+    errorBox.textContent = "";
+}
+
+function normalizeSeverity(raw) {
+    const sev = String(raw || "").toLowerCase();
+    return ORDER.includes(sev) ? sev : "low";
+}
+
+function riskLevel(summary = {}) {
+    if ((summary.critical || 0) > 0) {
+        return "Critical";
+    }
+    if ((summary.high || 0) > 0) {
+        return "High";
+    }
+    if ((summary.medium || 0) > 0) {
+        return "Medium";
+    }
+    return "Low";
 }
 
 function drawRiskChart(summary = {}) {
@@ -85,8 +76,8 @@ function drawRiskChart(summary = {}) {
     const height = riskChart.height;
     ctx.clearRect(0, 0, width, height);
 
-    const values = SEVERITY_ORDER.map((key) => Number(summary[key] || 0));
-    const total = values.reduce((acc, n) => acc + n, 0);
+    const values = ORDER.map((k) => Number(summary[k] || 0));
+    const total = values.reduce((acc, v) => acc + v, 0);
 
     if (total === 0) {
         ctx.fillStyle = "#8ea3be";
@@ -96,44 +87,53 @@ function drawRiskChart(summary = {}) {
     }
 
     let start = -Math.PI / 2;
-    const centerX = 110;
+    const centerX = 104;
     const centerY = 110;
-    const radius = 72;
+    const radius = 70;
 
-    values.forEach((value, index) => {
-        const key = SEVERITY_ORDER[index];
+    ORDER.forEach((key, index) => {
+        const value = Number(summary[key] || 0);
         if (value <= 0) {
             return;
         }
-
         const angle = (value / total) * Math.PI * 2;
         ctx.beginPath();
         ctx.moveTo(centerX, centerY);
         ctx.arc(centerX, centerY, radius, start, start + angle);
         ctx.closePath();
-        ctx.fillStyle = SEVERITY_COLORS[key];
+        ctx.fillStyle = COLORS[key];
         ctx.fill();
         start += angle;
     });
 
     ctx.beginPath();
-    ctx.arc(centerX, centerY, 36, 0, Math.PI * 2);
+    ctx.arc(centerX, centerY, 35, 0, Math.PI * 2);
     ctx.fillStyle = "#07101b";
     ctx.fill();
 
-    ctx.fillStyle = "#d6e8ff";
-    ctx.font = "700 17px Space Grotesk";
-    ctx.fillText(String(total), centerX - 10, centerY + 6);
+    ctx.fillStyle = "#d8e9ff";
+    ctx.font = "700 16px Space Grotesk";
+    ctx.fillText(String(total), centerX - 8, centerY + 5);
 
     ctx.font = "12px Outfit";
-    let legendY = 42;
-    SEVERITY_ORDER.forEach((key) => {
-        const value = Number(summary[key] || 0);
-        ctx.fillStyle = SEVERITY_COLORS[key];
-        ctx.fillRect(206, legendY, 10, 10);
-        ctx.fillStyle = "#c5dbf5";
-        ctx.fillText(`${key.toUpperCase()} ${value}`, 221, legendY + 9);
-        legendY += 23;
+    let y = 52;
+    ORDER.forEach((key) => {
+        const val = Number(summary[key] || 0);
+        ctx.fillStyle = COLORS[key];
+        ctx.fillRect(198, y, 10, 10);
+        ctx.fillStyle = "#c7dcf5";
+        ctx.fillText(`${key.toUpperCase()} ${val}`, 214, y + 9);
+        y += 22;
+    });
+}
+
+function renderRiskSummary(summary = {}) {
+    riskSummary.innerHTML = "";
+    ORDER.forEach((key) => {
+        const row = document.createElement("div");
+        row.className = "risk-item";
+        row.innerHTML = `<span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong>`;
+        riskSummary.appendChild(row);
     });
 }
 
@@ -145,187 +145,231 @@ function renderMeta(meta = {}) {
         `Profil: ${meta.profile || "-"}`,
         `Port-Abdeckung: ${meta.port_strategy || "-"}`,
         `Engine: ${meta.engine || "-"}`,
+        `Nmap-Command: ${lastScanResult?.nmap?.command || "-"}`,
         `Start: ${meta.started_at || "-"}`,
         `Ende: ${meta.finished_at || "-"}`,
     ];
 
     lines.forEach((line) => {
-        const el = document.createElement("div");
-        el.textContent = line;
-        scanMeta.appendChild(el);
+        const div = document.createElement("div");
+        div.textContent = line;
+        scanMeta.appendChild(div);
     });
 }
 
 function renderKpis(data) {
     const hosts = data.hosts || [];
-    const openPortCount = hosts.reduce((acc, host) => {
-        const openPorts = (host.ports || []).filter((p) => p.state === "open");
-        return acc + openPorts.length;
-    }, 0);
-
-    const riskLevel = getRiskLevel(data.risk_summary || {});
+    const openPorts = hosts.reduce((acc, host) => acc + Number(host.open_port_count || 0), 0);
+    const rLevel = riskLevel(data.risk_summary || {});
 
     kpiEngine.textContent = data.meta?.engine || "-";
-    kpiPorts.textContent = String(openPortCount);
+    kpiPorts.textContent = String(openPorts);
     kpiFindings.textContent = String(data.total_findings || 0);
-    kpiRiskLevel.textContent = riskLevel;
+    kpiRiskLevel.textContent = rLevel;
 }
 
-function renderPorts(openPorts) {
-    if (!openPorts.length) {
-        return '<p class="empty-hint">Keine offenen Ports erkannt.</p>';
+function filteredFindings() {
+    if (!lastScanResult) {
+        return [];
     }
 
-    const items = openPorts
-        .map((p) => {
-            const title = [p.name, p.product, p.version].filter(Boolean).join(" ");
-            const banner = p.banner ? `<div class="mono">Banner: ${escapeHtml(p.banner)}</div>` : "";
-            return `
-                <li class="port-item">
-                    <strong class="mono">${escapeHtml(p.protocol)}/${escapeHtml(p.port)}</strong>
-                    <div>${escapeHtml(title || "Service unbekannt")}</div>
-                    ${banner}
-                </li>
-            `;
-        })
-        .join("");
+    const selectedSeverity = severityFilter.value;
+    const term = findingSearch.value.trim().toLowerCase();
 
-    return `<ul class="port-list">${items}</ul>`;
+    return (lastScanResult.finding_items || []).filter((item) => {
+        const sev = normalizeSeverity(item.severity);
+        if (selectedSeverity !== "all" && sev !== selectedSeverity) {
+            return false;
+        }
+
+        if (!term) {
+            return true;
+        }
+
+        const text = `${item.host} ${item.title} ${item.evidence} ${item.type}`.toLowerCase();
+        return text.includes(term);
+    });
 }
 
-function renderFindings(findings) {
-    if (!findings.length) {
-        return '<p class="empty-hint">Keine zusätzlichen Findings erkannt.</p>';
+function renderHostQuickSummary(hosts) {
+    if (!hosts.length) {
+        return "";
     }
 
-    const items = findings
-        .slice(0, 60)
-        .map((finding) => {
-            const sev = (finding.severity || "info").toLowerCase();
-            return `
-                <li class="finding-item sev-${escapeHtml(sev)}">
-                    <div class="finding-title">
-                        <span class="tag">${escapeHtml(sev.toUpperCase())}</span>
-                        <span>${escapeHtml(finding.title || "Finding")}</span>
-                    </div>
-                    <div>${escapeHtml(finding.evidence || "-")}</div>
-                </li>
-            `;
+    const items = hosts
+        .map((host) => {
+            const name = esc(host.host);
+            const portCount = Number(host.open_port_count || 0);
+            const findingCount = Number(host.finding_count || 0);
+            return `<li class="port-item"><strong>${name}</strong> · Open Ports: ${portCount} · Findings: ${findingCount}</li>`;
         })
         .join("");
-
-    return `<ul class="finding-list">${items}</ul>`;
-}
-
-function renderWebEvidence(evidenceList) {
-    if (!evidenceList.length) {
-        return '<p class="empty-hint">Keine Web-Evidence erkannt.</p>';
-    }
-
-    const items = evidenceList
-        .map((entry) => {
-            const title = entry.title ? `<div>Titel: ${escapeHtml(entry.title)}</div>` : "";
-            const loginCount = entry.login_pages ? entry.login_pages.length : 0;
-            return `
-                <li class="web-item">
-                    <div><strong>Port ${escapeHtml(entry.port)}</strong> · Status ${escapeHtml(entry.status)}</div>
-                    <div class="mono">${escapeHtml(entry.url || "-")}</div>
-                    ${title}
-                    <div>Login-Seiten: ${escapeHtml(loginCount)}</div>
-                </li>
-            `;
-        })
-        .join("");
-
-    return `<ul class="web-list">${items}</ul>`;
-}
-
-function renderHost(host) {
-    const openPorts = (host.ports || []).filter((entry) => entry.state === "open");
-    const findings = host.findings || [];
-    const webEvidence = host.web_evidence || [];
-
-    const hostnames = host.hostnames && host.hostnames.length ? host.hostnames.join(", ") : "-";
 
     return `
-        <article class="host-card">
-            <div class="host-head">
-                <h4 class="host-title">${escapeHtml(host.host)} <span class="tag">${escapeHtml(host.state || "unknown")}</span></h4>
-                <span class="tag">Open Ports: ${escapeHtml(openPorts.length)}</span>
-            </div>
-            <div>Hostnames: ${escapeHtml(hostnames)}</div>
-            <div>Reverse DNS: ${escapeHtml(host.reverse_dns || "-")}</div>
-            <section>
-                <div class="section-title">Offene Ports</div>
-                ${renderPorts(openPorts)}
-            </section>
-            <section>
-                <div class="section-title">Findings</div>
-                ${renderFindings(findings)}
-            </section>
-            <section>
-                <div class="section-title">Web Evidence</div>
-                ${renderWebEvidence(webEvidence)}
-            </section>
-        </article>
+        <div>
+            <div class="section-title">Host-Übersicht</div>
+            <ul class="port-list">${items}</ul>
+        </div>
     `;
 }
 
-function renderResult(data) {
-    const hosts = data.hosts || [];
-
-    if (hosts.length === 0) {
-        resultOutput.innerHTML = '<p class="empty-hint">Keine Hosts erkannt. Prüfe Ziel und Berechtigung.</p>';
-    } else {
-        const cards = hosts.map((host) => renderHost(host)).join("");
-        resultOutput.innerHTML = cards;
+function renderFindingsTable(items) {
+    if (!items.length) {
+        return '<p class="empty-hint">Für den aktuellen Filter wurden keine Findings gefunden.</p>';
     }
 
-    renderRiskSummary(data.risk_summary || {});
-    drawRiskChart(data.risk_summary || {});
+    const rows = items
+        .slice(0, 800)
+        .map((item) => {
+            const sev = normalizeSeverity(item.severity);
+            return `
+                <tr>
+                    <td><span class="sev-pill sev-${esc(sev)}">${esc(sev)}</span></td>
+                    <td class="mono">${esc(item.host || "-")}</td>
+                    <td>${esc(item.title || "-")}</td>
+                    <td>${esc(item.evidence || "-")}</td>
+                    <td>${esc(item.type || "-")}</td>
+                </tr>
+            `;
+        })
+        .join("");
+
+    return `
+        <div class="table-wrap">
+            <table class="findings-table">
+                <thead>
+                    <tr>
+                        <th>Severity</th>
+                        <th>Host</th>
+                        <th>Titel</th>
+                        <th>Evidence</th>
+                        <th>Typ</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+function renderResult() {
+    const data = lastScanResult;
+    const hosts = data.hosts || [];
+    const summary = data.risk_summary || {};
+    const selected = filteredFindings();
+
+    const text = `Risk Level: ${riskLevel(summary)} · Findings gesamt: ${data.total_findings || 0} · Angezeigt: ${selected.length}`;
+
+    resultOutput.innerHTML = `
+        <div class="summary-banner">${esc(text)}</div>
+        ${renderFindingsTable(selected)}
+        ${renderHostQuickSummary(hosts)}
+    `;
+
+    renderRiskSummary(summary);
+    drawRiskChart(summary);
     renderMeta(data.meta || {});
     renderKpis(data);
 }
 
-async function exportPdfReport() {
+function buildPrintableReportHtml(data) {
+    const summary = data.risk_summary || {};
+    const findings = data.finding_items || [];
+    const meta = data.meta || {};
+
+    const findingRows = findings
+        .slice(0, 600)
+        .map((item) => {
+            const sev = normalizeSeverity(item.severity);
+            return `
+                <tr>
+                    <td>${esc(sev.toUpperCase())}</td>
+                    <td>${esc(item.host || "-")}</td>
+                    <td>${esc(item.title || "-")}</td>
+                    <td>${esc(item.evidence || "-")}</td>
+                </tr>
+            `;
+        })
+        .join("");
+
+    return `
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>vScanner Report</title>
+<style>
+body { font-family: Arial, sans-serif; margin: 24px; color: #1a2433; }
+h1 { margin: 0 0 10px; }
+.meta { margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
+.box { border: 1px solid #bccbe0; padding: 8px; border-radius: 6px; }
+.table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.table th, .table td { border: 1px solid #c2d1e5; text-align: left; padding: 6px; vertical-align: top; }
+.table th { background: #e9f1fb; }
+</style>
+</head>
+<body>
+<h1>vScanner Security Report</h1>
+<div class="meta">Target: <strong>${esc(meta.target || "-")}</strong> | Risk Level: <strong>${esc((meta.risk_level || "low").toUpperCase())}</strong> | Profile: <strong>${esc(meta.profile || "-")}</strong></div>
+<div class="meta">Start: ${esc(meta.started_at || "-")} | End: ${esc(meta.finished_at || "-")} | Engine: ${esc(meta.engine || "-")}</div>
+<div class="grid">
+    <div class="box">Critical: <strong>${summary.critical || 0}</strong></div>
+    <div class="box">High: <strong>${summary.high || 0}</strong></div>
+    <div class="box">Medium: <strong>${summary.medium || 0}</strong></div>
+    <div class="box">Low: <strong>${summary.low || 0}</strong></div>
+</div>
+<table class="table">
+<thead><tr><th>Severity</th><th>Host</th><th>Title</th><th>Evidence</th></tr></thead>
+<tbody>${findingRows || '<tr><td colspan="4">No findings available</td></tr>'}</tbody>
+</table>
+</body>
+</html>
+`;
+}
+
+function downloadReport() {
     if (!lastScanResult) {
-        showError("Kein Scan-Ergebnis vorhanden.");
+        showError("Es ist noch kein Scan-Ergebnis zum Export vorhanden.");
         return;
     }
 
-    clearError();
-    exportPdfButton.disabled = true;
-    exportPdfButton.textContent = "Export läuft...";
-
-    try {
-        const response = await fetch("/api/report/pdf", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ scan_result: lastScanResult }),
-        });
-
-        if (!response.ok) {
-            const data = await response.json();
-            throw new Error(data.error || "PDF-Export fehlgeschlagen.");
-        }
-
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "vscanner-report.pdf";
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-    } catch (error) {
-        showError(error.message || "PDF-Export fehlgeschlagen.");
-    } finally {
-        exportPdfButton.disabled = false;
-        exportPdfButton.textContent = "PDF-Report exportieren";
+    const html = buildPrintableReportHtml(lastScanResult);
+    const reportWindow = window.open("", "_blank", "noopener,noreferrer");
+    if (!reportWindow) {
+        showError("Popup wurde blockiert. Bitte Popups für diese Seite erlauben.");
+        return;
     }
+
+    reportWindow.document.open();
+    reportWindow.document.write(html);
+    reportWindow.document.close();
+    reportWindow.focus();
+    reportWindow.print();
+}
+
+async function fetchPublicIp() {
+    const endpoints = [
+        "https://api64.ipify.org?format=json",
+        "https://api.ipify.org?format=json",
+    ];
+
+    for (const url of endpoints) {
+        try {
+            const response = await fetch(url, { method: "GET" });
+            if (!response.ok) {
+                continue;
+            }
+            const data = await response.json();
+            if (data.ip) {
+                return data.ip;
+            }
+        } catch (_error) {
+            // Try next endpoint.
+        }
+    }
+
+    throw new Error("Public IP konnte nicht ermittelt werden.");
 }
 
 form.addEventListener("submit", async (event) => {
@@ -342,14 +386,12 @@ form.addEventListener("submit", async (event) => {
     scanButton.disabled = true;
     exportPdfButton.disabled = true;
     scanButton.textContent = "Scanne...";
-    resultOutput.innerHTML = '<p class="empty-hint">Scan läuft. Je nach Profil kann das etwas dauern.</p>';
+    resultOutput.innerHTML = '<p class="empty-hint">Scan läuft. Das kann je nach Profil und Port-Abdeckung dauern.</p>';
 
     try {
         const response = await fetch("/api/scan", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
         });
 
@@ -360,7 +402,7 @@ form.addEventListener("submit", async (event) => {
 
         lastScanResult = data;
         exportPdfButton.disabled = false;
-        renderResult(data);
+        renderResult();
         setStatus("done", "Fertig");
     } catch (error) {
         showError(error.message || "Scan fehlgeschlagen.");
@@ -372,19 +414,29 @@ form.addEventListener("submit", async (event) => {
     }
 });
 
-ipButton.addEventListener("click", async () => {
-    clearError();
-    try {
-        const response = await fetch("/api/client-ip");
-        const data = await response.json();
-        alert(`Erkannte IP: ${data.ip || "unbekannt"}`);
-    } catch (error) {
-        showError("IP konnte nicht geladen werden.");
+severityFilter.addEventListener("change", () => {
+    if (lastScanResult) {
+        renderResult();
     }
 });
 
-exportPdfButton.addEventListener("click", exportPdfReport);
+findingSearch.addEventListener("input", () => {
+    if (lastScanResult) {
+        renderResult();
+    }
+});
+
+ipButton.addEventListener("click", async () => {
+    clearError();
+    try {
+        const ip = await fetchPublicIp();
+        alert(`Deine öffentliche IP: ${ip}`);
+    } catch (error) {
+        showError(error.message || "IP konnte nicht geladen werden.");
+    }
+});
+
+exportPdfButton.addEventListener("click", downloadReport);
 
 renderRiskSummary({});
 drawRiskChart({});
-renderKpis({});
