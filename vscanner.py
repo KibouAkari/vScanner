@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,6 +16,7 @@ from urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 8 * 1024
 
 TARGET_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))+\.?$"
@@ -43,7 +46,30 @@ RISKY_PORTS = {
     2375: ("Docker daemon API exposed", "critical"),
 }
 
+COMMON_SERVICE_NAMES = {
+    21: "ftp",
+    22: "ssh",
+    23: "telnet",
+    25: "smtp",
+    53: "dns",
+    80: "http",
+    110: "pop3",
+    143: "imap",
+    443: "https",
+    445: "microsoft-ds",
+    3306: "mysql",
+    3389: "ms-wbt-server",
+    5432: "postgresql",
+    5900: "vnc",
+    6379: "redis",
+    8080: "http-proxy",
+    8443: "https-alt",
+}
+
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+# In serverless this cache is best-effort and per-instance.
+REQUEST_LOG: dict[str, list[float]] = {}
 
 
 class ScanInputError(ValueError):
@@ -54,10 +80,26 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def is_public_mode() -> bool:
+    return os.getenv("VSCANNER_PUBLIC_MODE", "1") == "1"
+
+
+def should_force_light_scan() -> bool:
+    return os.getenv("VSCANNER_FORCE_LIGHT_SCAN", "0") == "1"
+
+
+def nmap_available() -> bool:
+    try:
+        nmap.PortScanner()
+        return True
+    except Exception:
+        return False
+
+
 def normalize_target(raw_target: str) -> tuple[str, str]:
     target = (raw_target or "").strip()
     if not target:
-        raise ScanInputError("Bitte ein Ziel angeben.")
+        raise ScanInputError("Please provide a target.")
 
     try:
         if "/" in target:
@@ -74,7 +116,7 @@ def normalize_target(raw_target: str) -> tuple[str, str]:
         return target_no_dot.lower(), "domain"
 
     raise ScanInputError(
-        "Ungueltiges Ziel. Erlaubt sind IP, Domain oder CIDR-Netz (z. B. 192.168.1.0/24)."
+        "Invalid target. Allowed: IP, domain, or CIDR network (example: 192.168.1.0/24)."
     )
 
 
@@ -96,6 +138,58 @@ def parse_version_tuple(version: str) -> tuple[int, int, int] | None:
     return major, minor, patch
 
 
+def is_non_public_ip(ip_s: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip_s)
+    except ValueError:
+        return True
+
+    return any(
+        [
+            ip_obj.is_private,
+            ip_obj.is_loopback,
+            ip_obj.is_link_local,
+            ip_obj.is_multicast,
+            ip_obj.is_reserved,
+            ip_obj.is_unspecified,
+        ]
+    )
+
+
+def resolve_target_ips(target: str, target_type: str) -> list[str]:
+    if target_type == "host":
+        return [target]
+
+    if target_type == "domain":
+        try:
+            infos = socket.getaddrinfo(target, None)
+        except socket.gaierror:
+            return []
+
+        ips = {item[4][0] for item in infos if item and item[4] and item[4][0]}
+        return sorted(ips)
+
+    return []
+
+
+def enforce_public_safety(target: str, target_type: str) -> None:
+    if not is_public_mode():
+        return
+
+    if target_type == "network":
+        raise ScanInputError("Network scans are disabled in public mode.")
+
+    ips = resolve_target_ips(target, target_type)
+    if not ips:
+        raise ScanInputError("Target could not be resolved to an IP address.")
+
+    for ip_s in ips:
+        if is_non_public_ip(ip_s):
+            raise ScanInputError(
+                "Scanning private or internal addresses is blocked in public mode."
+            )
+
+
 def evaluate_version_findings(product: str, version: str, port: int) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
 
@@ -106,7 +200,7 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
                 "type": "exposed_port",
                 "severity": severity,
                 "title": msg,
-                "evidence": f"Port {port} ist offen und von ausserhalb erreichbar.",
+                "evidence": f"Port {port} is open and externally reachable.",
             }
         )
 
@@ -120,8 +214,8 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
             {
                 "type": "outdated_service",
                 "severity": "medium",
-                "title": "OpenSSH Version wirkt veraltet",
-                "evidence": f"Gefunden: {product} {version}",
+                "title": "OpenSSH version appears outdated",
+                "evidence": f"Found: {product} {version}",
             }
         )
     elif "nginx" in product_l and version_tuple < (1, 20, 0):
@@ -129,8 +223,8 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
             {
                 "type": "outdated_service",
                 "severity": "medium",
-                "title": "Nginx Version wirkt veraltet",
-                "evidence": f"Gefunden: {product} {version}",
+                "title": "Nginx version appears outdated",
+                "evidence": f"Found: {product} {version}",
             }
         )
     elif "apache httpd" in product_l and version_tuple < (2, 4, 57):
@@ -138,8 +232,8 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
             {
                 "type": "outdated_service",
                 "severity": "medium",
-                "title": "Apache HTTPD Version wirkt veraltet",
-                "evidence": f"Gefunden: {product} {version}",
+                "title": "Apache HTTPD version appears outdated",
+                "evidence": f"Found: {product} {version}",
             }
         )
     elif "mysql" in product_l and version_tuple < (8, 0, 0):
@@ -147,8 +241,8 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
             {
                 "type": "outdated_service",
                 "severity": "medium",
-                "title": "MySQL Version wirkt veraltet",
-                "evidence": f"Gefunden: {product} {version}",
+                "title": "MySQL version appears outdated",
+                "evidence": f"Found: {product} {version}",
             }
         )
 
@@ -157,7 +251,7 @@ def evaluate_version_findings(product: str, version: str, port: int) -> list[dic
 
 def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    headers = {"User-Agent": "vScanner/2.0"}
+    headers = {"User-Agent": "vScanner/2.1"}
 
     for path in COMMON_LOGIN_PATHS:
         url = f"{base_url}{path}"
@@ -191,12 +285,12 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     return found[:10]
 
 
-def probe_http_service(ip: str, port: int) -> dict[str, Any] | None:
+def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     schemes = ["https", "http"] if port in {443, 8443} else ["http", "https"]
-    headers = {"User-Agent": "vScanner/2.0"}
+    headers = {"User-Agent": "vScanner/2.1"}
 
     for scheme in schemes:
-        url = f"{scheme}://{ip}:{port}"
+        url = f"{scheme}://{host_or_ip}:{port}"
         try:
             response = requests.get(
                 url,
@@ -221,7 +315,7 @@ def probe_http_service(ip: str, port: int) -> dict[str, Any] | None:
                 {
                     "type": "information_leak",
                     "severity": "low",
-                    "title": "X-Powered-By Header sichtbar",
+                    "title": "X-Powered-By header exposed",
                     "evidence": f"{powered_by}",
                 }
             )
@@ -231,19 +325,19 @@ def probe_http_service(ip: str, port: int) -> dict[str, Any] | None:
                 {
                     "type": "version_disclosure",
                     "severity": "low",
-                    "title": "Server Header verraet Version",
+                    "title": "Server header discloses version",
                     "evidence": server,
                 }
             )
 
-        logins = discover_login_pages(f"{scheme}://{ip}:{port}")
+        logins = discover_login_pages(f"{scheme}://{host_or_ip}:{port}")
         if logins:
             findings.append(
                 {
                     "type": "login_surface",
                     "severity": "info",
-                    "title": "Login-Endpunkte gefunden",
-                    "evidence": f"{len(logins)} moegliche Login-Seiten erkannt",
+                    "title": "Login endpoints discovered",
+                    "evidence": f"Detected {len(logins)} possible login pages",
                 }
             )
 
@@ -261,6 +355,79 @@ def probe_http_service(ip: str, port: int) -> dict[str, Any] | None:
         }
 
     return None
+
+
+def lightweight_port_scan(host_or_ip: str, ports: list[int], timeout_s: float = 1.5) -> list[dict[str, Any]]:
+    port_entries: list[dict[str, Any]] = []
+
+    for port in ports:
+        state = "closed"
+        try:
+            with socket.create_connection((host_or_ip, port), timeout=timeout_s):
+                state = "open"
+        except Exception:
+            state = "closed"
+
+        entry = {
+            "protocol": "tcp",
+            "port": port,
+            "state": state,
+            "name": COMMON_SERVICE_NAMES.get(port, "unknown"),
+            "product": "",
+            "version": "",
+            "extra_info": "",
+            "cpe": "",
+        }
+        port_entries.append(entry)
+
+    return port_entries
+
+
+def run_lightweight_scan(target: str, target_type: str) -> dict[str, Any]:
+    if target_type == "network":
+        raise ScanInputError("Network scans require nmap and are not available in lightweight mode.")
+
+    ips = resolve_target_ips(target, target_type)
+    if not ips:
+        raise ScanInputError("Target could not be resolved.")
+
+    hosts: list[dict[str, Any]] = []
+    scan_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 5432, 5900, 6379, 8080, 8443]
+
+    for ip_s in ips[:4]:
+        host_findings: list[dict[str, Any]] = []
+        port_entries = lightweight_port_scan(ip_s, scan_ports)
+
+        for entry in port_entries:
+            if entry["state"] == "open":
+                host_findings.extend(
+                    evaluate_version_findings(
+                        product=entry.get("name", ""),
+                        version=entry.get("version", ""),
+                        port=entry["port"],
+                    )
+                )
+
+        hosts.append(
+            {
+                "host": ip_s,
+                "state": "up",
+                "hostnames": [target] if target_type == "domain" else [],
+                "reverse_dns": safe_reverse_dns(ip_s),
+                "ports": port_entries,
+                "findings": host_findings,
+            }
+        )
+
+    return {
+        "command": "lightweight-scan",
+        "summary": {
+            "uphosts": str(len(hosts)),
+            "downhosts": "0",
+            "totalhosts": str(len(hosts)),
+        },
+        "hosts": hosts,
+    }
 
 
 def run_nmap_scan(target: str, profile: str) -> dict[str, Any]:
@@ -340,16 +507,37 @@ def build_risk_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
     return summary
 
 
+def enforce_rate_limit(client_ip: str) -> None:
+    window_s = 60
+    max_calls = 8
+    now = time.time()
+
+    hits = REQUEST_LOG.get(client_ip, [])
+    hits = [stamp for stamp in hits if now - stamp <= window_s]
+    if len(hits) >= max_calls:
+        raise ScanInputError("Rate limit exceeded. Please wait before starting another scan.")
+
+    hits.append(now)
+    REQUEST_LOG[client_ip] = hits
+
+
 def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
     target, target_type = normalize_target(raw_target)
 
     if target_type == "network" and profile == "deep":
-        raise ScanInputError(
-            "Deep Profile ist fuer grosse Netze nicht geeignet. Nutze quick oder network."
-        )
+        raise ScanInputError("Deep profile is not suitable for large networks. Use quick or network.")
+
+    enforce_public_safety(target, target_type)
 
     started_at = utc_now()
-    nmap_data = run_nmap_scan(target, profile)
+    use_lightweight = should_force_light_scan() or not nmap_available()
+
+    if use_lightweight:
+        nmap_data = run_lightweight_scan(target, target_type)
+        engine = "lightweight"
+    else:
+        nmap_data = run_nmap_scan(target, profile)
+        engine = "nmap"
 
     all_findings: list[dict[str, Any]] = []
     host_results: list[dict[str, Any]] = []
@@ -357,11 +545,7 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
     for host in nmap_data["hosts"]:
         host_findings = list(host.get("findings", []))
 
-        open_ports = [
-            entry["port"]
-            for entry in host.get("ports", [])
-            if entry.get("state") == "open"
-        ]
+        open_ports = [entry["port"] for entry in host.get("ports", []) if entry.get("state") == "open"]
 
         web_evidence: list[dict[str, Any]] = []
         for port in open_ports:
@@ -389,15 +573,15 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
 
     return {
         "meta": {
-            "scanner": "vScanner 2.0",
+            "scanner": "vScanner 2.1",
+            "engine": engine,
             "started_at": started_at,
             "finished_at": finished_at,
             "target": target,
             "target_type": target_type,
             "profile": profile,
-            "authorization_notice": (
-                "Nur auf Systeme scannen, fuer die eine explizite Berechtigung vorliegt."
-            ),
+            "public_mode": is_public_mode(),
+            "authorization_notice": "Only scan systems you are explicitly authorized to test.",
         },
         "nmap": {
             "command": nmap_data.get("command", ""),
@@ -409,6 +593,27 @@ def orchestrate_scan(raw_target: str, profile: str) -> dict[str, Any]:
     }
 
 
+@app.after_request
+def set_security_headers(response: Any) -> Any:
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'"
+    )
+    response.headers["Content-Security-Policy"] = csp
+    return response
+
+
 @app.route("/")
 def index() -> str:
     return render_template("index.html")
@@ -416,7 +621,14 @@ def index() -> str:
 
 @app.route("/api/health")
 def health() -> Any:
-    return jsonify({"status": "ok", "timestamp": utc_now()})
+    return jsonify(
+        {
+            "status": "ok",
+            "timestamp": utc_now(),
+            "public_mode": is_public_mode(),
+            "nmap_available": nmap_available(),
+        }
+    )
 
 
 @app.route("/api/client-ip")
@@ -433,9 +645,13 @@ def scan_api() -> Any:
     profile = (payload.get("profile") or "quick").lower()
 
     if profile not in {"quick", "deep", "network"}:
-        return jsonify({"error": "Ungueltiges Profil. Erlaubt: quick, deep, network."}), 400
+        return jsonify({"error": "Invalid profile. Allowed: quick, deep, network."}), 400
+
+    client = request.headers.get("X-Forwarded-For", "")
+    client_ip = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
+        enforce_rate_limit(client_ip)
         result = orchestrate_scan(target, profile)
         return jsonify(result)
     except ScanInputError as exc:
@@ -443,13 +659,14 @@ def scan_api() -> Any:
     except nmap.PortScannerError as exc:
         return jsonify(
             {
-                "error": "Nmap konnte nicht ausgefuehrt werden. Stelle sicher, dass nmap installiert ist.",
+                "error": "Nmap execution failed. Ensure nmap is installed for full scan mode.",
                 "details": str(exc),
             }
         ), 500
     except Exception as exc:
-        return jsonify({"error": "Scan fehlgeschlagen.", "details": str(exc)}), 500
+        return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    debug = os.getenv("FLASK_DEBUG", "0") == "1"
+    app.run(host="0.0.0.0", port=5000, debug=debug)

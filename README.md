@@ -31,6 +31,32 @@ Unauthorized scanning of third-party systems or networks may be illegal.
 - requests
 - Local Nmap installation (binary)
 
+## Vercel Deployment (Online)
+
+This project is now prepared for Vercel deployment:
+
+- `api/index.py` provides the serverless entrypoint
+- `vercel.json` routes all traffic to the Flask app
+- `requirements.txt` defines Python dependencies
+
+### Deploy Steps
+
+1. Push this repository to GitHub.
+2. Import the repository into Vercel.
+3. In Vercel Project Settings, add environment variables:
+  - `VSCANNER_PUBLIC_MODE=1`
+  - Optional: `VSCANNER_FORCE_LIGHT_SCAN=1`
+4. Deploy.
+
+### Important Runtime Note for Vercel
+
+In serverless environments, the full Nmap binary is often unavailable.
+vScanner therefore supports a lightweight fallback mode for online usage:
+
+- Lightweight mode scans a curated set of common ports.
+- It still performs HTTP fingerprinting and login-surface discovery.
+- Full network and deep low-level scans remain best on a local machine with Nmap installed.
+
 ## Installation
 
 1. Install Nmap:
@@ -75,6 +101,17 @@ Example for `POST /api/scan`:
 - `templates/index.html` - main UI template
 - `static/style.css` - modern visual design and animations
 - `static/app.js` - frontend logic and result rendering
+- `api/index.py` - Vercel serverless entrypoint
+- `vercel.json` - Vercel routing/build config
+- `requirements.txt` - Python dependency manifest
+
+## Security Hardening Included
+
+- Strict input validation for target types
+- Public mode guard against private/internal target scanning
+- Basic API rate limiting per client IP
+- Security headers (CSP, X-Frame-Options, X-Content-Type-Options, and more)
+- Debug mode disabled by default
 
 ## Note on Vercel Blob Storage
 
