@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vScanner | Security Console</title>
+    <title>vScanner | Security Workspace</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700;800&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -12,55 +12,61 @@
 <body>
     <div class="ambient ambient-a"></div>
     <div class="ambient ambient-b"></div>
-    <div class="ambient ambient-c"></div>
 
     <main class="app-shell">
-        <section class="topbar card">
-            <div>
-                <div class="hero-badge">vScanner Command</div>
-                <h1>External Attack Surface Console</h1>
+        <header class="header card">
+            <div class="header-main">
+                <div class="badge">vScanner Analyst Console</div>
+                <h1>External Attack Surface & Vulnerability Management</h1>
                 <p>
-                    Vulnerability reconnaissance, service fingerprinting, and exposure reporting
-                    for authorized targets.
+                    Übersichtliche Sicherheitsanalyse für autorisierte Ziele mit Risiko-Bewertung,
+                    Exposures und exportierbaren Reports.
                 </p>
             </div>
-            <div class="kpi-grid">
-                <article class="kpi-card">
+            <div class="header-stats">
+                <div class="stat-box">
                     <span>Engine</span>
                     <strong id="kpiEngine">-</strong>
-                </article>
-                <article class="kpi-card">
-                    <span>Open Ports</span>
+                </div>
+                <div class="stat-box">
+                    <span>Offene Ports</span>
                     <strong id="kpiPorts">0</strong>
-                </article>
-                <article class="kpi-card">
+                </div>
+                <div class="stat-box">
                     <span>Findings</span>
                     <strong id="kpiFindings">0</strong>
-                </article>
+                </div>
+                <div class="stat-box risk-box">
+                    <span>Risk Level</span>
+                    <strong id="kpiRiskLevel">Info</strong>
+                </div>
             </div>
-        </section>
+        </header>
 
         <section class="scan-panel card">
-            <div class="panel-header">
-                <h2>Scan Profile</h2>
-                <button id="ipButton" class="ghost-button" type="button">Show My IP</button>
+            <div class="panel-headline">
+                <h2>Scan-Konfiguration</h2>
+                <div class="header-actions">
+                    <button id="ipButton" class="ghost-button" type="button">Meine IP</button>
+                    <button id="exportPdfButton" class="primary-button" type="button" disabled>PDF-Report exportieren</button>
+                </div>
             </div>
 
             <form id="scanForm" class="scan-form">
                 <div class="field-grid">
                     <div>
-                        <label for="target">Target (IP, Domain, CIDR)</label>
+                        <label for="target">Ziel (IP, Domain, CIDR)</label>
                         <input
                             id="target"
                             name="target"
                             type="text"
-                            placeholder="example.com or 203.0.113.10"
+                            placeholder="z. B. example.com oder 203.0.113.10"
                             required
                         />
                     </div>
 
                     <div>
-                        <label for="profile">Detection Profile</label>
+                        <label for="profile">Profil</label>
                         <select id="profile" name="profile">
                             <option value="quick">Quick Discovery</option>
                             <option value="deep">Deep Service Analysis</option>
@@ -69,7 +75,7 @@
                     </div>
 
                     <div>
-                        <label for="portStrategy">Port Coverage</label>
+                        <label for="portStrategy">Port-Abdeckung</label>
                         <select id="portStrategy" name="portStrategy">
                             <option value="standard">Standard</option>
                             <option value="aggressive">Aggressive</option>
@@ -78,30 +84,31 @@
                 </div>
 
                 <p class="disclaimer">
-                    Legal notice: scan only systems you are explicitly authorized to test.
+                    Rechtlicher Hinweis: Scanne ausschließlich Systeme, für die du eine ausdrückliche Erlaubnis hast.
                 </p>
 
-                <button id="scanButton" class="primary-button" type="submit">Launch Scan</button>
+                <button id="scanButton" class="primary-button" type="submit">Scan starten</button>
             </form>
         </section>
 
-        <section class="results-grid">
-            <article class="card summary-card">
-                <h3>Risk Matrix</h3>
+        <section class="results-layout">
+            <aside class="card sidebar">
+                <h3>Risiko-Zusammenfassung</h3>
                 <div id="riskSummary" class="risk-list"></div>
+                <canvas id="riskChart" width="320" height="220" aria-label="Risk Chart"></canvas>
                 <div id="scanMeta" class="meta"></div>
-            </article>
+            </aside>
 
-            <article class="card output-card">
-                <div class="panel-header">
-                    <h3>Findings Stream</h3>
+            <section class="card findings-panel">
+                <div class="panel-headline">
+                    <h3>Findings</h3>
                     <span id="statusPill" class="pill idle">Idle</span>
                 </div>
                 <div id="errorBox" class="error-box hidden"></div>
                 <div id="resultOutput" class="result-output">
-                    Launch a scan to populate findings.
+                    <p>Starte einen Scan, um strukturierte Ergebnisse zu sehen.</p>
                 </div>
-            </article>
+            </section>
         </section>
     </main>
 

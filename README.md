@@ -21,6 +21,8 @@ It has now evolved into a much larger project: a modern, full-featured vulnerabi
 - Discover login surfaces (for example `/login`, `/admin`, `/wp-login.php`)
 - Provide forensic indicators such as reverse DNS, open ports, and scan timestamps
 - Deliver results through a modern, animated, and clean reporting interface
+- Show a clear Risk Level based on critical/high/medium/low/info counts
+- Export a professional PDF report with severity chart and findings details
 
 ## Important Legal Notice
 
