@@ -12,6 +12,9 @@ const ipButton = document.getElementById("ipButton");
 const exportPdfButton = document.getElementById("exportPdfButton");
 const refreshHistoryButton = document.getElementById("refreshHistoryButton");
 const historyOutput = document.getElementById("historyOutput");
+const projectSelect = document.getElementById("projectSelect");
+const scanProjectSelect = document.getElementById("scanProjectSelect");
+const newProjectButton = document.getElementById("newProjectButton");
 const severityFilter = document.getElementById("severityFilter");
 const findingSearch = document.getElementById("findingSearch");
 const apiState = document.getElementById("apiState");
@@ -30,6 +33,7 @@ const navButtons = Array.from(document.querySelectorAll(".nav-item"));
 const tabs = Array.from(document.querySelectorAll(".tab-panel"));
 
 let lastScanResult = null;
+let activeProjectId = "default";
 
 const ORDER = ["critical", "high", "medium", "low", "info"];
 const COLORS = {
@@ -161,6 +165,65 @@ function drawSurfaceChart(metrics = {}) {
         ctx.fillStyle = "#9eb8d9";
         ctx.font = "11px Outfit";
         ctx.fillText(bar.label, x - 6, baseY + 16);
+    });
+}
+
+function drawTrendChart(points = []) {
+    const ctx = surfaceChart.getContext("2d");
+    const width = surfaceChart.width;
+    const height = surfaceChart.height;
+    ctx.clearRect(0, 0, width, height);
+
+    ctx.strokeStyle = "rgba(88, 120, 160, 0.4)";
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i += 1) {
+        const y = 36 + i * 50;
+        ctx.beginPath();
+        ctx.moveTo(36, y);
+        ctx.lineTo(width - 24, y);
+        ctx.stroke();
+    }
+
+    if (!points.length) {
+        ctx.fillStyle = "#9ab6d8";
+        ctx.font = "13px Outfit";
+        ctx.fillText("Keine Trend-Daten vorhanden", 42, 58);
+        return;
+    }
+
+    const maxValue = Math.max(1, ...points.map((point) => Number(point.true_risk_score || 0)));
+    const chartW = width - 70;
+    const chartH = height - 70;
+    const stepX = chartW / Math.max(1, points.length - 1);
+
+    ctx.strokeStyle = "#1ec7c3";
+    ctx.lineWidth = 2.2;
+    ctx.beginPath();
+    points.forEach((point, index) => {
+        const score = Number(point.true_risk_score || 0);
+        const x = 36 + index * stepX;
+        const y = 28 + chartH - (score / maxValue) * chartH;
+        if (index === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+    });
+    ctx.stroke();
+
+    points.forEach((point, index) => {
+        const score = Number(point.true_risk_score || 0);
+        const x = 36 + index * stepX;
+        const y = 28 + chartH - (score / maxValue) * chartH;
+        ctx.fillStyle = "#1ec7c3";
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        const stamp = String(point.created_at || "").slice(11, 16) || "--:--";
+        ctx.fillStyle = "#8ea9ca";
+        ctx.font = "10px Outfit";
+        ctx.fillText(stamp, x - 12, height - 12);
     });
 }
 
@@ -299,6 +362,67 @@ function renderResult() {
     drawSurfaceChart(lastScanResult.metrics || {});
 }
 
+function syncProjectSelects(items) {
+    const options = (items || []).map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
+    projectSelect.innerHTML = options;
+    scanProjectSelect.innerHTML = options;
+
+    projectSelect.value = activeProjectId;
+    scanProjectSelect.value = activeProjectId;
+}
+
+async function loadProjects() {
+    try {
+        const response = await fetch("/api/projects");
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Projects konnten nicht geladen werden.");
+        }
+        const items = data.items || [];
+        if (!items.length) {
+            return;
+        }
+        if (!items.some((item) => item.id === activeProjectId)) {
+            activeProjectId = items[0].id;
+        }
+        syncProjectSelects(items);
+    } catch (_error) {
+        // Keep defaults if project list fails.
+    }
+}
+
+async function loadProjectDashboard() {
+    try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/dashboard`);
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Dashboard konnte nicht geladen werden.");
+        }
+
+        const totals = data.totals || {};
+        kpiTrueRisk.textContent = String(totals.avg_risk || 0);
+        kpiExposed.textContent = String(totals.exposed_services || 0);
+        kpiCve.textContent = String(totals.cve_count || 0);
+        kpiPorts.textContent = String(totals.open_ports || 0);
+        kpiEngine.textContent = "history";
+        kpiRiskLevel.textContent = Object.entries(data.risk_distribution || {}).sort((a, b) => b[1] - a[1])[0]?.[0]?.toUpperCase() || "LOW";
+
+        drawDonutChart(riskChart, { ...(data.risk_distribution || {}), info: 0 });
+        drawTrendChart(data.trend || []);
+        renderRiskSummary({ ...(data.risk_distribution || {}), info: 0 });
+
+        const metaLines = [
+            `Project: ${data.project?.name || "-"}`,
+            `Total Scans: ${totals.scans || 0}`,
+            `Total Findings: ${totals.findings || 0}`,
+            `Last Scan: ${(data.recent_scans || [])[0]?.created_at || "-"}`,
+        ];
+        scanMeta.innerHTML = metaLines.map((line) => `<div>${esc(line)}</div>`).join("");
+    } catch (_error) {
+        // Dashboard still works with latest scan fallback.
+    }
+}
+
 function activateTab(tabName) {
     navButtons.forEach((button) => {
         button.classList.toggle("active", button.dataset.tab === tabName);
@@ -368,7 +492,7 @@ function historyItemHtml(item) {
 async function loadHistory() {
     historyOutput.innerHTML = '<div class="summary-banner">History wird geladen...</div>';
     try {
-        const response = await fetch("/api/reports?limit=50");
+        const response = await fetch(`/api/reports?limit=50&project_id=${encodeURIComponent(activeProjectId)}`);
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || "History konnte nicht geladen werden.");
@@ -424,6 +548,7 @@ form.addEventListener("submit", async (event) => {
         target: targetInput.value.trim(),
         profile: profileSelect.value,
         port_strategy: portStrategySelect.value,
+        project_id: scanProjectSelect.value || activeProjectId,
     };
 
     setStatus("running", "Scanning");
@@ -448,6 +573,7 @@ form.addEventListener("submit", async (event) => {
         exportPdfButton.disabled = false;
         renderResult();
         await loadHistory();
+        await loadProjectDashboard();
         activateTab("dashboard");
         setStatus("done", "Fertig");
     } catch (error) {
@@ -485,6 +611,45 @@ ipButton.addEventListener("click", async () => {
 exportPdfButton.addEventListener("click", () => window.downloadReportPdf());
 refreshHistoryButton.addEventListener("click", loadHistory);
 
+projectSelect.addEventListener("change", async () => {
+    activeProjectId = projectSelect.value || "default";
+    scanProjectSelect.value = activeProjectId;
+    await loadHistory();
+    await loadProjectDashboard();
+});
+
+scanProjectSelect.addEventListener("change", () => {
+    activeProjectId = scanProjectSelect.value || "default";
+    projectSelect.value = activeProjectId;
+});
+
+newProjectButton.addEventListener("click", async () => {
+    const name = prompt("Projektname eingeben (z.B. simi.ch)");
+    if (!name || !name.trim()) {
+        return;
+    }
+    try {
+        const response = await fetch("/api/projects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: name.trim() }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Projekt konnte nicht erstellt werden.");
+        }
+
+        await loadProjects();
+        activeProjectId = data.id;
+        projectSelect.value = data.id;
+        scanProjectSelect.value = data.id;
+        await loadHistory();
+        await loadProjectDashboard();
+    } catch (error) {
+        showError(error.message || "Projektanlage fehlgeschlagen.");
+    }
+});
+
 navButtons.forEach((button) => {
     button.addEventListener("click", () => {
         activateTab(button.dataset.tab);
@@ -498,4 +663,7 @@ renderRiskSummary({});
 drawDonutChart(riskChart, {});
 drawSurfaceChart({});
 loadHealth();
-loadHistory();
+loadProjects().then(async () => {
+    await loadHistory();
+    await loadProjectDashboard();
+});

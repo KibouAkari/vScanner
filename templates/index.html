@@ -16,8 +16,8 @@
     <div class="layout">
         <aside class="sidebar-nav">
             <div class="brand-block">
-                <div class="brand-title">Vscanner SurfaceScan</div>
-                <div class="brand-sub">Web Surface Security Scanner</div>
+                <div class="brand-title">Vscanner</div>
+                <div class="brand-sub">Security Scanner</div>
             </div>
 
             <div class="side-label">Navigation</div>
@@ -46,11 +46,13 @@
         <main class="main-zone">
             <header class="topbar card">
                 <div>
-                    <div class="eyebrow">Vscanner Professional</div>
+                    <div class="eyebrow">Vscanner</div>
                     <h1>Security Dashboard</h1>
                     <p>Realtime Security Monitoring and actionable exposure analytics</p>
                 </div>
                 <div class="top-actions">
+                    <select id="projectSelect" class="toolbar-select" aria-label="Projekt auswaehlen"></select>
+                    <button id="newProjectButton" class="ghost-button" type="button">New Project</button>
                     <button class="ghost-button" type="button" onclick="window.loadHistory()">Refresh</button>
                     <button class="primary-button" type="button" onclick="window.activateTab('scan')">New Scan</button>
                 </div>
@@ -119,6 +121,10 @@
                             <div>
                                 <label for="target">Target</label>
                                 <input id="target" name="target" type="text" placeholder="example.com" required />
+                            </div>
+                            <div>
+                                <label for="scanProjectSelect">Project</label>
+                                <select id="scanProjectSelect" name="scanProjectSelect"></select>
                             </div>
                             <div>
                                 <label for="profile">Profile</label>

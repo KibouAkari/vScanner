@@ -1,6 +1,6 @@
 :root {
-    --bg: #050b16;
-    --bg-soft: #081124;
+    --bg: #030507;
+    --bg-soft: #060b14;
     --surface: #0d162a;
     --surface-2: #121f36;
     --line: rgba(95, 124, 164, 0.3);
@@ -221,6 +221,16 @@ h3 {
     flex-wrap: wrap;
 }
 
+.toolbar-select {
+    border-radius: 9px;
+    border: 1px solid rgba(99, 134, 177, 0.35);
+    background: rgba(12, 20, 35, 0.9);
+    color: #ddedff;
+    padding: 0.5rem 0.65rem;
+    min-width: 180px;
+    font-family: "Outfit", sans-serif;
+}
+
 .primary-button,
 .ghost-button {
     border-radius: 10px;
@@ -395,7 +405,7 @@ canvas {
 
 .field-grid {
     display: grid;
-    grid-template-columns: 2fr 1fr 1fr;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
     gap: 0.55rem;
 }
 

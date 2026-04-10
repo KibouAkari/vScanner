@@ -123,6 +123,8 @@ WEB_CANDIDATE_PORTS = {
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
 DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
+DEFAULT_PROJECT_ID = "default"
+DEFAULT_PROJECT_NAME = "General"
 
 CVE_RULES = [
     {
@@ -175,9 +177,20 @@ def init_report_store() -> None:
     with db_connection() as connection:
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS reports (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                project_name TEXT NOT NULL,
                 target TEXT NOT NULL,
                 profile TEXT NOT NULL,
                 risk_level TEXT NOT NULL,
@@ -191,21 +204,184 @@ def init_report_store() -> None:
             """
         )
 
+        existing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(reports)").fetchall()
+        }
+        if "project_id" not in existing_columns:
+            connection.execute(
+                "ALTER TABLE reports ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        if "project_name" not in existing_columns:
+            connection.execute(
+                "ALTER TABLE reports ADD COLUMN project_name TEXT NOT NULL DEFAULT 'General'"
+            )
 
-def save_report_entry(result: dict[str, Any]) -> str:
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO projects (id, name, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, utc_now()),
+        )
+
+
+def list_projects() -> list[dict[str, Any]]:
+    with db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT p.id,
+                   p.name,
+                   p.created_at,
+                   COUNT(r.id) AS scan_count,
+                   COALESCE(ROUND(AVG(r.true_risk_score), 1), 0) AS avg_risk,
+                   COALESCE(MAX(r.created_at), p.created_at) AS last_scan_at
+            FROM projects p
+            LEFT JOIN reports r ON r.project_id = p.id
+            GROUP BY p.id, p.name, p.created_at
+            ORDER BY p.created_at ASC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_project(project_id: str | None) -> dict[str, Any] | None:
+    safe_id = (project_id or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    with db_connection() as connection:
+        row = connection.execute(
+            "SELECT id, name, created_at FROM projects WHERE id = ?",
+            (safe_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def create_project(name: str) -> dict[str, Any]:
+    clean_name = (name or "").strip()
+    if not clean_name:
+        raise ScanInputError("Project name is required.")
+    if len(clean_name) > 80:
+        raise ScanInputError("Project name is too long (max 80 chars).")
+
+    project_id = str(uuid.uuid4())
+    now = utc_now()
+    with db_connection() as connection:
+        try:
+            connection.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
+                (project_id, clean_name, now),
+            )
+        except sqlite3.IntegrityError:
+            raise ScanInputError("Project name already exists.")
+
+    return {"id": project_id, "name": clean_name, "created_at": now}
+
+
+def get_project_dashboard(project_id: str) -> dict[str, Any]:
+    with db_connection() as connection:
+        project = connection.execute(
+            "SELECT id, name, created_at FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if not project:
+            raise ScanInputError("Project not found.")
+
+        totals = connection.execute(
+            """
+            SELECT COUNT(*) AS scans,
+                   COALESCE(ROUND(AVG(true_risk_score), 1), 0) AS avg_risk,
+                   COALESCE(SUM(total_findings), 0) AS findings,
+                   COALESCE(SUM(open_ports), 0) AS open_ports,
+                   COALESCE(SUM(exposed_services), 0) AS exposed_services,
+                   COALESCE(SUM(cve_count), 0) AS cve_count
+            FROM reports
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
+        trend_rows = connection.execute(
+            """
+            SELECT created_at, true_risk_score, total_findings
+            FROM reports
+            WHERE project_id = ?
+            ORDER BY created_at DESC
+            LIMIT 24
+            """,
+            (project_id,),
+        ).fetchall()
+
+        risk_rows = connection.execute(
+            """
+            SELECT risk_level, COUNT(*) AS count
+            FROM reports
+            WHERE project_id = ?
+            GROUP BY risk_level
+            """,
+            (project_id,),
+        ).fetchall()
+
+        recent_rows = connection.execute(
+            """
+            SELECT id, created_at, target, profile, risk_level, true_risk_score, total_findings
+            FROM reports
+            WHERE project_id = ?
+            ORDER BY created_at DESC
+            LIMIT 8
+            """,
+            (project_id,),
+        ).fetchall()
+
+    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for row in risk_rows:
+        level = (row["risk_level"] or "low").lower()
+        if level in risk_distribution:
+            risk_distribution[level] = int(row["count"] or 0)
+
+    trend = [dict(row) for row in reversed(trend_rows)]
+
+    return {
+        "project": dict(project),
+        "totals": dict(totals),
+        "risk_distribution": risk_distribution,
+        "trend": trend,
+        "recent_scans": [dict(row) for row in recent_rows],
+    }
+
+
+def maybe_sync_report_to_blob(report_id: str, report_data: dict[str, Any]) -> None:
+    blob_write_url = os.getenv("VSCANNER_BLOB_WRITE_URL", "").strip()
+    if not blob_write_url:
+        return
+
+    target_url = f"{blob_write_url.rstrip('/')}/{report_id}.json"
+    try:
+        requests.put(
+            target_url,
+            data=json.dumps(report_data),
+            headers={"Content-Type": "application/json"},
+            timeout=10,
+        )
+    except Exception:
+        # Local report persistence remains the source of truth even if blob sync fails.
+        return
+
+
+def save_report_entry(result: dict[str, Any], project_id: str, project_name: str) -> str:
     report_id = str(uuid.uuid4())
     metrics = result.get("metrics", {})
     with db_connection() as connection:
         connection.execute(
             """
             INSERT INTO reports (
-                id, created_at, target, profile, risk_level, true_risk_score,
+                id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
                 total_findings, open_ports, exposed_services, cve_count, data_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 report_id,
                 utc_now(),
+                project_id,
+                project_name,
                 result.get("meta", {}).get("target", "-"),
                 result.get("meta", {}).get("profile", "quick"),
                 result.get("meta", {}).get("risk_level", "low"),
@@ -217,22 +393,34 @@ def save_report_entry(result: dict[str, Any]) -> str:
                 json.dumps(result),
             ),
         )
+    maybe_sync_report_to_blob(report_id, result)
     return report_id
 
 
-def list_report_entries(limit: int = 40) -> list[dict[str, Any]]:
+def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[dict[str, Any]]:
     safe_limit = max(1, min(limit, 200))
-    with db_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT id, created_at, target, profile, risk_level, true_risk_score,
+    if project_id:
+        query = """
+            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
+                   total_findings, open_ports, exposed_services, cve_count
+            FROM reports
+            WHERE project_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params: tuple[Any, ...] = (project_id, safe_limit)
+    else:
+        query = """
+            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
                    total_findings, open_ports, exposed_services, cve_count
             FROM reports
             ORDER BY created_at DESC
             LIMIT ?
-            """,
-            (safe_limit,),
-        ).fetchall()
+        """
+        params = (safe_limit,)
+
+    with db_connection() as connection:
+        rows = connection.execute(query, params).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -271,13 +459,18 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
     metrics = report.get("metrics", {})
     findings = report.get("finding_items", [])
 
-    write_line("vScanner Security Report", size=16, bold=True, gap=20)
+    project_name = meta.get("project_name", DEFAULT_PROJECT_NAME)
+    write_line("vScanner Executive Report v2", size=16, bold=True, gap=20)
+    write_line(f"Project: {project_name}")
     write_line(f"Target: {meta.get('target', '-')}")
     write_line(f"Profile: {meta.get('profile', '-')} | Engine: {meta.get('engine', '-')}")
     write_line(f"Start: {meta.get('started_at', '-')} | End: {meta.get('finished_at', '-')}")
-    write_line(f"Risk Level: {meta.get('risk_level', 'low')} | True Risk Score: {report.get('true_risk_score', 0)}", bold=True)
+    write_line(
+        f"Risk Level: {meta.get('risk_level', 'low')} | True Risk Score: {report.get('true_risk_score', 0)}",
+        bold=True,
+    )
     write_line("")
-    write_line("Dashboard Metrics", bold=True)
+    write_line("Summary", bold=True)
     write_line(
         "Critical: {critical} | High: {high} | Medium: {medium} | Low: {low}".format(
             critical=summary.get("critical", 0),
@@ -293,7 +486,44 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
             cve_candidates=metrics.get("cve_candidates", 0),
         )
     )
-    write_line("")
+    write_line("", gap=18)
+    write_line("Trend Snapshot", bold=True)
+
+    project_id = meta.get("project_id")
+    trend_points: list[dict[str, Any]] = []
+    if project_id:
+        try:
+            dashboard_data = get_project_dashboard(project_id)
+            trend_points = dashboard_data.get("trend", [])[-12:]
+        except Exception:
+            trend_points = []
+
+    chart_x = 44
+    chart_y = y - 120
+    chart_w = width - 88
+    chart_h = 90
+    pdf.setStrokeColorRGB(0.27, 0.34, 0.45)
+    pdf.rect(chart_x, chart_y, chart_w, chart_h, stroke=1, fill=0)
+
+    if trend_points:
+        max_score = max(float(point.get("true_risk_score", 0)) for point in trend_points) or 1.0
+        step_x = chart_w / max(1, (len(trend_points) - 1))
+        pdf.setStrokeColorRGB(0.12, 0.64, 0.76)
+        pdf.setLineWidth(1.8)
+        last_x = chart_x
+        last_y = chart_y
+        for idx, point in enumerate(trend_points):
+            score = float(point.get("true_risk_score", 0))
+            x_pos = chart_x + step_x * idx
+            y_pos = chart_y + 8 + (chart_h - 16) * (score / max_score)
+            if idx == 0:
+                pdf.circle(x_pos, y_pos, 2, stroke=1, fill=1)
+            else:
+                pdf.line(last_x, last_y, x_pos, y_pos)
+                pdf.circle(x_pos, y_pos, 2, stroke=1, fill=1)
+            last_x, last_y = x_pos, y_pos
+    y = chart_y - 20
+
     write_line("Top Findings", bold=True)
 
     for item in findings[:120]:
@@ -307,6 +537,22 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
             size=9,
             gap=12,
         )
+
+    if findings:
+        pdf.showPage()
+        y = height - 40
+        write_line("Detailed Findings (continued)", size=14, bold=True, gap=18)
+        for item in findings[120:280]:
+            write_line(
+                "[{sev}] {host} | {title} | {evidence}".format(
+                    sev=(item.get("severity") or "low").upper(),
+                    host=item.get("host", "-"),
+                    title=item.get("title", "Finding"),
+                    evidence=item.get("evidence", "-"),
+                ),
+                size=9,
+                gap=12,
+            )
 
     pdf.save()
     buffer.seek(0)
@@ -399,7 +645,11 @@ def resolve_target_ips(target: str, target_type: str) -> list[str]:
         except socket.gaierror:
             return []
 
-        ips = {item[4][0] for item in infos if item and item[4] and item[4][0]}
+        ips = {
+            item[4][0]
+            for item in infos
+            if item and item[4] and item[4][0] and isinstance(item[4][0], str)
+        }
         return sorted(ips)
 
     return []
@@ -1087,7 +1337,11 @@ def is_likely_web_port(port_entry: dict[str, Any]) -> bool:
 
 
 def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[str, Any]:
-    target, target_type = normalize_target(raw_target)
+    target_input = (raw_target or "").strip()
+    if not target_input:
+        raise ScanInputError("Please provide a target.")
+
+    target, target_type = normalize_target(target_input)
 
     if target_type == "network" and profile in {"deep", "adaptive"}:
         raise ScanInputError("Deep/Adaptive profile is not suitable for large networks. Use quick or network.")
@@ -1257,12 +1511,36 @@ def client_ip() -> Any:
     return jsonify({"ip": candidate})
 
 
+@app.route("/api/projects", methods=["GET", "POST"])
+def projects_api() -> Any:
+    if request.method == "GET":
+        return jsonify({"items": list_projects()})
+
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name", "")
+    try:
+        project = create_project(name)
+        return jsonify(project), 201
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>/dashboard")
+def project_dashboard_api(project_id: str) -> Any:
+    try:
+        data = get_project_dashboard(project_id)
+        return jsonify(data)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
 @app.route("/api/scan", methods=["POST"])
 def scan_api() -> Any:
     payload = request.get_json(silent=True) or {}
     target = payload.get("target", "")
     profile = (payload.get("profile") or "quick").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
+    project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
 
     if profile not in {"quick", "deep", "adaptive", "network", "low_noise"}:
         return jsonify({"error": "Invalid profile. Allowed: quick, deep, adaptive, network, low_noise."}), 400
@@ -1274,9 +1552,16 @@ def scan_api() -> Any:
     client_ip = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
+        project = get_project(project_id)
+        if not project:
+            raise ScanInputError("Project not found.")
+
         enforce_rate_limit(client_ip)
         result = orchestrate_scan(target, profile, port_strategy)
-        report_id = save_report_entry(result)
+        result["meta"]["project_id"] = project["id"]
+        result["meta"]["project_name"] = project["name"]
+
+        report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
         result["report_id"] = report_id
         return jsonify(result)
     except ScanInputError as exc:
@@ -1298,7 +1583,8 @@ def list_reports_api() -> Any:
         limit = int(request.args.get("limit", "40"))
     except ValueError:
         limit = 40
-    return jsonify({"items": list_report_entries(limit=limit)})
+    project_id = request.args.get("project_id", "").strip() or None
+    return jsonify({"items": list_report_entries(limit=limit, project_id=project_id)})
 
 
 @app.route("/api/reports/<report_id>")
