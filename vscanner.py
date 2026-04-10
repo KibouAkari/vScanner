@@ -736,6 +736,35 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         low_noise_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443]
         return sorted(set(low_noise_ports))
 
+    if profile == "adaptive":
+        adaptive_seed = [
+            21,
+            22,
+            25,
+            53,
+            80,
+            110,
+            143,
+            389,
+            443,
+            445,
+            587,
+            993,
+            995,
+            1433,
+            3306,
+            3389,
+            5432,
+            6379,
+            8080,
+            8443,
+            9200,
+            27017,
+        ]
+        if port_strategy == "aggressive":
+            adaptive_seed.extend([1521, 2049, 2375, 5601, 7001, 8888, 9000, 11211])
+        return sorted(set(adaptive_seed))
+
     ranges = set(base_common)
     if profile == "deep":
         ranges.update(range(1, 2049))
@@ -807,9 +836,15 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
     }
 
 
-def lightweight_port_scan(host_or_ip: str, ports: list[int], timeout_s: float = 0.9) -> list[dict[str, Any]]:
+def lightweight_port_scan(
+    host_or_ip: str,
+    ports: list[int],
+    timeout_s: float = 0.9,
+    max_workers: int = 140,
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=180) as executor:
+    worker_count = max(20, min(max_workers, 240))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(_scan_single_port, host_or_ip, port, timeout_s) for port in ports]
         for future in concurrent.futures.as_completed(futures):
             results.append(future.result())
@@ -829,12 +864,46 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
     scan_ports = build_port_list(profile=profile, port_strategy=port_strategy)
     if profile == "low_noise":
         timeout_s = 0.8
+        max_workers = 36
+    elif profile == "adaptive":
+        timeout_s = 0.35 if port_strategy == "standard" else 0.42
+        max_workers = 120
     else:
         timeout_s = 0.35 if port_strategy == "standard" else 0.45
+        max_workers = 180
 
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
-        port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s)
+        if profile == "adaptive":
+            stage_one = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
+            open_stage_one = [entry for entry in stage_one if entry["state"] == "open"]
+
+            pivot_ports = {entry["port"] for entry in open_stage_one}
+            expanded_ports = set()
+            for pivot in pivot_ports:
+                for candidate in range(max(1, pivot - 6), min(65535, pivot + 6) + 1):
+                    if candidate not in pivot_ports:
+                        expanded_ports.add(candidate)
+
+            if port_strategy == "aggressive":
+                expanded_ports.update(range(1, 2049))
+
+            stage_two: list[dict[str, Any]] = []
+            if expanded_ports:
+                stage_two = lightweight_port_scan(
+                    ip_s,
+                    sorted(expanded_ports),
+                    timeout_s=min(0.28, timeout_s),
+                    max_workers=110,
+                )
+
+            merged: dict[int, dict[str, Any]] = {entry["port"]: entry for entry in stage_one}
+            for entry in stage_two:
+                if entry["port"] not in merged or entry["state"] == "open":
+                    merged[entry["port"]] = entry
+            port_entries = sorted(merged.values(), key=lambda item: item["port"])
+        else:
+            port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
 
         for entry in port_entries:
             if entry["state"] == "open":
@@ -875,6 +944,11 @@ def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
 
     if profile == "low_noise":
         return "-Pn -T2 --open -sS --top-ports 200"
+
+    if profile == "adaptive":
+        if port_strategy == "aggressive":
+            return "-Pn -T3 --open -sS -sV --version-light --top-ports 4000"
+        return "-Pn -T3 --open -sS -sV --version-light --top-ports 1800"
 
     if profile == "quick":
         if port_strategy == "aggressive":
@@ -1015,8 +1089,8 @@ def is_likely_web_port(port_entry: dict[str, Any]) -> bool:
 def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[str, Any]:
     target, target_type = normalize_target(raw_target)
 
-    if target_type == "network" and profile == "deep":
-        raise ScanInputError("Deep profile is not suitable for large networks. Use quick or network.")
+    if target_type == "network" and profile in {"deep", "adaptive"}:
+        raise ScanInputError("Deep/Adaptive profile is not suitable for large networks. Use quick or network.")
 
     enforce_public_safety(target, target_type)
 
@@ -1190,8 +1264,8 @@ def scan_api() -> Any:
     profile = (payload.get("profile") or "quick").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
 
-    if profile not in {"quick", "deep", "network", "low_noise"}:
-        return jsonify({"error": "Invalid profile. Allowed: quick, deep, network, low_noise."}), 400
+    if profile not in {"quick", "deep", "adaptive", "network", "low_noise"}:
+        return jsonify({"error": "Invalid profile. Allowed: quick, deep, adaptive, network, low_noise."}), 400
 
     if port_strategy not in {"standard", "aggressive"}:
         return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400

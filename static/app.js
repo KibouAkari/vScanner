@@ -309,6 +309,8 @@ function activateTab(tabName) {
     });
 }
 
+window.activateTab = activateTab;
+
 async function fetchPublicIp() {
     const endpoints = ["https://api64.ipify.org?format=json", "https://api.ipify.org?format=json"];
     for (const url of endpoints) {
@@ -383,6 +385,8 @@ async function loadHistory() {
         historyOutput.innerHTML = `<div class="summary-banner">${esc(error.message || "History Fehler")}</div>`;
     }
 }
+
+window.loadHistory = loadHistory;
 
 window.loadReportDetail = async function loadReportDetail(reportId) {
     try {

@@ -16,146 +16,165 @@
     <div class="layout">
         <aside class="sidebar-nav">
             <div class="brand-block">
-                <div class="brand-title">Vscanner</div>
-                <div class="brand-sub">Security Scanner Suite</div>
+                <div class="brand-title">Vscanner SurfaceScan</div>
+                <div class="brand-sub">Web Surface Security Scanner</div>
             </div>
 
+            <div class="side-label">Navigation</div>
             <nav class="nav-list">
                 <button class="nav-item active" data-tab="dashboard">Dashboard</button>
-                <button class="nav-item" data-tab="scan">Scan Studio</button>
-                <button class="nav-item" data-tab="history">Report History</button>
+                <button class="nav-item" data-tab="scan">New Scan</button>
+                <button class="nav-item" data-tab="history">Analytics</button>
                 <button class="nav-item" data-tab="settings">Settings</button>
             </nav>
 
+            <div class="side-label">Quick Actions</div>
+            <div class="quick-grid">
+                <button id="ipButton" class="quick-btn" type="button">IP</button>
+                <button id="refreshHistoryButton" class="quick-btn" type="button">Sync</button>
+                <button id="exportPdfButton" class="quick-btn" type="button" disabled>PDF</button>
+                <button class="quick-btn" type="button" onclick="window.loadHistory()">Logs</button>
+            </div>
+
+            <div class="side-label">System Status</div>
             <div class="side-footer">
-                <div class="side-chip">API: <span id="apiState">checking...</span></div>
-                <div class="side-chip">Mode: authorized only</div>
+                <div class="side-chip">API Status: <span id="apiState">checking...</span></div>
+                <div class="side-chip">Queue: <span>ready</span></div>
             </div>
         </aside>
 
         <main class="main-zone">
             <header class="topbar card">
                 <div>
-                    <h1>Vscanner</h1>
-                    <p>Professionelles Security Monitoring, detaillierte Scans und exportierbare Audit-Reports</p>
+                    <div class="eyebrow">Vscanner Professional</div>
+                    <h1>Security Dashboard</h1>
+                    <p>Realtime Security Monitoring and actionable exposure analytics</p>
                 </div>
                 <div class="top-actions">
-                    <button id="ipButton" class="ghost-button" type="button">Meine IP</button>
-                    <button id="refreshHistoryButton" class="ghost-button" type="button">History laden</button>
-                    <button id="exportPdfButton" class="primary-button" type="button" disabled>PDF Export</button>
+                    <button class="ghost-button" type="button" onclick="window.loadHistory()">Refresh</button>
+                    <button class="primary-button" type="button" onclick="window.activateTab('scan')">New Scan</button>
                 </div>
             </header>
 
-            <section class="kpi-grid">
-                <article class="card kpi-card">
-                    <span>True Risk Score</span>
-                    <strong id="kpiTrueRisk">0.0</strong>
-                </article>
-                <article class="card kpi-card">
-                    <span>Offene Ports</span>
-                    <strong id="kpiPorts">0</strong>
-                </article>
-                <article class="card kpi-card">
-                    <span>Exposed Services</span>
-                    <strong id="kpiExposed">0</strong>
-                </article>
-                <article class="card kpi-card">
-                    <span>Open CVE Candidates</span>
-                    <strong id="kpiCve">0</strong>
-                </article>
-                <article class="card kpi-card">
-                    <span>Engine</span>
-                    <strong id="kpiEngine">-</strong>
-                </article>
-                <article class="card kpi-card">
-                    <span>Risk Level</span>
-                    <strong id="kpiRiskLevel">low</strong>
-                </article>
-            </section>
-
             <section class="content-grid">
-                <section id="tab-dashboard" class="card tab-panel active">
-                    <div class="panel-headline">
-                        <h2>Live Security Dashboard</h2>
-                        <span id="statusPill" class="pill idle">Idle</span>
+                <section id="tab-dashboard" class="tab-panel active">
+                    <div class="section-title">Key Metrics</div>
+                    <div class="kpi-grid">
+                        <article class="card kpi-card">
+                            <span>Scan Engine</span>
+                            <strong id="kpiEngine">-</strong>
+                            <div class="kpi-foot">Runtime</div>
+                        </article>
+                        <article class="card kpi-card">
+                            <span>Active Threats</span>
+                            <strong id="kpiExposed">0</strong>
+                            <div class="kpi-foot">Exposed Services</div>
+                        </article>
+                        <article class="card kpi-card">
+                            <span>Vulnerabilities</span>
+                            <strong id="kpiCve">0</strong>
+                            <div class="kpi-foot">CVE Candidates</div>
+                        </article>
+                        <article class="card kpi-card">
+                            <span>Avg Risk Score</span>
+                            <strong id="kpiTrueRisk">0.0</strong>
+                            <div class="kpi-foot">True Risk Score</div>
+                        </article>
                     </div>
-                    <div class="dash-charts">
-                        <div class="chart-card">
+
+                    <div class="section-title">Live Analytics</div>
+                    <div class="dash-grid">
+                        <article class="card chart-card lg">
+                            <h3>Vulnerability Trends</h3>
+                            <canvas id="surfaceChart" width="700" height="260"></canvas>
+                        </article>
+                        <article class="card chart-card">
                             <h3>Risk Distribution</h3>
-                            <canvas id="riskChart" width="360" height="240"></canvas>
-                        </div>
-                        <div class="chart-card">
-                            <h3>Attack Surface Snapshot</h3>
-                            <canvas id="surfaceChart" width="360" height="240"></canvas>
-                        </div>
+                            <canvas id="riskChart" width="360" height="260"></canvas>
+                            <div id="riskSummary" class="risk-list"></div>
+                        </article>
+                        <article class="card chart-card">
+                            <h3>Threat Overview</h3>
+                            <div id="scanMeta" class="meta"></div>
+                        </article>
+                        <article class="card chart-card">
+                            <div class="panel-headline">
+                                <h3>Scan Status</h3>
+                                <span id="statusPill" class="pill idle">Idle</span>
+                            </div>
+                            <div class="health-strip">
+                                <div><span>Open Ports</span><strong id="kpiPorts">0</strong></div>
+                                <div><span>Risk Level</span><strong id="kpiRiskLevel">LOW</strong></div>
+                            </div>
+                        </article>
                     </div>
-                    <div id="riskSummary" class="risk-list"></div>
-                    <div id="scanMeta" class="meta"></div>
                 </section>
 
                 <section id="tab-scan" class="card tab-panel">
                     <div class="panel-headline">
-                        <h2>Scan Studio</h2>
+                        <h2>New Scan</h2>
                     </div>
                     <form id="scanForm" class="scan-form">
                         <div class="field-grid">
                             <div>
-                                <label for="target">Ziel (IP, Domain, CIDR)</label>
-                                <input id="target" name="target" type="text" placeholder="z. B. example.com" required />
+                                <label for="target">Target</label>
+                                <input id="target" name="target" type="text" placeholder="example.com" required />
                             </div>
                             <div>
-                                <label for="profile">Profil</label>
+                                <label for="profile">Profile</label>
                                 <select id="profile" name="profile">
                                     <option value="quick">Quick Discovery</option>
                                     <option value="deep">Deep Service Analysis</option>
+                                    <option value="adaptive">Adaptive Analysis</option>
                                     <option value="network">Network Host Discovery</option>
-                                    <option value="low_noise">Low Noise (defensiv)</option>
+                                    <option value="low_noise">Low Noise (Defensive)</option>
                                 </select>
                             </div>
                             <div>
-                                <label for="portStrategy">Port-Abdeckung</label>
+                                <label for="portStrategy">Port Coverage</label>
                                 <select id="portStrategy" name="portStrategy">
                                     <option value="standard">Standard</option>
                                     <option value="aggressive">Aggressive</option>
                                 </select>
                             </div>
                         </div>
-                        <p class="disclaimer">Nur autorisierte Systeme scannen. Kein Stealth-Bypass oder Log-Umgehung.</p>
-                        <button id="scanButton" class="primary-button" type="submit">Scan starten</button>
+                        <p class="disclaimer">Scan only authorized systems. No stealth bypass or log evasion functions.</p>
+                        <button id="scanButton" class="primary-button" type="submit">Start Scan</button>
                     </form>
 
                     <div class="finding-toolbar">
                         <label for="severityFilter">Severity</label>
                         <select id="severityFilter">
-                            <option value="all">Alle</option>
+                            <option value="all">All</option>
                             <option value="critical">Critical</option>
                             <option value="high">High</option>
                             <option value="medium">Medium</option>
                             <option value="low">Low</option>
                             <option value="info">Info</option>
                         </select>
-                        <label for="findingSearch">Suche</label>
-                        <input id="findingSearch" type="text" placeholder="Titel, Evidence, Host" />
+                        <label for="findingSearch">Search</label>
+                        <input id="findingSearch" type="text" placeholder="host, title, cve, evidence" />
                     </div>
+
                     <div id="errorBox" class="error-box hidden"></div>
                     <div id="resultOutput" class="result-output"></div>
                 </section>
 
                 <section id="tab-history" class="card tab-panel">
                     <div class="panel-headline">
-                        <h2>Report History</h2>
+                        <h2>Recent Scans</h2>
                     </div>
                     <div id="historyOutput" class="history-list"></div>
                 </section>
 
                 <section id="tab-settings" class="card tab-panel">
                     <div class="panel-headline">
-                        <h2>Scanner Hinweise</h2>
+                        <h2>Settings</h2>
                     </div>
                     <ul class="settings-list">
-                        <li>Low Noise ist die sichere Alternative zu auffaelligen Scans.</li>
-                        <li>Deep Profile liefert die gruendlichsten Ergebnisse (dauert laenger).</li>
-                        <li>PDF Reports sind in der Historie dauerhaft abrufbar.</li>
+                        <li>Adaptive profile erweitert den Portraum in Stufen basierend auf echten Treffern.</li>
+                        <li>Low Noise reduziert Last und bleibt defensiv fuer sensible Targets.</li>
+                        <li>Reports werden gespeichert und sind direkt als PDF exportierbar.</li>
                     </ul>
                 </section>
             </section>
