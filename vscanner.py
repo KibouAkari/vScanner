@@ -15,12 +15,13 @@ from typing import Any
 
 import nmap
 import requests
+import urllib3
 from flask import Flask, jsonify, render_template, request, send_file
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from urllib3.exceptions import InsecureRequestWarning
 
-requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+urllib3.disable_warnings(category=InsecureRequestWarning)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024
@@ -122,7 +123,12 @@ WEB_CANDIDATE_PORTS = {
 
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
-DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
+if os.getenv("VERCEL"):
+    DB_PATH = "/tmp/vscanner_reports.db"
+else:
+    DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
+
+DB_READY = False
 DEFAULT_PROJECT_ID = "default"
 DEFAULT_PROJECT_NAME = "General"
 
@@ -174,6 +180,7 @@ def db_connection() -> sqlite3.Connection:
 
 
 def init_report_store() -> None:
+    global DB_READY
     with db_connection() as connection:
         connection.execute(
             """
@@ -224,9 +231,22 @@ def init_report_store() -> None:
             """,
             (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, utc_now()),
         )
+    DB_READY = True
 
 
 def list_projects() -> list[dict[str, Any]]:
+    if not DB_READY:
+        return [
+            {
+                "id": DEFAULT_PROJECT_ID,
+                "name": DEFAULT_PROJECT_NAME,
+                "created_at": utc_now(),
+                "scan_count": 0,
+                "avg_risk": 0,
+                "last_scan_at": utc_now(),
+            }
+        ]
+
     with db_connection() as connection:
         rows = connection.execute(
             """
@@ -247,6 +267,15 @@ def list_projects() -> list[dict[str, Any]]:
 
 def get_project(project_id: str | None) -> dict[str, Any] | None:
     safe_id = (project_id or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    if not DB_READY:
+        if safe_id == DEFAULT_PROJECT_ID:
+            return {
+                "id": DEFAULT_PROJECT_ID,
+                "name": DEFAULT_PROJECT_NAME,
+                "created_at": utc_now(),
+            }
+        return None
+
     with db_connection() as connection:
         row = connection.execute(
             "SELECT id, name, created_at FROM projects WHERE id = ?",
@@ -256,6 +285,9 @@ def get_project(project_id: str | None) -> dict[str, Any] | None:
 
 
 def create_project(name: str) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Project storage is currently unavailable.")
+
     clean_name = (name or "").strip()
     if not clean_name:
         raise ScanInputError("Project name is required.")
@@ -277,6 +309,26 @@ def create_project(name: str) -> dict[str, Any]:
 
 
 def get_project_dashboard(project_id: str) -> dict[str, Any]:
+    if not DB_READY:
+        return {
+            "project": {
+                "id": DEFAULT_PROJECT_ID,
+                "name": DEFAULT_PROJECT_NAME,
+                "created_at": utc_now(),
+            },
+            "totals": {
+                "scans": 0,
+                "avg_risk": 0,
+                "findings": 0,
+                "open_ports": 0,
+                "exposed_services": 0,
+                "cve_count": 0,
+            },
+            "risk_distribution": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "trend": [],
+            "recent_scans": [],
+        }
+
     with db_connection() as connection:
         project = connection.execute(
             "SELECT id, name, created_at FROM projects WHERE id = ?",
@@ -368,6 +420,9 @@ def maybe_sync_report_to_blob(report_id: str, report_data: dict[str, Any]) -> No
 
 def save_report_entry(result: dict[str, Any], project_id: str, project_name: str) -> str:
     report_id = str(uuid.uuid4())
+    if not DB_READY:
+        return report_id
+
     metrics = result.get("metrics", {})
     with db_connection() as connection:
         connection.execute(
@@ -398,6 +453,9 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
 
 
 def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[dict[str, Any]]:
+    if not DB_READY:
+        return []
+
     safe_limit = max(1, min(limit, 200))
     if project_id:
         query = """
@@ -425,6 +483,9 @@ def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[
 
 
 def get_report_entry(report_id: str) -> dict[str, Any] | None:
+    if not DB_READY:
+        return None
+
     with db_connection() as connection:
         row = connection.execute(
             "SELECT id, created_at, data_json FROM reports WHERE id = ?",
@@ -1484,7 +1545,10 @@ def set_security_headers(response: Any) -> Any:
     return response
 
 
-init_report_store()
+try:
+    init_report_store()
+except Exception:
+    DB_READY = False
 
 
 @app.route("/")
