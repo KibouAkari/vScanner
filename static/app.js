@@ -10,22 +10,34 @@ const riskSummary = document.getElementById("riskSummary");
 const scanMeta = document.getElementById("scanMeta");
 const ipButton = document.getElementById("ipButton");
 const exportPdfButton = document.getElementById("exportPdfButton");
+const refreshHistoryButton = document.getElementById("refreshHistoryButton");
+const historyOutput = document.getElementById("historyOutput");
 const severityFilter = document.getElementById("severityFilter");
 const findingSearch = document.getElementById("findingSearch");
+const apiState = document.getElementById("apiState");
+
+const kpiTrueRisk = document.getElementById("kpiTrueRisk");
 const kpiEngine = document.getElementById("kpiEngine");
 const kpiPorts = document.getElementById("kpiPorts");
-const kpiFindings = document.getElementById("kpiFindings");
+const kpiExposed = document.getElementById("kpiExposed");
+const kpiCve = document.getElementById("kpiCve");
 const kpiRiskLevel = document.getElementById("kpiRiskLevel");
+
 const riskChart = document.getElementById("riskChart");
+const surfaceChart = document.getElementById("surfaceChart");
+
+const navButtons = Array.from(document.querySelectorAll(".nav-item"));
+const tabs = Array.from(document.querySelectorAll(".tab-panel"));
 
 let lastScanResult = null;
 
-const ORDER = ["critical", "high", "medium", "low"];
+const ORDER = ["critical", "high", "medium", "low", "info"];
 const COLORS = {
-    critical: "#ff4b68",
-    high: "#ff8e4a",
-    medium: "#f0c45f",
-    low: "#64ccff",
+    critical: "#ff4f6f",
+    high: "#ff9551",
+    medium: "#efc45d",
+    low: "#5cc8ff",
+    info: "#8da6c3",
 };
 
 function esc(value) {
@@ -42,8 +54,8 @@ function setStatus(status, text) {
     statusPill.textContent = text;
 }
 
-function showError(msg) {
-    errorBox.textContent = msg;
+function showError(message) {
+    errorBox.textContent = message;
     errorBox.classList.remove("hidden");
 }
 
@@ -57,43 +69,30 @@ function normalizeSeverity(raw) {
     return ORDER.includes(sev) ? sev : "low";
 }
 
-function riskLevel(summary = {}) {
-    if ((summary.critical || 0) > 0) {
-        return "Critical";
-    }
-    if ((summary.high || 0) > 0) {
-        return "High";
-    }
-    if ((summary.medium || 0) > 0) {
-        return "Medium";
-    }
-    return "Low";
-}
+function drawDonutChart(canvasEl, valuesByKey) {
+    const ctx = canvasEl.getContext("2d");
+    const width = canvasEl.width;
+    const height = canvasEl.height;
+    const centerX = 118;
+    const centerY = 120;
+    const radius = 76;
 
-function drawRiskChart(summary = {}) {
-    const ctx = riskChart.getContext("2d");
-    const width = riskChart.width;
-    const height = riskChart.height;
     ctx.clearRect(0, 0, width, height);
 
-    const values = ORDER.map((k) => Number(summary[k] || 0));
-    const total = values.reduce((acc, v) => acc + v, 0);
+    const values = ORDER.map((k) => Number(valuesByKey[k] || 0));
+    const total = values.reduce((a, b) => a + b, 0);
 
-    if (total === 0) {
-        ctx.fillStyle = "#8ea3be";
+    if (total <= 0) {
+        ctx.fillStyle = "#95afce";
         ctx.font = "14px Outfit";
-        ctx.fillText("Keine Findings", 106, 115);
+        ctx.fillText("No data", 96, 122);
         return;
     }
 
     let start = -Math.PI / 2;
-    const centerX = 104;
-    const centerY = 110;
-    const radius = 70;
-
-    ORDER.forEach((key, index) => {
-        const value = Number(summary[key] || 0);
-        if (value <= 0) {
+    ORDER.forEach((key) => {
+        const value = Number(valuesByKey[key] || 0);
+        if (!value) {
             return;
         }
         const angle = (value / total) * Math.PI * 2;
@@ -107,23 +106,61 @@ function drawRiskChart(summary = {}) {
     });
 
     ctx.beginPath();
-    ctx.arc(centerX, centerY, 35, 0, Math.PI * 2);
-    ctx.fillStyle = "#07101b";
+    ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
+    ctx.fillStyle = "#08152a";
     ctx.fill();
 
-    ctx.fillStyle = "#d8e9ff";
-    ctx.font = "700 16px Space Grotesk";
-    ctx.fillText(String(total), centerX - 8, centerY + 5);
+    ctx.fillStyle = "#d8e8ff";
+    ctx.font = "700 17px Space Grotesk";
+    ctx.fillText(String(total), centerX - 10, centerY + 5);
 
     ctx.font = "12px Outfit";
-    let y = 52;
+    let y = 42;
     ORDER.forEach((key) => {
-        const val = Number(summary[key] || 0);
+        const val = Number(valuesByKey[key] || 0);
         ctx.fillStyle = COLORS[key];
-        ctx.fillRect(198, y, 10, 10);
-        ctx.fillStyle = "#c7dcf5";
-        ctx.fillText(`${key.toUpperCase()} ${val}`, 214, y + 9);
-        y += 22;
+        ctx.fillRect(230, y, 10, 10);
+        ctx.fillStyle = "#c7ddfb";
+        ctx.fillText(`${key.toUpperCase()} ${val}`, 246, y + 9);
+        y += 20;
+    });
+}
+
+function drawSurfaceChart(metrics = {}) {
+    const ctx = surfaceChart.getContext("2d");
+    const width = surfaceChart.width;
+    const height = surfaceChart.height;
+    ctx.clearRect(0, 0, width, height);
+
+    const bars = [
+        { label: "Open Ports", value: Number(metrics.open_ports || 0), color: "#5cc8ff" },
+        { label: "Exposed", value: Number(metrics.exposed_services || 0), color: "#ff9551" },
+        { label: "CVEs", value: Number(metrics.cve_candidates || 0), color: "#ff4f6f" },
+        { label: "Hosts", value: Number(metrics.hosts_scanned || 0), color: "#1ec8a3" },
+    ];
+
+    const maxValue = Math.max(1, ...bars.map((b) => b.value));
+    const barWidth = 44;
+    const gap = 28;
+    const baseY = 198;
+
+    bars.forEach((bar, index) => {
+        const x = 60 + index * (barWidth + gap);
+        const scaled = Math.max(6, (bar.value / maxValue) * 120);
+
+        ctx.fillStyle = "rgba(98, 131, 173, 0.18)";
+        ctx.fillRect(x, baseY - 122, barWidth, 122);
+
+        ctx.fillStyle = bar.color;
+        ctx.fillRect(x, baseY - scaled, barWidth, scaled);
+
+        ctx.fillStyle = "#d8e8ff";
+        ctx.font = "700 12px Space Grotesk";
+        ctx.fillText(String(bar.value), x + 8, baseY - scaled - 8);
+
+        ctx.fillStyle = "#9eb8d9";
+        ctx.font = "11px Outfit";
+        ctx.fillText(bar.label, x - 6, baseY + 16);
     });
 }
 
@@ -138,34 +175,26 @@ function renderRiskSummary(summary = {}) {
 }
 
 function renderMeta(meta = {}) {
-    scanMeta.innerHTML = "";
     const lines = [
-        `Ziel: ${meta.target || "-"}`,
-        `Typ: ${meta.target_type || "-"}`,
-        `Profil: ${meta.profile || "-"}`,
-        `Port-Abdeckung: ${meta.port_strategy || "-"}`,
+        `Target: ${meta.target || "-"}`,
+        `Type: ${meta.target_type || "-"}`,
+        `Profile: ${meta.profile || "-"}`,
+        `Port Strategy: ${meta.port_strategy || "-"}`,
         `Engine: ${meta.engine || "-"}`,
-        `Nmap-Command: ${lastScanResult?.nmap?.command || "-"}`,
-        `Start: ${meta.started_at || "-"}`,
-        `Ende: ${meta.finished_at || "-"}`,
+        `Started: ${meta.started_at || "-"}`,
+        `Finished: ${meta.finished_at || "-"}`,
     ];
-
-    lines.forEach((line) => {
-        const div = document.createElement("div");
-        div.textContent = line;
-        scanMeta.appendChild(div);
-    });
+    scanMeta.innerHTML = lines.map((line) => `<div>${esc(line)}</div>`).join("");
 }
 
 function renderKpis(data) {
-    const hosts = data.hosts || [];
-    const openPorts = hosts.reduce((acc, host) => acc + Number(host.open_port_count || 0), 0);
-    const rLevel = riskLevel(data.risk_summary || {});
-
+    const metrics = data.metrics || {};
+    kpiTrueRisk.textContent = String(data.true_risk_score || 0);
     kpiEngine.textContent = data.meta?.engine || "-";
-    kpiPorts.textContent = String(openPorts);
-    kpiFindings.textContent = String(data.total_findings || 0);
-    kpiRiskLevel.textContent = rLevel;
+    kpiPorts.textContent = String(metrics.open_ports || 0);
+    kpiExposed.textContent = String(metrics.exposed_services || 0);
+    kpiCve.textContent = String(metrics.cve_candidates || 0);
+    kpiRiskLevel.textContent = String(data.meta?.risk_level || "low").toUpperCase();
 }
 
 function filteredFindings() {
@@ -191,35 +220,13 @@ function filteredFindings() {
     });
 }
 
-function renderHostQuickSummary(hosts) {
-    if (!hosts.length) {
-        return "";
-    }
-
-    const items = hosts
-        .map((host) => {
-            const name = esc(host.host);
-            const portCount = Number(host.open_port_count || 0);
-            const findingCount = Number(host.finding_count || 0);
-            return `<li class="port-item"><strong>${name}</strong> · Open Ports: ${portCount} · Findings: ${findingCount}</li>`;
-        })
-        .join("");
-
-    return `
-        <div>
-            <div class="section-title">Host-Übersicht</div>
-            <ul class="port-list">${items}</ul>
-        </div>
-    `;
-}
-
 function renderFindingsTable(items) {
     if (!items.length) {
-        return '<p class="empty-hint">Für den aktuellen Filter wurden keine Findings gefunden.</p>';
+        return '<p class="summary-banner">Keine Findings fuer den aktuellen Filter.</p>';
     }
 
     const rows = items
-        .slice(0, 800)
+        .slice(0, 900)
         .map((item) => {
             const sev = normalizeSeverity(item.severity);
             return `
@@ -235,15 +242,16 @@ function renderFindingsTable(items) {
         .join("");
 
     return `
+        <div class="summary-banner">Findings gesamt: ${items.length}</div>
         <div class="table-wrap">
             <table class="findings-table">
                 <thead>
                     <tr>
                         <th>Severity</th>
                         <th>Host</th>
-                        <th>Titel</th>
+                        <th>Title</th>
                         <th>Evidence</th>
-                        <th>Typ</th>
+                        <th>Type</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -252,108 +260,57 @@ function renderFindingsTable(items) {
     `;
 }
 
-function renderResult() {
-    const data = lastScanResult;
-    const hosts = data.hosts || [];
-    const summary = data.risk_summary || {};
-    const selected = filteredFindings();
+function renderCveSection(cves = []) {
+    if (!cves.length) {
+        return "";
+    }
 
-    const text = `Risk Level: ${riskLevel(summary)} · Findings gesamt: ${data.total_findings || 0} · Angezeigt: ${selected.length}`;
-
-    resultOutput.innerHTML = `
-        <div class="summary-banner">${esc(text)}</div>
-        ${renderFindingsTable(selected)}
-        ${renderHostQuickSummary(hosts)}
-    `;
-
-    renderRiskSummary(summary);
-    drawRiskChart(summary);
-    renderMeta(data.meta || {});
-    renderKpis(data);
-}
-
-function buildPrintableReportHtml(data) {
-    const summary = data.risk_summary || {};
-    const findings = data.finding_items || [];
-    const meta = data.meta || {};
-
-    const findingRows = findings
-        .slice(0, 600)
-        .map((item) => {
-            const sev = normalizeSeverity(item.severity);
-            return `
-                <tr>
-                    <td>${esc(sev.toUpperCase())}</td>
-                    <td>${esc(item.host || "-")}</td>
-                    <td>${esc(item.title || "-")}</td>
-                    <td>${esc(item.evidence || "-")}</td>
-                </tr>
-            `;
-        })
+    const rows = cves
+        .slice(0, 60)
+        .map(
+            (item) =>
+                `<tr><td>${esc(item.cve || "-")}</td><td>${esc(item.host || "-")}</td><td>${esc(item.title || "-")}</td><td>${esc(item.evidence || "-")}</td></tr>`
+        )
         .join("");
 
     return `
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<title>vScanner Report</title>
-<style>
-body { font-family: Arial, sans-serif; margin: 24px; color: #1a2433; }
-h1 { margin: 0 0 10px; }
-.meta { margin-bottom: 12px; }
-.grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 14px; }
-.box { border: 1px solid #bccbe0; padding: 8px; border-radius: 6px; }
-.table { width: 100%; border-collapse: collapse; font-size: 12px; }
-.table th, .table td { border: 1px solid #c2d1e5; text-align: left; padding: 6px; vertical-align: top; }
-.table th { background: #e9f1fb; }
-</style>
-</head>
-<body>
-<h1>vScanner Security Report</h1>
-<div class="meta">Target: <strong>${esc(meta.target || "-")}</strong> | Risk Level: <strong>${esc((meta.risk_level || "low").toUpperCase())}</strong> | Profile: <strong>${esc(meta.profile || "-")}</strong></div>
-<div class="meta">Start: ${esc(meta.started_at || "-")} | End: ${esc(meta.finished_at || "-")} | Engine: ${esc(meta.engine || "-")}</div>
-<div class="grid">
-    <div class="box">Critical: <strong>${summary.critical || 0}</strong></div>
-    <div class="box">High: <strong>${summary.high || 0}</strong></div>
-    <div class="box">Medium: <strong>${summary.medium || 0}</strong></div>
-    <div class="box">Low: <strong>${summary.low || 0}</strong></div>
-</div>
-<table class="table">
-<thead><tr><th>Severity</th><th>Host</th><th>Title</th><th>Evidence</th></tr></thead>
-<tbody>${findingRows || '<tr><td colspan="4">No findings available</td></tr>'}</tbody>
-</table>
-</body>
-</html>
-`;
+        <div class="summary-banner">Open CVE Candidates: ${cves.length}</div>
+        <div class="table-wrap">
+            <table class="findings-table">
+                <thead><tr><th>CVE</th><th>Host</th><th>Title</th><th>Evidence</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
 }
 
-function downloadReport() {
+function renderResult() {
     if (!lastScanResult) {
-        showError("Es ist noch kein Scan-Ergebnis zum Export vorhanden.");
         return;
     }
 
-    const html = buildPrintableReportHtml(lastScanResult);
-    const reportWindow = window.open("", "_blank", "noopener,noreferrer");
-    if (!reportWindow) {
-        showError("Popup wurde blockiert. Bitte Popups für diese Seite erlauben.");
-        return;
-    }
+    const selected = filteredFindings();
+    resultOutput.innerHTML = `${renderFindingsTable(selected)}${renderCveSection(lastScanResult.cve_items || [])}`;
 
-    reportWindow.document.open();
-    reportWindow.document.write(html);
-    reportWindow.document.close();
-    reportWindow.focus();
-    reportWindow.print();
+    renderRiskSummary(lastScanResult.risk_summary || {});
+    renderMeta(lastScanResult.meta || {});
+    renderKpis(lastScanResult);
+    drawDonutChart(riskChart, lastScanResult.risk_summary || {});
+    drawSurfaceChart(lastScanResult.metrics || {});
+}
+
+function activateTab(tabName) {
+    navButtons.forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === tabName);
+    });
+
+    tabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.id === `tab-${tabName}`);
+    });
 }
 
 async function fetchPublicIp() {
-    const endpoints = [
-        "https://api64.ipify.org?format=json",
-        "https://api.ipify.org?format=json",
-    ];
-
+    const endpoints = ["https://api64.ipify.org?format=json", "https://api.ipify.org?format=json"];
     for (const url of endpoints) {
         try {
             const response = await fetch(url, { method: "GET" });
@@ -365,12 +322,95 @@ async function fetchPublicIp() {
                 return data.ip;
             }
         } catch (_error) {
-            // Try next endpoint.
+            // try next endpoint
         }
     }
-
     throw new Error("Public IP konnte nicht ermittelt werden.");
 }
+
+async function loadHealth() {
+    try {
+        const response = await fetch("/api/health");
+        const data = await response.json();
+        apiState.textContent = data.status === "ok" ? "online" : "unknown";
+    } catch (_error) {
+        apiState.textContent = "offline";
+    }
+}
+
+function historyItemHtml(item) {
+    return `
+        <article class="history-item">
+            <div class="history-line">
+                <strong>${esc(item.target || "-")}</strong>
+                <span>${esc(item.created_at || "-")}</span>
+            </div>
+            <div class="history-line">
+                <span>Profile: ${esc(item.profile || "-")}</span>
+                <span>Risk: ${esc(String(item.risk_level || "low").toUpperCase())}</span>
+                <span>True Score: ${esc(item.true_risk_score || 0)}</span>
+            </div>
+            <div class="history-line">
+                <span>Ports: ${esc(item.open_ports || 0)}</span>
+                <span>Exposed: ${esc(item.exposed_services || 0)}</span>
+                <span>CVEs: ${esc(item.cve_count || 0)}</span>
+            </div>
+            <div class="history-actions">
+                <button class="ghost-button" type="button" onclick="window.loadReportDetail('${esc(item.id)}')">Open</button>
+                <button class="primary-button" type="button" onclick="window.downloadReportPdf('${esc(item.id)}')">PDF</button>
+            </div>
+        </article>
+    `;
+}
+
+async function loadHistory() {
+    historyOutput.innerHTML = '<div class="summary-banner">History wird geladen...</div>';
+    try {
+        const response = await fetch("/api/reports?limit=50");
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "History konnte nicht geladen werden.");
+        }
+
+        const items = data.items || [];
+        if (!items.length) {
+            historyOutput.innerHTML = '<div class="summary-banner">Noch keine Reports vorhanden.</div>';
+            return;
+        }
+
+        historyOutput.innerHTML = items.map(historyItemHtml).join("");
+    } catch (error) {
+        historyOutput.innerHTML = `<div class="summary-banner">${esc(error.message || "History Fehler")}</div>`;
+    }
+}
+
+window.loadReportDetail = async function loadReportDetail(reportId) {
+    try {
+        const response = await fetch(`/api/reports/${encodeURIComponent(reportId)}`);
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Report konnte nicht geladen werden.");
+        }
+
+        lastScanResult = data;
+        exportPdfButton.disabled = false;
+        renderResult();
+        activateTab("scan");
+        setStatus("done", "Report loaded");
+    } catch (error) {
+        showError(error.message || "Report laden fehlgeschlagen.");
+    }
+};
+
+window.downloadReportPdf = function downloadReportPdf(reportId) {
+    const id = reportId || lastScanResult?.report_id;
+    if (!id) {
+        showError("Kein Report fuer den PDF Export vorhanden.");
+        return;
+    }
+
+    window.open(`/api/reports/${encodeURIComponent(id)}/pdf`, "_blank", "noopener,noreferrer");
+};
 
 form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -386,7 +426,7 @@ form.addEventListener("submit", async (event) => {
     scanButton.disabled = true;
     exportPdfButton.disabled = true;
     scanButton.textContent = "Scanne...";
-    resultOutput.innerHTML = '<p class="empty-hint">Scan läuft. Das kann je nach Profil und Port-Abdeckung dauern.</p>';
+    resultOutput.innerHTML = '<div class="summary-banner">Scan laeuft. Bitte warten...</div>';
 
     try {
         const response = await fetch("/api/scan", {
@@ -403,6 +443,8 @@ form.addEventListener("submit", async (event) => {
         lastScanResult = data;
         exportPdfButton.disabled = false;
         renderResult();
+        await loadHistory();
+        activateTab("dashboard");
         setStatus("done", "Fertig");
     } catch (error) {
         showError(error.message || "Scan fehlgeschlagen.");
@@ -430,13 +472,26 @@ ipButton.addEventListener("click", async () => {
     clearError();
     try {
         const ip = await fetchPublicIp();
-        alert(`Deine öffentliche IP: ${ip}`);
+        alert(`Deine oeffentliche IP: ${ip}`);
     } catch (error) {
         showError(error.message || "IP konnte nicht geladen werden.");
     }
 });
 
-exportPdfButton.addEventListener("click", downloadReport);
+exportPdfButton.addEventListener("click", () => window.downloadReportPdf());
+refreshHistoryButton.addEventListener("click", loadHistory);
+
+navButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        activateTab(button.dataset.tab);
+        if (button.dataset.tab === "history") {
+            loadHistory();
+        }
+    });
+});
 
 renderRiskSummary({});
-drawRiskChart({});
+drawDonutChart(riskChart, {});
+drawSurfaceChart({});
+loadHealth();
+loadHistory();

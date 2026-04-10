@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import concurrent.futures
+import io
 import ipaddress
+import json
 import os
 import re
 import socket
+import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 import nmap
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 from urllib3.exceptions import InsecureRequestWarning
 
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
@@ -116,6 +122,38 @@ WEB_CANDIDATE_PORTS = {
 
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
+DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
+
+CVE_RULES = [
+    {
+        "match": "openssh",
+        "max_version": (8, 4, 0),
+        "cve": "CVE-2021-41617",
+        "severity": "high",
+        "title": "OpenSSH privilege escalation candidate",
+    },
+    {
+        "match": "nginx",
+        "max_version": (1, 18, 0),
+        "cve": "CVE-2021-23017",
+        "severity": "medium",
+        "title": "Nginx resolver memory corruption candidate",
+    },
+    {
+        "match": "apache",
+        "max_version": (2, 4, 50),
+        "cve": "CVE-2021-41773",
+        "severity": "high",
+        "title": "Apache path traversal candidate",
+    },
+    {
+        "match": "vsftpd",
+        "max_version": (3, 0, 3),
+        "cve": "CVE-2021-3618",
+        "severity": "medium",
+        "title": "vsftpd TLS session reuse candidate",
+    },
+]
 
 
 class ScanInputError(ValueError):
@@ -124,6 +162,155 @@ class ScanInputError(ValueError):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def db_connection() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def init_report_store() -> None:
+    with db_connection() as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reports (
+                id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                target TEXT NOT NULL,
+                profile TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                true_risk_score REAL NOT NULL,
+                total_findings INTEGER NOT NULL,
+                open_ports INTEGER NOT NULL,
+                exposed_services INTEGER NOT NULL,
+                cve_count INTEGER NOT NULL,
+                data_json TEXT NOT NULL
+            )
+            """
+        )
+
+
+def save_report_entry(result: dict[str, Any]) -> str:
+    report_id = str(uuid.uuid4())
+    metrics = result.get("metrics", {})
+    with db_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO reports (
+                id, created_at, target, profile, risk_level, true_risk_score,
+                total_findings, open_ports, exposed_services, cve_count, data_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report_id,
+                utc_now(),
+                result.get("meta", {}).get("target", "-"),
+                result.get("meta", {}).get("profile", "quick"),
+                result.get("meta", {}).get("risk_level", "low"),
+                float(result.get("true_risk_score", 0)),
+                int(result.get("total_findings", 0)),
+                int(metrics.get("open_ports", 0)),
+                int(metrics.get("exposed_services", 0)),
+                int(metrics.get("cve_candidates", 0)),
+                json.dumps(result),
+            ),
+        )
+    return report_id
+
+
+def list_report_entries(limit: int = 40) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(limit, 200))
+    with db_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, created_at, target, profile, risk_level, true_risk_score,
+                   total_findings, open_ports, exposed_services, cve_count
+            FROM reports
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_entry(report_id: str) -> dict[str, Any] | None:
+    with db_connection() as connection:
+        row = connection.execute(
+            "SELECT id, created_at, data_json FROM reports WHERE id = ?",
+            (report_id,),
+        ).fetchone()
+    if not row:
+        return None
+    payload = json.loads(row["data_json"])
+    payload["report_id"] = row["id"]
+    payload["report_created_at"] = row["created_at"]
+    return payload
+
+
+def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    y = height - 40
+
+    def write_line(text: str, size: int = 10, bold: bool = False, gap: int = 14) -> None:
+        nonlocal y
+        if y < 60:
+            pdf.showPage()
+            y = height - 40
+        font = "Helvetica-Bold" if bold else "Helvetica"
+        pdf.setFont(font, size)
+        pdf.drawString(40, y, text[:120])
+        y -= gap
+
+    meta = report.get("meta", {})
+    summary = report.get("risk_summary", {})
+    metrics = report.get("metrics", {})
+    findings = report.get("finding_items", [])
+
+    write_line("vScanner Security Report", size=16, bold=True, gap=20)
+    write_line(f"Target: {meta.get('target', '-')}")
+    write_line(f"Profile: {meta.get('profile', '-')} | Engine: {meta.get('engine', '-')}")
+    write_line(f"Start: {meta.get('started_at', '-')} | End: {meta.get('finished_at', '-')}")
+    write_line(f"Risk Level: {meta.get('risk_level', 'low')} | True Risk Score: {report.get('true_risk_score', 0)}", bold=True)
+    write_line("")
+    write_line("Dashboard Metrics", bold=True)
+    write_line(
+        "Critical: {critical} | High: {high} | Medium: {medium} | Low: {low}".format(
+            critical=summary.get("critical", 0),
+            high=summary.get("high", 0),
+            medium=summary.get("medium", 0),
+            low=summary.get("low", 0),
+        )
+    )
+    write_line(
+        "Open Ports: {open_ports} | Exposed Services: {exposed_services} | CVE Candidates: {cve_candidates}".format(
+            open_ports=metrics.get("open_ports", 0),
+            exposed_services=metrics.get("exposed_services", 0),
+            cve_candidates=metrics.get("cve_candidates", 0),
+        )
+    )
+    write_line("")
+    write_line("Top Findings", bold=True)
+
+    for item in findings[:120]:
+        write_line(
+            "[{sev}] {host} | {title} | {evidence}".format(
+                sev=(item.get("severity") or "low").upper(),
+                host=item.get("host", "-"),
+                title=item.get("title", "Finding"),
+                evidence=item.get("evidence", "-"),
+            ),
+            size=9,
+            gap=12,
+        )
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer
 
 
 def is_public_mode() -> bool:
@@ -264,6 +451,39 @@ def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
     return "", ""
 
 
+def infer_cve_candidates(product: str, version: str, port: int) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    product_l = (product or "").lower()
+    version_tuple = parse_version_tuple(version)
+
+    for rule in CVE_RULES:
+        if rule["match"] not in product_l:
+            continue
+        if version_tuple and version_tuple <= rule["max_version"]:
+            candidates.append(
+                {
+                    "type": "cve_candidate",
+                    "severity": rule["severity"],
+                    "title": rule["title"],
+                    "evidence": f"{rule['cve']} candidate for {product} {version or 'unknown version'} on port {port}",
+                    "cve": rule["cve"],
+                }
+            )
+
+    if port in {6379, 11211, 27017, 9200, 2375}:
+        candidates.append(
+            {
+                "type": "cve_candidate",
+                "severity": "high",
+                "title": "Internet-exposed service likely vulnerable without hardening",
+                "evidence": f"Port {port} is often linked to severe exposures when unauthenticated.",
+                "cve": "CVE-check-recommended",
+            }
+        )
+
+    return candidates
+
+
 def evaluate_version_findings(
     product: str,
     version: str,
@@ -343,6 +563,8 @@ def evaluate_version_findings(
                 "evidence": "FTP banner suggests anonymous or weak FTP configuration.",
             }
         )
+
+    findings.extend(infer_cve_candidates(product, version, port))
 
     return findings
 
@@ -510,6 +732,10 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         27017,
     ]
 
+    if profile == "low_noise":
+        low_noise_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443]
+        return sorted(set(low_noise_ports))
+
     ranges = set(base_common)
     if profile == "deep":
         ranges.update(range(1, 2049))
@@ -601,7 +827,10 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
     hosts: list[dict[str, Any]] = []
     scan_ports = build_port_list(profile=profile, port_strategy=port_strategy)
-    timeout_s = 0.35 if port_strategy == "standard" else 0.45
+    if profile == "low_noise":
+        timeout_s = 0.8
+    else:
+        timeout_s = 0.35 if port_strategy == "standard" else 0.45
 
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
@@ -643,6 +872,9 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
         return "-sn"
+
+    if profile == "low_noise":
+        return "-Pn -T2 --open -sS --top-ports 200"
 
     if profile == "quick":
         if port_strategy == "aggressive":
@@ -718,13 +950,13 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
 
 def normalize_severity(raw: str) -> str:
     severity = (raw or "").lower().strip()
-    if severity in {"critical", "high", "medium", "low"}:
+    if severity in {"critical", "high", "medium", "low", "info"}:
         return severity
     return "low"
 
 
 def build_risk_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
-    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for finding in findings:
         severity = normalize_severity(str(finding.get("severity", "low")))
         summary[severity] += 1
@@ -739,6 +971,19 @@ def compute_risk_level(summary: dict[str, int]) -> str:
     if summary.get("medium", 0) > 0:
         return "medium"
     return "low"
+
+
+def compute_true_risk_score(summary: dict[str, int], open_ports: int, cve_candidates: int) -> float:
+    weighted = (
+        summary.get("critical", 0) * 22
+        + summary.get("high", 0) * 12
+        + summary.get("medium", 0) * 6
+        + summary.get("low", 0) * 2
+    )
+    attack_surface = min(open_ports, 80) * 0.35
+    cve_pressure = cve_candidates * 4.5
+    score = min(100.0, weighted + attack_surface + cve_pressure)
+    return round(score, 1)
 
 
 
@@ -788,11 +1033,15 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     all_findings: list[dict[str, Any]] = []
     finding_items: list[dict[str, Any]] = []
     host_results: list[dict[str, Any]] = []
+    cve_items: list[dict[str, Any]] = []
+    total_open_ports = 0
+    exposed_services = 0
 
     for host in nmap_data["hosts"]:
         host_findings = list(host.get("findings", []))
 
         open_ports = [entry for entry in host.get("ports", []) if entry.get("state") == "open"]
+        total_open_ports += len(open_ports)
 
         web_evidence: list[dict[str, Any]] = []
         for entry in open_ports:
@@ -809,6 +1058,18 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
 
         all_findings.extend(host_findings)
         for finding in host_findings:
+            if finding.get("type") == "exposed_port":
+                exposed_services += 1
+            if finding.get("type") == "cve_candidate":
+                cve_items.append(
+                    {
+                        "host": host.get("host", "-"),
+                        "cve": finding.get("cve", "CVE-check-recommended"),
+                        "title": finding.get("title", "Potential CVE"),
+                        "evidence": finding.get("evidence", "-"),
+                        "severity": normalize_severity(str(finding.get("severity", "medium"))),
+                    }
+                )
             finding_items.append(
                 {
                     "host": host.get("host", "-"),
@@ -831,7 +1092,12 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
 
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
+    true_risk_score = compute_true_risk_score(risk_summary, total_open_ports, len(cve_items))
     finding_items.sort(
+        key=lambda item: SEVERITY_ORDER.get(item.get("severity", "low"), 1),
+        reverse=True,
+    )
+    cve_items.sort(
         key=lambda item: SEVERITY_ORDER.get(item.get("severity", "low"), 1),
         reverse=True,
     )
@@ -856,7 +1122,15 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         },
         "hosts": host_results,
         "finding_items": finding_items,
+        "cve_items": cve_items,
         "risk_summary": risk_summary,
+        "true_risk_score": true_risk_score,
+        "metrics": {
+            "open_ports": total_open_ports,
+            "exposed_services": exposed_services,
+            "cve_candidates": len(cve_items),
+            "hosts_scanned": len(host_results),
+        },
         "total_findings": len(all_findings),
     }
 
@@ -880,6 +1154,9 @@ def set_security_headers(response: Any) -> Any:
     )
     response.headers["Content-Security-Policy"] = csp
     return response
+
+
+init_report_store()
 
 
 @app.route("/")
@@ -913,8 +1190,8 @@ def scan_api() -> Any:
     profile = (payload.get("profile") or "quick").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
 
-    if profile not in {"quick", "deep", "network"}:
-        return jsonify({"error": "Invalid profile. Allowed: quick, deep, network."}), 400
+    if profile not in {"quick", "deep", "network", "low_noise"}:
+        return jsonify({"error": "Invalid profile. Allowed: quick, deep, network, low_noise."}), 400
 
     if port_strategy not in {"standard", "aggressive"}:
         return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
@@ -925,6 +1202,8 @@ def scan_api() -> Any:
     try:
         enforce_rate_limit(client_ip)
         result = orchestrate_scan(target, profile, port_strategy)
+        report_id = save_report_entry(result)
+        result["report_id"] = report_id
         return jsonify(result)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -937,6 +1216,38 @@ def scan_api() -> Any:
         ), 500
     except Exception as exc:
         return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
+
+
+@app.route("/api/reports")
+def list_reports_api() -> Any:
+    try:
+        limit = int(request.args.get("limit", "40"))
+    except ValueError:
+        limit = 40
+    return jsonify({"items": list_report_entries(limit=limit)})
+
+
+@app.route("/api/reports/<report_id>")
+def report_detail_api(report_id: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+    return jsonify(data)
+
+
+@app.route("/api/reports/<report_id>/pdf")
+def report_pdf_api(report_id: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+
+    pdf_buffer = build_report_pdf(data)
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"vscanner-report-{report_id[:8]}.pdf",
+    )
 
 
 if __name__ == "__main__":

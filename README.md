@@ -11,6 +11,7 @@ It has now evolved into a much larger project: a modern, full-featured vulnerabi
   - `quick` for fast port and service visibility
   - `deep` for deeper service/version analysis with NSE scripts
   - `network` for host discovery in local network segments
+  - `low_noise` for defensive, lower-intensity scans that reduce operational noise
 - Support port coverage strategies:
   - `standard` for fast and balanced scanning
   - `aggressive` for broader open-port discovery
@@ -22,7 +23,10 @@ It has now evolved into a much larger project: a modern, full-featured vulnerabi
 - Provide forensic indicators such as reverse DNS, open ports, and scan timestamps
 - Deliver results through a modern, animated, and clean reporting interface
 - Show a clear Risk Level based on critical/high/medium/low counts
-- Download a professional report view with severity overview and detailed findings (print/save as PDF from browser)
+- Compute a `True Risk Score` (0-100) from severity, attack surface, and CVE pressure
+- Track metrics such as open ports, exposed services, and open CVE candidates
+- Save scan reports in persistent report history
+- Export reports directly as PDF (including dashboard metrics and key findings)
 
 ## Important Legal Notice
 
@@ -91,6 +95,9 @@ Then open in your browser:
 - `GET /api/health`
 - `GET /api/client-ip`
 - `POST /api/scan`
+- `GET /api/reports`
+- `GET /api/reports/<report_id>`
+- `GET /api/reports/<report_id>/pdf`
 
 Example for `POST /api/scan`:
 
