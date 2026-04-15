@@ -135,6 +135,18 @@
                         <div id="exposureSummary" class="risk-legend"></div>
                     </article>
                 </div>
+
+                <div class="split-grid">
+                    <article class="panel">
+                        <h3>Top Exposed Assets</h3>
+                        <div id="topAssets" class="list-scroll"></div>
+                    </article>
+
+                    <article class="panel">
+                        <h3>Service Inventory</h3>
+                        <div id="serviceInventory" class="list-scroll"></div>
+                    </article>
+                </div>
             </section>
 
             <section class="tab" id="tab-scanner">
@@ -264,20 +276,64 @@
                         <h3>Scan History</h3>
                         <button id="refreshHistoryButton" class="btn ghost" type="button">Refresh</button>
                     </div>
-                    <div id="historyList" class="list-scroll"></div>
+                    <div id="historyList" class="history-list"></div>
                 </article>
             </section>
 
             <section class="tab" id="tab-settings">
+                <div class="split-grid settings-grid">
+                    <article class="panel">
+                        <h3>Workspace Preferences</h3>
+                        <div class="settings-control-grid">
+                            <div>
+                                <label for="languageSelect">Language</label>
+                                <select id="languageSelect" class="input compact">
+                                    <option value="de">Deutsch</option>
+                                    <option value="en">English</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="themeSelect">Theme</label>
+                                <select id="themeSelect" class="input compact">
+                                    <option value="ocean">Ocean</option>
+                                    <option value="emerald">Emerald</option>
+                                    <option value="graphite">Graphite</option>
+                                    <option value="sunset">Sunset</option>
+                                </select>
+                            </div>
+                        </div>
+                        <p class="note">Preferences are stored in the browser and applied instantly across the workspace.</p>
+                    </article>
+
+                    <article class="panel">
+                        <h3>Operational Notes</h3>
+                        <ul class="settings-list">
+                            <li>Findings are deduplicated per project, asset and vulnerability key.</li>
+                            <li>Dashboard metrics now separate unique host-port exposures from repeated scans.</li>
+                            <li>Network suggestions are only shown where CIDR scanning is meaningful.</li>
+                            <li>Stealth mode remains low-noise only and does not attempt monitoring bypass.</li>
+                            <li>For Vercel Postgres set DATABASE_URL and install psycopg in requirements.</li>
+                            <li>For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.</li>
+                        </ul>
+                    </article>
+                </div>
+
                 <article class="panel">
-                    <h3>Scanner Notes</h3>
-                    <ul class="settings-list">
-                        <li>Findings are deduplicated per project, asset and vulnerability key.</li>
-                        <li>When two assets share the same vulnerability, it appears once with multiple affected assets.</li>
-                        <li>Use NETWORK only on local/private networks where authorization is clear.</li>
-                        <li>For Vercel Postgres set DATABASE_URL and install psycopg in requirements.</li>
-                        <li>For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.</li>
-                    </ul>
+                    <h3>Scanner Reference</h3>
+                    <div id="settingsInfoCards" class="scanner-mode-grid">
+                        <div class="scanner-mode-card active">
+                            <strong>Risk Scanner</strong>
+                            <span>Use for single hosts and domains when you want broad port, version and HTTP security coverage.</span>
+                        </div>
+                        <div class="scanner-mode-card active">
+                            <strong>Network Discovery</strong>
+                            <span>Use on authorized private networks to enumerate hosts, services and exposed surface by subnet.</span>
+                        </div>
+                        <div class="scanner-mode-card active">
+                            <strong>Stealth & Intel</strong>
+                            <span>Use for quieter probing and passive metadata collection when you want context before a fuller scan.</span>
+                        </div>
+                    </div>
                 </article>
             </section>
         </main>

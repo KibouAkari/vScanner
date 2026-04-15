@@ -187,6 +187,34 @@ CVE_RULES = [
         "severity": "medium",
         "title": "vsftpd TLS session reuse candidate",
     },
+    {
+        "match": "postgresql",
+        "max_version": (13, 0, 0),
+        "cve": "CVE-2021-23222",
+        "severity": "medium",
+        "title": "PostgreSQL outdated version candidate",
+    },
+    {
+        "match": "mysql",
+        "max_version": (8, 0, 26),
+        "cve": "CVE-2021-2471",
+        "severity": "medium",
+        "title": "MySQL server outdated version candidate",
+    },
+    {
+        "match": "proftpd",
+        "max_version": (1, 3, 7),
+        "cve": "CVE-2021-46854",
+        "severity": "high",
+        "title": "ProFTPD mod_copy candidate",
+    },
+    {
+        "match": "opensmtpd",
+        "max_version": (6, 6, 1),
+        "cve": "CVE-2020-7247",
+        "severity": "high",
+        "title": "OpenSMTPD RCE candidate",
+    },
 ]
 
 
@@ -1031,6 +1059,26 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             .limit(12)
         )
 
+        window_report_rows = list(
+            db.reports.find(
+                {"project_id": project_id, "created_at": {"$gte": since}},
+                {
+                    "_id": 0,
+                    "created_at": 1,
+                    "target": 1,
+                    "profile": 1,
+                    "true_risk_score": 1,
+                    "total_findings": 1,
+                    "open_ports": 1,
+                    "exposed_services": 1,
+                    "cve_count": 1,
+                    "data_json": 1,
+                },
+            )
+        )
+
+        views = build_dashboard_exposure_views(window_report_rows)
+
         mongo_totals: dict[str, Any] = {
             "scans": len(trend_rows),
             "avg_risk": 0,
@@ -1045,66 +1093,22 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
                 1,
             )
 
-        window_report_rows = list(
-            db.reports.find(
-                {"project_id": project_id, "created_at": {"$gte": since}},
-                {"_id": 0, "total_findings": 1, "open_ports": 1, "exposed_services": 1, "cve_count": 1},
-            )
-        )
-        for row in window_report_rows:
-            mongo_totals["findings"] += int(row.get("total_findings", 0) or 0)
-            mongo_totals["open_ports"] += int(row.get("open_ports", 0) or 0)
-            mongo_totals["exposed_services"] += int(row.get("exposed_services", 0) or 0)
-            mongo_totals["cve_count"] += int(row.get("cve_count", 0) or 0)
-
-        top_rows = list(
-            db.findings.aggregate(
-                [
-                    {"$match": {"project_id": project_id, "last_seen": {"$gte": since}}},
-                    {
-                        "$group": {
-                            "_id": {
-                                "severity": "$severity",
-                                "title": "$title",
-                                "finding_type": "$finding_type",
-                                "cve": "$cve",
-                            },
-                            "affected_assets": {"$sum": 1},
-                        }
-                    },
-                    {"$sort": {"affected_assets": -1}},
-                    {"$limit": 16},
-                ]
-            )
-        )
-
-        risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-        top_vulns: list[dict[str, Any]] = []
-        for row in top_rows:
-            grouping = row.get("_id", {})
-            severity = normalize_severity(str(grouping.get("severity") or "low"))
-            affected_assets = int(row.get("affected_assets", 0) or 0)
-            if severity in risk_distribution:
-                risk_distribution[severity] += affected_assets
-            top_vulns.append(
-                {
-                    "severity": severity,
-                    "title": grouping.get("title", "Finding"),
-                    "type": grouping.get("finding_type", "-"),
-                    "cve": grouping.get("cve") or "",
-                    "affected_assets": affected_assets,
-                }
-            )
+        mongo_totals["findings"] = sum(int(row.get("total_findings", 0) or 0) for row in window_report_rows)
+        mongo_totals["open_ports"] = len(views["unique_open_ports"])
+        mongo_totals["exposed_services"] = len(views["service_inventory"])
+        mongo_totals["cve_count"] = sum(1 for item in views["top_vulnerabilities"] if str(item.get("cve") or "").strip())
 
         return {
             "project": project,
             "window_days": window_days,
             "totals": mongo_totals,
-            "risk_distribution": risk_distribution,
+            "risk_distribution": views["risk_distribution"],
             "trend": trend_rows,
             "severity_timeline": severity_timeline,
             "recent_scans": recent_rows,
-            "top_vulnerabilities": top_vulns,
+            "top_vulnerabilities": views["top_vulnerabilities"],
+            "top_assets": views["top_assets"],
+            "service_inventory": views["service_inventory"],
         }
 
     with db_connection() as connection:
@@ -1161,43 +1165,33 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             (project_id,),
         )
 
-        top_rows = fetchall(
+        window_report_rows = fetchall(
             connection,
             """
-            SELECT severity, title, finding_type, cve, COUNT(*) AS affected_assets
-            FROM findings
-            WHERE project_id = ? AND last_seen >= ?
-            GROUP BY severity, title, finding_type, cve
-            ORDER BY affected_assets DESC
-            LIMIT 16
+            SELECT created_at, target, profile, true_risk_score, total_findings, open_ports, exposed_services, cve_count, data_json
+            FROM reports
+            WHERE project_id = ? AND created_at >= ?
             """,
             (project_id, since),
         )
 
-    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for row in top_rows:
-        sev = normalize_severity(str(row.get("severity") or "low"))
-        if sev in risk_distribution:
-            risk_distribution[sev] += int(row.get("affected_assets") or 0)
+    views = build_dashboard_exposure_views(window_report_rows)
+    totals = totals or {}
+    totals["open_ports"] = len(views["unique_open_ports"])
+    totals["exposed_services"] = len(views["service_inventory"])
+    totals["cve_count"] = sum(1 for item in views["top_vulnerabilities"] if str(item.get("cve") or "").strip())
 
     return {
         "project": project,
         "window_days": window_days,
-        "totals": totals or {},
-        "risk_distribution": risk_distribution,
+        "totals": totals,
+        "risk_distribution": views["risk_distribution"],
         "trend": trend_rows,
         "severity_timeline": severity_timeline,
         "recent_scans": recent_rows,
-        "top_vulnerabilities": [
-            {
-                "severity": normalize_severity(str(row.get("severity") or "low")),
-                "title": row.get("title", "Finding"),
-                "type": row.get("finding_type", "-"),
-                "cve": row.get("cve") or "",
-                "affected_assets": int(row.get("affected_assets") or 0),
-            }
-            for row in top_rows
-        ],
+        "top_vulnerabilities": views["top_vulnerabilities"],
+        "top_assets": views["top_assets"],
+        "service_inventory": views["service_inventory"],
     }
 
 
@@ -2024,23 +2018,211 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         9300,
         11211,
         27017,
+        25565,
+        25655,
+        27018,
+        28017,
+        32400,
+        50000,
+        51820,
+        5672,
+        15672,
+        1883,
+        8883,
+        6000,
+        6667,
+        10000,
+        10050,
+        10051,
+        9090,
+        9091,
+        9443,
     ]
 
     if profile == "stealth":
-        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443]
+        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443, 9443, 25565]
         return sorted(set(stealth_ports))
 
     ranges = set(base_common)
     if profile == "deep":
-        ranges.update(range(1, 2049))
+        ranges.update(range(1, 8193))
     else:
-        ranges.update(range(1, 1025))
+        ranges.update(range(1, 4097))
 
     if port_strategy == "aggressive":
-        ranges.update(range(2049, 4097))
-        ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565])
+        if profile == "deep":
+            ranges.update(range(8193, 16385))
+        else:
+            ranges.update(range(4097, 8193))
+        ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565, 25655, 32400, 50000])
 
     return sorted(ranges)
+
+
+def parse_report_payload(row: dict[str, Any]) -> dict[str, Any]:
+    raw_data = row.get("data_json")
+    if isinstance(raw_data, dict):
+        return raw_data
+    if isinstance(raw_data, str) and raw_data.strip():
+        try:
+            payload = json.loads(raw_data)
+            if isinstance(payload, dict):
+                return payload
+        except Exception:
+            return {}
+    return {}
+
+
+def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    unique_open_ports: dict[tuple[str, int, str], dict[str, Any]] = {}
+    asset_map: dict[str, dict[str, Any]] = {}
+    service_map: dict[str, dict[str, Any]] = {}
+    vulnerability_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+
+    for row in report_rows:
+        payload = parse_report_payload(row)
+        report_created_at = str(row.get("created_at") or payload.get("report_created_at") or utc_now())
+        risk_score = float(row.get("true_risk_score") or payload.get("true_risk_score") or 0)
+        profile = str(row.get("profile") or payload.get("meta", {}).get("profile") or "-")
+        target = str(row.get("target") or payload.get("meta", {}).get("target") or "-")
+
+        for host in payload.get("hosts", []):
+            host_id = str(host.get("host") or "-")
+            host_entry = asset_map.setdefault(
+                host_id,
+                {
+                    "host": host_id,
+                    "profiles": set(),
+                    "targets": set(),
+                    "open_port_keys": set(),
+                    "finding_titles": set(),
+                    "last_seen": report_created_at,
+                    "max_risk_score": risk_score,
+                },
+            )
+            host_entry["profiles"].add(profile)
+            host_entry["targets"].add(target)
+            host_entry["last_seen"] = max(str(host_entry["last_seen"]), report_created_at)
+            host_entry["max_risk_score"] = max(float(host_entry["max_risk_score"]), risk_score)
+
+            for port in host.get("ports", []):
+                if str(port.get("state") or "").lower() != "open":
+                    continue
+                port_no = int(port.get("port") or 0)
+                protocol = str(port.get("protocol") or "tcp")
+                key = (host_id, port_no, protocol)
+                unique_open_ports[key] = {
+                    "host": host_id,
+                    "port": port_no,
+                    "protocol": protocol,
+                    "service": str(port.get("name") or COMMON_SERVICE_NAMES.get(port_no, "unknown")),
+                    "product": str(port.get("product") or ""),
+                    "version": str(port.get("version") or ""),
+                    "last_seen": report_created_at,
+                }
+                host_entry["open_port_keys"].add(key)
+
+                service_label = str(port.get("product") or port.get("name") or COMMON_SERVICE_NAMES.get(port_no, "unknown")).strip() or "unknown"
+                service_bucket = service_map.setdefault(
+                    service_label.lower(),
+                    {
+                        "service": service_label,
+                        "count": 0,
+                        "assets": set(),
+                        "ports": set(),
+                    },
+                )
+                service_bucket["count"] += 1
+                service_bucket["assets"].add(host_id)
+                service_bucket["ports"].add(port_no)
+
+        for finding in payload.get("finding_items", []):
+            severity = normalize_severity(str(finding.get("severity") or "low"))
+            if severity in risk_distribution:
+                risk_distribution[severity] += 1
+
+            vuln_key = (
+                str(finding.get("title") or "Finding").strip().lower(),
+                str(finding.get("type") or "-").strip().lower(),
+                str(finding.get("cve") or "").strip().upper(),
+            )
+            vuln_bucket = vulnerability_map.setdefault(
+                vuln_key,
+                {
+                    "severity": severity,
+                    "title": finding.get("title", "Finding"),
+                    "type": finding.get("type", "-"),
+                    "cve": finding.get("cve", ""),
+                    "affected_assets": set(),
+                    "occurrences": 0,
+                    "last_seen": report_created_at,
+                },
+            )
+            vuln_bucket["severity"] = best_severity(vuln_bucket["severity"], severity)
+            vuln_bucket["occurrences"] += 1
+            vuln_bucket["last_seen"] = max(str(vuln_bucket["last_seen"]), report_created_at)
+            vuln_bucket["affected_assets"].add(str(finding.get("host") or "-"))
+
+            host_id = str(finding.get("host") or "-")
+            if host_id in asset_map:
+                asset_map[host_id]["finding_titles"].add(str(finding.get("title") or "Finding"))
+
+    top_assets = sorted(
+        [
+            {
+                "host": host,
+                "open_ports": len(entry["open_port_keys"]),
+                "findings": len(entry["finding_titles"]),
+                "profiles": sorted(entry["profiles"]),
+                "targets": sorted(entry["targets"]),
+                "last_seen": entry["last_seen"],
+                "risk_score": round(float(entry["max_risk_score"]), 1),
+            }
+            for host, entry in asset_map.items()
+        ],
+        key=lambda item: (int(item["open_ports"]), int(item["findings"]), float(item["risk_score"])),
+        reverse=True,
+    )[:16]
+
+    service_inventory = sorted(
+        [
+            {
+                "service": entry["service"],
+                "count": entry["count"],
+                "asset_count": len(entry["assets"]),
+                "ports": sorted(entry["ports"]),
+            }
+            for entry in service_map.values()
+        ],
+        key=lambda item: (int(item["asset_count"]), int(item["count"])),
+        reverse=True,
+    )[:16]
+
+    top_vulnerabilities = sorted(
+        [
+            {
+                "severity": entry["severity"],
+                "title": entry["title"],
+                "type": entry["type"],
+                "cve": entry["cve"],
+                "affected_assets": len(entry["affected_assets"]),
+                "occurrences": entry["occurrences"],
+                "last_seen": entry["last_seen"],
+            }
+            for entry in vulnerability_map.values()
+        ],
+        key=lambda item: (severity_rank(item["severity"]), int(item["affected_assets"]), int(item["occurrences"])),
+        reverse=True,
+    )[:18]
+
+    return {
+        "unique_open_ports": list(unique_open_ports.values()),
+        "top_assets": top_assets,
+        "service_inventory": service_inventory,
+        "top_vulnerabilities": top_vulnerabilities,
+        "risk_distribution": risk_distribution,
+    }
 
 
 def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
@@ -2176,25 +2358,25 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
-        return "-Pn -n -T4 --open -sS -sV --reason --top-ports 1600 --script=default,safe,banner"
+        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner"
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS -sV --top-ports 500 --script=default,safe,banner"
+        return "-Pn -T2 --open -sS -sV --version-light --top-ports 800 --script=default,safe,banner"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 4000 --script=default,safe,banner"
-        return "-Pn -T4 --open -sS -sV --reason --top-ports 2000 --script=default,safe,banner"
+            return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 8000 --script=default,safe,banner"
+        return "-Pn -T4 --open -sS -sV --reason --top-ports 5000 --script=default,safe,banner"
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
         return "-Pn -T4 --open -sS -sV --version-all --reason -p- --script=default,safe,banner,vuln"
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 6500 --script=default,safe,banner,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 12000 --script=default,safe,banner,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 4000 --script=default,safe,banner,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 8000 --script=default,safe,banner,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:

@@ -13,6 +13,33 @@
     --radius: 14px;
 }
 
+body[data-theme="emerald"] {
+    --bg-0: #071711;
+    --bg-1: #0d241a;
+    --panel: rgba(11, 30, 23, 0.84);
+    --panel-border: rgba(132, 207, 171, 0.2);
+    --primary: #42d98d;
+    --secondary: #7fd7c2;
+}
+
+body[data-theme="graphite"] {
+    --bg-0: #0d1015;
+    --bg-1: #161d28;
+    --panel: rgba(20, 25, 33, 0.86);
+    --panel-border: rgba(171, 181, 197, 0.16);
+    --primary: #8ad3ff;
+    --secondary: #9db4ff;
+}
+
+body[data-theme="sunset"] {
+    --bg-0: #1a0f15;
+    --bg-1: #221824;
+    --panel: rgba(30, 19, 30, 0.84);
+    --panel-border: rgba(224, 164, 137, 0.18);
+    --primary: #ffb36b;
+    --secondary: #ff7c87;
+}
+
 * {
     box-sizing: border-box;
 }
@@ -564,6 +591,10 @@ canvas {
     gap: 0.28rem;
 }
 
+.network-suggestions.hidden {
+    display: none;
+}
+
 .network-suggestions > span {
     color: #9db7d2;
     font-size: 0.72rem;
@@ -725,6 +756,70 @@ canvas {
     overflow: auto;
 }
 
+.history-list {
+    display: grid;
+    gap: 0.6rem;
+}
+
+.history-card {
+    border: 1px solid rgba(133, 173, 210, 0.22);
+    background: rgba(8, 18, 30, 0.76);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.history-toggle {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    padding: 0.72rem;
+    cursor: pointer;
+    display: grid;
+    gap: 0.4rem;
+    text-align: left;
+}
+
+.history-toggle:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.history-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+}
+
+.history-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.42rem;
+}
+
+.history-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.32s ease, opacity 0.24s ease;
+    opacity: 0;
+}
+
+.history-card.expanded .history-body {
+    max-height: 2400px;
+    opacity: 1;
+}
+
+.history-body-inner {
+    padding: 0 0.72rem 0.72rem;
+}
+
+.history-loading {
+    padding: 0.55rem 0;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
 .list-item {
     border: 1px solid rgba(133, 173, 210, 0.2);
     background: rgba(8, 18, 30, 0.76);
@@ -783,6 +878,16 @@ canvas {
     display: grid;
     gap: 0.44rem;
     font-size: 0.9rem;
+}
+
+.settings-grid {
+    align-items: start;
+}
+
+.settings-control-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
 }
 
 @keyframes fadeIn {

@@ -16,6 +16,8 @@ const kpiUnique = document.getElementById("kpiUnique");
 const kpiAssets = document.getElementById("kpiAssets");
 const recentScans = document.getElementById("recentScans");
 const exposureSummary = document.getElementById("exposureSummary");
+const topAssets = document.getElementById("topAssets");
+const serviceInventory = document.getElementById("serviceInventory");
 
 const trendChart = document.getElementById("trendChart");
 const riskChart = document.getElementById("riskChart");
@@ -27,7 +29,7 @@ const windowDays = document.getElementById("windowDays");
 
 const scanForm = document.getElementById("scanForm");
 const scannerTypeSelect = document.getElementById("scannerType");
-const scannerModeCards = Array.from(document.querySelectorAll(".scanner-mode-card"));
+const scannerModeCards = Array.from(document.querySelectorAll(".scanner-mode-card[data-mode]"));
 const targetInput = document.getElementById("target");
 const profileSelect = document.getElementById("profile");
 const portStrategySelect = document.getElementById("portStrategy");
@@ -52,6 +54,8 @@ const findingsTable = document.getElementById("findingsTable");
 
 const historyList = document.getElementById("historyList");
 const refreshHistoryButton = document.getElementById("refreshHistoryButton");
+const languageSelect = document.getElementById("languageSelect");
+const themeSelect = document.getElementById("themeSelect");
 
 const ORDER = ["critical", "high", "medium", "low"];
 const COLORS = {
@@ -66,6 +70,48 @@ let lastReportId = null;
 let trendChartInstance = null;
 let riskChartInstance = null;
 let severityStackChartInstance = null;
+const historyCache = new Map();
+
+const I18N = {
+    de: {
+        dashboard: "Dashboard",
+        scanner: "Scanner",
+        findings: "Findings",
+        history: "History",
+        settings: "Settings",
+        workspaceEyebrow: "Security Workspace",
+        workspaceTitle: "Professional Vulnerability Intelligence",
+        workspaceSubtitle: "Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.",
+        newProject: "New Project",
+        projectCsv: "Project CSV",
+        projectPdf: "Project PDF",
+        reportCsv: "Report CSV",
+        reportPdf: "Report PDF",
+        findingsCsv: "Findings CSV",
+        refresh: "Refresh",
+        startScan: "Start Scan",
+        intelOnly: "Intel Only",
+    },
+    en: {
+        dashboard: "Dashboard",
+        scanner: "Scanner",
+        findings: "Findings",
+        history: "History",
+        settings: "Settings",
+        workspaceEyebrow: "Security Workspace",
+        workspaceTitle: "Professional Vulnerability Intelligence",
+        workspaceSubtitle: "Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.",
+        newProject: "New Project",
+        projectCsv: "Project CSV",
+        projectPdf: "Project PDF",
+        reportCsv: "Report CSV",
+        reportPdf: "Report PDF",
+        findingsCsv: "Findings CSV",
+        refresh: "Refresh",
+        startScan: "Start Scan",
+        intelOnly: "Intel Only",
+    },
+};
 
 function scannerSettings(mode) {
     if (mode === "network") {
@@ -77,6 +123,7 @@ function scannerSettings(mode) {
             disableProfile: true,
             hidePortStrategy: true,
             showIntelOnly: false,
+            showNetworkHints: true,
         };
     }
 
@@ -89,6 +136,7 @@ function scannerSettings(mode) {
             disableProfile: true,
             hidePortStrategy: true,
             showIntelOnly: true,
+            showNetworkHints: false,
         };
     }
 
@@ -100,6 +148,7 @@ function scannerSettings(mode) {
         disableProfile: false,
         hidePortStrategy: false,
         showIntelOnly: false,
+        showNetworkHints: false,
     };
 }
 
@@ -116,6 +165,7 @@ function applyScannerMode(mode) {
     if (portStrategyGroup) {
         portStrategyGroup.style.display = cfg.hidePortStrategy ? "none" : "block";
     }
+    document.querySelector(".network-suggestions")?.classList.toggle("hidden", !cfg.showNetworkHints);
     if (intelOnlyButton) {
         intelOnlyButton.classList.toggle("hidden", !cfg.showIntelOnly);
     }
@@ -512,6 +562,87 @@ function renderExposureSummary(totals) {
         .join("");
 }
 
+function renderTopAssets(items) {
+    if (!topAssets) {
+        return;
+    }
+    if (!items.length) {
+        topAssets.innerHTML = '<div class="list-item"><div class="list-line">No asset inventory yet.</div></div>';
+        return;
+    }
+
+    topAssets.innerHTML = items
+        .slice(0, 12)
+        .map(
+            (item) => `
+                <div class="list-item">
+                    <div class="list-line"><strong>${esc(item.host || "-")}</strong><span>${esc(item.last_seen || "-")}</span></div>
+                    <div class="list-line"><span>Open ports: ${esc(item.open_ports || 0)}</span><span>Findings: ${esc(item.findings || 0)}</span></div>
+                    <div class="list-line"><span>Risk: ${esc(item.risk_score || 0)}</span><span>${esc((item.profiles || []).join(", ") || "-")}</span></div>
+                </div>
+            `
+        )
+        .join("");
+}
+
+function renderServiceInventory(items) {
+    if (!serviceInventory) {
+        return;
+    }
+    if (!items.length) {
+        serviceInventory.innerHTML = '<div class="list-item"><div class="list-line">No service inventory yet.</div></div>';
+        return;
+    }
+
+    serviceInventory.innerHTML = items
+        .slice(0, 12)
+        .map(
+            (item) => `
+                <div class="list-item">
+                    <div class="list-line"><strong>${esc(item.service || "unknown")}</strong><span>Assets: ${esc(item.asset_count || 0)}</span></div>
+                    <div class="list-line"><span>Observations: ${esc(item.count || 0)}</span><span>Ports: ${esc((item.ports || []).slice(0, 5).join(", ") || "-")}</span></div>
+                </div>
+            `
+        )
+        .join("");
+}
+
+function applyTheme(theme) {
+    const safeTheme = theme || "ocean";
+    document.body.dataset.theme = safeTheme;
+    localStorage.setItem("vscanner.theme", safeTheme);
+}
+
+function applyLanguage(lang) {
+    const safeLang = I18N[lang] ? lang : "de";
+    const text = I18N[safeLang];
+    document.documentElement.lang = safeLang;
+    localStorage.setItem("vscanner.language", safeLang);
+
+    document.querySelector('.menu-item[data-tab="dashboard"]').textContent = text.dashboard;
+    document.querySelector('.menu-item[data-tab="scanner"]').textContent = text.scanner;
+    document.querySelector('.menu-item[data-tab="findings"]').textContent = text.findings;
+    document.querySelector('.menu-item[data-tab="history"]').textContent = text.history;
+    document.querySelector('.menu-item[data-tab="settings"]').textContent = text.settings;
+    document.querySelector('.eyebrow').textContent = text.workspaceEyebrow;
+    document.querySelector('.topbar h1').textContent = text.workspaceTitle;
+    document.querySelector('.topbar p').textContent = text.workspaceSubtitle;
+    newProjectButton.textContent = text.newProject;
+    projectCsvButton.textContent = text.projectCsv;
+    projectPdfButton.textContent = text.projectPdf;
+    reportCsvButton.textContent = text.reportCsv;
+    reportPdfButton.textContent = text.reportPdf;
+    findingsCsvButton.textContent = text.findingsCsv;
+    refreshFindingsButton.textContent = text.refresh;
+    refreshHistoryButton.textContent = text.refresh;
+    if (!scanButton.disabled) {
+        scanButton.textContent = text.startScan;
+    }
+    if (!intelOnlyButton.disabled) {
+        intelOnlyButton.textContent = text.intelOnly;
+    }
+}
+
 function renderIntelBlock(intelData) {
     if (!intelData || typeof intelData !== "object") {
         return "";
@@ -556,7 +687,7 @@ function renderIntelBlock(intelData) {
     `;
 }
 
-function renderScanResult(data) {
+function buildScanResultMarkup(data) {
     const metrics = data.metrics || {};
     const rows = (data.finding_items || [])
         .map((item) => {
@@ -619,7 +750,7 @@ function renderScanResult(data) {
 
     const intelBlock = renderIntelBlock(data.intel || null);
 
-    scanResult.innerHTML = `
+    return `
         <div class="scan-summary-grid">
             <div class="scan-summary-item"><span>Hosts Scanned</span><strong>${esc(metrics.hosts_scanned || 0)}</strong></div>
             <div class="scan-summary-item"><span>Open Ports</span><strong>${esc(metrics.open_ports || 0)}</strong></div>
@@ -643,6 +774,10 @@ function renderScanResult(data) {
             ${hostRows || '<div class="list-item"><div class="list-line">No host details captured.</div></div>'}
         </div>
     `;
+}
+
+function renderScanResult(data) {
+    scanResult.innerHTML = buildScanResultMarkup(data);
 }
 
 function renderFindings(items) {
@@ -696,19 +831,61 @@ function renderHistory(items) {
         .map((item) => {
             const sev = String(item.risk_level || "low").toLowerCase();
             return `
-                <div class="list-item">
-                    <div class="list-line"><strong>${esc(item.target || "-")}</strong><span>${esc(item.created_at || "-")}</span></div>
-                    <div class="list-line"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
-                    <div class="list-line"><span>Risk Score: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
-                    <div class="list-line">
-                        <button class="btn ghost" type="button" onclick="window.openReport('${esc(item.id)}')">Open</button>
-                        <button class="btn ghost" type="button" onclick="window.openReportCsv('${esc(item.id)}')">CSV</button>
-                        <button class="btn ghost" type="button" onclick="window.openReportPdf('${esc(item.id)}')">PDF</button>
+                <div class="history-card" data-report-id="${esc(item.id)}">
+                    <button class="history-toggle" type="button" data-report-toggle="${esc(item.id)}">
+                        <div class="history-meta"><strong>${esc(item.target || "-")}</strong><span>${esc(item.created_at || "-")}</span></div>
+                        <div class="history-meta"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
+                        <div class="history-meta"><span>Risk Score: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
+                    </button>
+                    <div class="history-body">
+                        <div class="history-body-inner">
+                            <div class="history-actions">
+                                <button class="btn ghost" type="button" data-open-report="${esc(item.id)}">Open</button>
+                                <button class="btn ghost" type="button" data-open-report-csv="${esc(item.id)}">CSV</button>
+                                <button class="btn ghost" type="button" data-open-report-pdf="${esc(item.id)}">PDF</button>
+                            </div>
+                            <div class="history-loading hidden" data-report-loading="${esc(item.id)}">Loading report details...</div>
+                            <div data-report-content="${esc(item.id)}"></div>
+                        </div>
                     </div>
                 </div>
             `;
         })
         .join("");
+}
+
+async function expandHistoryReport(reportId) {
+    const card = historyList.querySelector(`[data-report-id="${CSS.escape(reportId)}"]`);
+    if (!card) {
+        return;
+    }
+
+    const loading = historyList.querySelector(`[data-report-loading="${CSS.escape(reportId)}"]`);
+    const content = historyList.querySelector(`[data-report-content="${CSS.escape(reportId)}"]`);
+    const expanded = card.classList.toggle("expanded");
+    if (!expanded) {
+        return;
+    }
+
+    if (historyCache.has(reportId)) {
+        content.innerHTML = buildScanResultMarkup(historyCache.get(reportId));
+        return;
+    }
+
+    loading?.classList.remove("hidden");
+    try {
+        const response = await fetch(`/api/reports/${encodeURIComponent(reportId)}`);
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || "Report not found");
+        }
+        historyCache.set(reportId, data);
+        content.innerHTML = buildScanResultMarkup(data);
+    } catch (error) {
+        content.innerHTML = `<div class="error">${esc(error.message || "Could not load report details")}</div>`;
+    } finally {
+        loading?.classList.add("hidden");
+    }
 }
 
 async function loadHealth() {
@@ -776,6 +953,8 @@ async function loadDashboard() {
     renderTopVulns(data.top_vulnerabilities || []);
     renderRecentScans(data.recent_scans || []);
     renderExposureSummary(data.totals || {});
+    renderTopAssets(data.top_assets || []);
+    renderServiceInventory(data.service_inventory || []);
 }
 
 async function loadAggregatedFindings() {
@@ -832,6 +1011,31 @@ window.openReportCsv = function openReportCsv(reportId) {
     window.open(`/api/reports/${encodeURIComponent(reportId)}/csv`, "_blank", "noopener,noreferrer");
 };
 
+historyList.addEventListener("click", async (event) => {
+    const toggle = event.target.closest("[data-report-toggle]");
+    if (toggle) {
+        await expandHistoryReport(toggle.dataset.reportToggle || "");
+        return;
+    }
+
+    const openButton = event.target.closest("[data-open-report]");
+    if (openButton) {
+        await window.openReport(openButton.dataset.openReport || "");
+        return;
+    }
+
+    const csvButton = event.target.closest("[data-open-report-csv]");
+    if (csvButton) {
+        window.openReportCsv(csvButton.dataset.openReportCsv || "");
+        return;
+    }
+
+    const pdfButton = event.target.closest("[data-open-report-pdf]");
+    if (pdfButton) {
+        window.openReportPdf(pdfButton.dataset.openReportPdf || "");
+    }
+});
+
 scanForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearError();
@@ -881,7 +1085,8 @@ scanForm.addEventListener("submit", async (event) => {
         showError(error.message || "Scan failed");
     } finally {
         scanButton.disabled = false;
-        scanButton.textContent = "Start Scan";
+        const activeLanguage = localStorage.getItem("vscanner.language") || "de";
+        scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
     }
 });
 
@@ -999,7 +1204,8 @@ intelOnlyButton.addEventListener("click", async () => {
         showError(error.message || "Intel-only request failed");
     } finally {
         intelOnlyButton.disabled = false;
-        intelOnlyButton.textContent = "Intel Only";
+        const activeLanguage = localStorage.getItem("vscanner.language") || "de";
+        intelOnlyButton.textContent = (I18N[activeLanguage] || I18N.de).intelOnly;
     }
 });
 
@@ -1010,6 +1216,8 @@ severityFilter.addEventListener("change", loadAggregatedFindings);
 sinceDays.addEventListener("change", loadAggregatedFindings);
 sortBy.addEventListener("change", loadAggregatedFindings);
 sortDir.addEventListener("change", loadAggregatedFindings);
+languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
+themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
 findingSearch.addEventListener("input", () => {
     window.clearTimeout(window.__findingSearchTimer);
     window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
@@ -1017,6 +1225,12 @@ findingSearch.addEventListener("input", () => {
 
 (async function bootstrap() {
     try {
+        const savedTheme = localStorage.getItem("vscanner.theme") || "ocean";
+        const savedLanguage = localStorage.getItem("vscanner.language") || "de";
+        themeSelect.value = savedTheme;
+        languageSelect.value = savedLanguage;
+        applyTheme(savedTheme);
+        applyLanguage(savedLanguage);
         applyScannerMode(scannerTypeSelect.value || "standard");
         await renderNetworkHints();
         await loadHealth();
