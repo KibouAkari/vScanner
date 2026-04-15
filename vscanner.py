@@ -20,7 +20,22 @@ import requests
 import urllib3
 from flask import Flask, jsonify, render_template, request, send_file
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.colors import HexColor
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas
+from reportlab.platypus import (
+    BaseDocTemplate,
+    Frame,
+    HRFlowable,
+    PageBreak,
+    PageTemplate,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+)
+from reportlab.graphics.shapes import Drawing, Rect
+from reportlab.graphics.shapes import String as _GStr
 from urllib3.exceptions import InsecureRequestWarning
 
 try:
@@ -1300,124 +1315,587 @@ def get_project_findings(
     return items
 
 
+# ============================================================
+#  PROFESSIONAL PDF ENGINE
+# ============================================================
+
+_PDF_BG = HexColor("#071018")
+_PDF_PANEL = HexColor("#0d1b2b")
+_PDF_PANEL2 = HexColor("#0a1520")
+_PDF_PRIMARY = HexColor("#39d4b5")
+_PDF_SECONDARY = HexColor("#64b2ff")
+_PDF_TEXT = HexColor("#ecf4ff")
+_PDF_MUTED = HexColor("#9db4cc")
+_PDF_BORDER = HexColor("#1e3347")
+_PDF_SEV_COLORS: dict[str, HexColor] = {
+    "critical": HexColor("#ff5d73"),
+    "high": HexColor("#ffc35c"),
+    "medium": HexColor("#67b9ff"),
+    "low": HexColor("#4cdd88"),
+    "info": HexColor("#b0c8e0"),
+}
+
+_PS_BODY = ParagraphStyle("vs_body", fontName="Helvetica", fontSize=8, textColor=HexColor("#d4e4f4"), leading=11)
+_PS_BOLD = ParagraphStyle("vs_bold", fontName="Helvetica-Bold", fontSize=8, textColor=HexColor("#ecf4ff"), leading=11)
+_PS_MUTED = ParagraphStyle("vs_muted", fontName="Helvetica", fontSize=7, textColor=HexColor("#9db4cc"), leading=10)
+_PS_SEC = ParagraphStyle("vs_sec", fontName="Helvetica-Bold", fontSize=10, textColor=HexColor("#ecf4ff"), leading=14, leftIndent=10)
+_PS_CRIT = ParagraphStyle("vs_c", fontName="Helvetica-Bold", fontSize=8, textColor=HexColor("#ff5d73"), leading=11)
+_PS_HIGH = ParagraphStyle("vs_h", fontName="Helvetica-Bold", fontSize=8, textColor=HexColor("#ffc35c"), leading=11)
+_PS_MED = ParagraphStyle("vs_m", fontName="Helvetica-Bold", fontSize=8, textColor=HexColor("#67b9ff"), leading=11)
+_PS_LOW = ParagraphStyle("vs_l", fontName="Helvetica-Bold", fontSize=8, textColor=HexColor("#4cdd88"), leading=11)
+_PDF_SEV_STYLES = {"critical": _PS_CRIT, "high": _PS_HIGH, "medium": _PS_MED, "low": _PS_LOW}
+
+_TBL_BASE = [
+    ("BACKGROUND", (0, 0), (-1, 0), HexColor("#0d1b2b")),
+    ("TEXTCOLOR", (0, 0), (-1, 0), HexColor("#39d4b5")),
+    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+    ("FONTSIZE", (0, 0), (-1, 0), 8),
+    ("TOPPADDING", (0, 0), (-1, -1), 5),
+    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+    ("LEFTPADDING", (0, 0), (-1, -1), 7),
+    ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [HexColor("#0a1520"), HexColor("#0d1b2b")]),
+    ("TEXTCOLOR", (0, 1), (-1, -1), HexColor("#d4e4f4")),
+    ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+    ("FONTSIZE", (0, 1), (-1, -1), 8),
+    ("GRID", (0, 0), (-1, -1), 0.3, HexColor("#1e3347")),
+    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+]
+
+
+def _p(text: str, style: ParagraphStyle | None = None) -> Paragraph:
+    return Paragraph(str(text), style or _PS_BODY)
+
+
+def _sev_p(sev: str) -> Paragraph:
+    s = str(sev).strip().lower()
+    return Paragraph(s.upper(), _PDF_SEV_STYLES.get(s, _PS_BODY))
+
+
+def _risk_hex(score: float | int | None) -> str:
+    s = float(score or 0)
+    if s >= 7.5:
+        return "#ff5d73"
+    if s >= 5.0:
+        return "#ffc35c"
+    if s >= 2.5:
+        return "#67b9ff"
+    return "#4cdd88"
+
+
+def _sev_style_cmds(sev_list: list[str], start_row: int = 1) -> list:
+    cmds = []
+    for i, sev in enumerate(sev_list, start=start_row):
+        clr = _PDF_SEV_COLORS.get(str(sev).lower(), _PDF_MUTED)
+        cmds.append(("LINEBEFORE", (0, i), (0, i), 3, clr))
+    return cmds
+
+
+def _styled_table(data: list, col_widths: list, extra: list | None = None) -> Table:
+    cmds = list(_TBL_BASE)
+    if extra:
+        cmds.extend(extra)
+    t = Table(data, colWidths=col_widths, repeatRows=1)
+    t.setStyle(TableStyle(cmds))
+    return t
+
+
+def _section_bar(title: str, width: float) -> Table:
+    t = Table([[_p(title, _PS_SEC)]], colWidths=[width])
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _PDF_PANEL),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, _PDF_PRIMARY),
+        ("TOPPADDING", (0, 0), (-1, -1), 9),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+    ]))
+    return t
+
+
+def _kpi_strip(items: list[tuple], width: float) -> Table:
+    cols = 3
+    while len(items) % cols:
+        items.append(("", "", "#9db4cc"))
+    col_w = width / cols
+    rows = []
+    for i in range(0, len(items), cols):
+        row = []
+        for label, value, chex in items[i : i + cols]:
+            html = (
+                f'<font name="Helvetica" size="7" color="#9db4cc">{label}</font><br/>'
+                f'<font name="Helvetica-Bold" size="17" color="{chex}">{value or "—"}</font>'
+            )
+            row.append(_p(html))
+        rows.append(row)
+    t = Table(rows, colWidths=[col_w] * cols)
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _PDF_PANEL2),
+        ("BOX", (0, 0), (-1, -1), 0.5, _PDF_BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.5, _PDF_BORDER),
+        ("TOPPADDING", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 13),
+        ("LEFTPADDING", (0, 0), (-1, -1), 14),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    return t
+
+
+def _risk_bars(risk_dist: dict, width: float) -> Drawing:
+    SEV = [("CRITICAL", "#ff5d73"), ("HIGH", "#ffc35c"), ("MEDIUM", "#67b9ff"), ("LOW", "#4cdd88")]
+    values = [risk_dist.get(s.lower(), 0) for s, _ in SEV]
+    total = max(sum(values), 1)
+    lbl_w: float = 78
+    cnt_w: float = 48
+    bar_area = width - lbl_w - cnt_w - 16
+    row_h = 26
+    pad = 7
+    bar_h = row_h - 2 * pad
+    h = row_h * 4 + 4
+
+    d = Drawing(width, h)
+    d.add(Rect(0, 0, width, h, fillColor=HexColor("#0a1520"), strokeColor=None))
+    for i, ((label, hx), val) in enumerate(zip(SEV, values)):
+        y0 = h - (i + 1) * row_h
+        bw = int((val / total) * bar_area)
+        clr = HexColor(hx)
+        bg = HexColor("#0a1520") if i % 2 == 0 else HexColor("#0d1b2b")
+        d.add(Rect(0, y0, width, row_h, fillColor=bg, strokeColor=None))
+        d.add(_GStr(8, y0 + pad + 2, label, fontSize=7.5, fillColor=HexColor("#9db4cc"), fontName="Helvetica-Bold"))
+        d.add(Rect(lbl_w, y0 + pad, bar_area, bar_h, fillColor=HexColor("#071018"), strokeColor=None, rx=3, ry=3))
+        if bw > 0:
+            d.add(Rect(lbl_w, y0 + pad, bw, bar_h, fillColor=clr, strokeColor=None, rx=3, ry=3))
+        d.add(_GStr(lbl_w + bar_area + 8, y0 + pad + 2, str(val), fontSize=9, fillColor=clr, fontName="Helvetica-Bold"))
+    return d
+
+
+def _pdf_page_frame(canv: Any, doc: Any, project_label: str, generated: str) -> None:
+    canv.saveState()
+    w, h = A4
+
+    # ── Header strip ──────────────────────────────────────────────
+    canv.setFillColor(_PDF_BG)
+    canv.rect(0, h - 44, w, 44, fill=1, stroke=0)
+    # Teal accent line
+    canv.setFillColor(_PDF_PRIMARY)
+    canv.rect(0, h - 46, w, 2, fill=1, stroke=0)
+    # VS badge
+    canv.setFillColor(HexColor("#0d2b32"))
+    canv.roundRect(14, h - 39, 24, 24, 5, fill=1, stroke=0)
+    canv.setFillColor(_PDF_PRIMARY)
+    canv.setFont("Helvetica-Bold", 9)
+    canv.drawCentredString(26, h - 30, "VS")
+    # vScanner wordmark
+    canv.setFillColor(_PDF_PRIMARY)
+    canv.setFont("Helvetica-Bold", 13)
+    canv.drawString(44, h - 30, "vScanner")
+    # Divider
+    canv.setFillColor(_PDF_BORDER)
+    canv.rect(136, h - 38, 1, 22, fill=1, stroke=0)
+    # Project / report label
+    canv.setFillColor(_PDF_TEXT)
+    canv.setFont("Helvetica", 9)
+    canv.drawString(144, h - 30, project_label[:70])
+    # Generation timestamp (right)
+    canv.setFillColor(_PDF_MUTED)
+    canv.setFont("Helvetica", 7.5)
+    canv.drawRightString(w - 14, h - 30, generated)
+
+    # ── Footer strip ──────────────────────────────────────────────
+    canv.setFillColor(_PDF_BG)
+    canv.rect(0, 0, w, 34, fill=1, stroke=0)
+    canv.setFillColor(_PDF_BORDER)
+    canv.rect(0, 34, w, 1, fill=1, stroke=0)
+    canv.setFillColor(_PDF_MUTED)
+    canv.setFont("Helvetica", 7)
+    canv.drawString(14, 13, "vScanner  ·  Adaptive Security Platform  ·  Confidential & Internal Use Only")
+    canv.setFillColor(_PDF_PRIMARY)
+    canv.setFont("Helvetica-Bold", 8)
+    canv.drawRightString(w - 14, 13, f"Page {doc.page}")
+
+    canv.restoreState()
+
+
+def _make_pdf_doc(buffer: io.BytesIO, title: str, page_cb: Any) -> tuple[BaseDocTemplate, float]:
+    doc = BaseDocTemplate(
+        buffer,
+        pagesize=A4,
+        leftMargin=35,
+        rightMargin=35,
+        topMargin=66,
+        bottomMargin=54,
+        title=title,
+        author="vScanner",
+        subject=title,
+        creator="vScanner Adaptive Security Platform",
+    )
+    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="main")
+    doc.addPageTemplates([PageTemplate(id="main", frames=[frame], onPage=page_cb)])
+    return doc, doc.width
+
+
 def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     dashboard = get_project_dashboard(project_id, window_days=window_days)
     findings = get_project_findings(project_id, since_days=window_days)
 
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    _, height = A4
-    y = height - 40
-
-    def write_line(text: str, size: int = 10, bold: bool = False, gap: int = 14) -> None:
-        nonlocal y
-        if y < 60:
-            pdf.showPage()
-            y = height - 40
-        font = "Helvetica-Bold" if bold else "Helvetica"
-        pdf.setFont(font, size)
-        pdf.drawString(40, y, text[:120])
-        y -= gap
-
+    project = dashboard.get("project", {})
+    proj_name = str(project.get("name", project_id))[:60]
     totals = dashboard.get("totals", {})
-    write_line("vScanner Executive Dashboard Report", size=16, bold=True, gap=20)
-    write_line(f"Project: {dashboard.get('project', {}).get('name', '-')}")
-    write_line(f"Window: Last {window_days} days")
-    write_line(
-        "Scans: {scans} | Avg Risk: {avg_risk} | Findings: {findings} | CVEs: {cves}".format(
-            scans=totals.get("scans", 0),
-            avg_risk=totals.get("avg_risk", 0),
-            findings=totals.get("findings", 0),
-            cves=totals.get("cve_count", 0),
-        )
+    risk_dist = dashboard.get("risk_distribution", {"critical": 0, "high": 0, "medium": 0, "low": 0})
+    recent_scans = dashboard.get("recent_scans", [])
+    top_vulns = dashboard.get("top_vulnerabilities", [])
+    top_assets = dashboard.get("top_assets", [])
+    service_inv = dashboard.get("service_inventory", [])
+
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    buffer = io.BytesIO()
+    page_cb = lambda c, d: _pdf_page_frame(c, d, proj_name, generated)
+    doc, W = _make_pdf_doc(buffer, f"vScanner – Executive Report – {proj_name}", page_cb)
+
+    story: list = []
+
+    # ── Cover block ───────────────────────────────────
+    avg_risk = float(totals.get("avg_risk", 0))
+    cover = Table(
+        [
+            [_p("EXECUTIVE SECURITY REPORT", ParagraphStyle("ec1", fontName="Helvetica-Bold", fontSize=9, textColor=_PDF_PRIMARY, leading=13))],
+            [_p(proj_name, ParagraphStyle("ec2", fontName="Helvetica-Bold", fontSize=22, textColor=_PDF_TEXT, leading=28))],
+            [_p(f"Report Period: Last {window_days} days  ·  Generated: {generated}", _PS_MUTED)],
+            [_p(
+                f'Risk Score: <font name="Helvetica-Bold" color="{_risk_hex(avg_risk)}">{avg_risk}</font>'
+                f'  ·  Scans: <font name="Helvetica-Bold" color="#64b2ff">{totals.get("scans", 0)}</font>'
+                f'  ·  Findings: <font name="Helvetica-Bold" color="#ecf4ff">{totals.get("findings", 0)}</font>',
+                _PS_BODY,
+            )],
+        ],
+        colWidths=[W],
     )
-    write_line("", gap=18)
-    write_line("Top Aggregated Vulnerabilities", bold=True)
+    cover.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _PDF_BG),
+        ("LEFTPADDING", (0, 0), (-1, -1), 18),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 18),
+        ("TOPPADDING", (0, 0), (-1, 0), 18),
+        ("TOPPADDING", (0, 1), (-1, 1), 4),
+        ("TOPPADDING", (0, 2), (-1, 2), 8),
+        ("TOPPADDING", (0, 3), (-1, 3), 6),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 18),
+        ("LINEBELOW", (0, -1), (-1, -1), 2, _PDF_PRIMARY),
+    ]))
+    story.append(cover)
+    story.append(Spacer(1, 16))
 
-    for row in findings[:180]:
-        write_line(
-            "[{sev}] assets={assets} occurrences={occ} | {title} | {cve}".format(
-                sev=str(row.get("severity", "low")).upper(),
-                assets=row.get("asset_count", 0),
-                occ=row.get("occurrence_count", 0),
-                title=row.get("title", "Finding"),
-                cve=row.get("cve") or "-",
-            ),
-            size=9,
-            gap=12,
-        )
+    # ── Executive Summary KPIs ─────────────────────────
+    story.append(_section_bar("Executive Summary", W))
+    story.append(Spacer(1, 6))
+    story.append(_kpi_strip([
+        ("Total Scans", str(totals.get("scans", 0)), "#64b2ff"),
+        ("Avg Risk Score", str(avg_risk), _risk_hex(avg_risk)),
+        ("Total Findings", str(totals.get("findings", 0)), "#ecf4ff"),
+        ("Open Ports", str(totals.get("open_ports", 0)), "#ffc35c"),
+        ("Exposed Services", str(totals.get("exposed_services", 0)), "#67b9ff"),
+        ("CVE Candidates", str(totals.get("cve_count", 0)), "#ff5d73"),
+    ], W))
+    story.append(Spacer(1, 16))
 
-    pdf.save()
+    # ── Risk Distribution ──────────────────────────────
+    story.append(_section_bar("Risk Distribution", W))
+    story.append(Spacer(1, 6))
+    story.append(_risk_bars(risk_dist, W))
+    story.append(Spacer(1, 16))
+
+    # ── Scan History ───────────────────────────────────
+    story.append(_section_bar("Scan History", W))
+    story.append(Spacer(1, 4))
+    if recent_scans:
+        hdr = ["Date / Time", "Target", "Profile", "Risk Level", "Score", "Findings"]
+        cw = [108, 142, 78, 72, 50, 60]
+        rows = [hdr]
+        sevs: list[str] = []
+        for item in recent_scans:
+            dt = str(item.get("created_at", ""))[:16].replace("T", " ")
+            sev = str(item.get("risk_level", "low")).lower()
+            rows.append([
+                _p(dt, _PS_MUTED),
+                _p(str(item.get("target", "-"))[:42], _PS_BODY),
+                _p(str(item.get("profile", "-")), _PS_BODY),
+                _sev_p(sev),
+                _p(str(item.get("true_risk_score", 0)), _PS_BODY),
+                _p(str(item.get("total_findings", 0)), _PS_BODY),
+            ])
+            sevs.append(sev)
+        story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
+    else:
+        story.append(_p("No scans recorded in the selected time window.", _PS_MUTED))
+    story.append(Spacer(1, 16))
+
+    # ── Asset Intelligence ─────────────────────────────
+    if top_assets:
+        story.append(_section_bar("Top Exposed Assets", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Host / Asset", "Open Ports", "Findings", "Risk Score", "Profiles", "Last Seen"]
+        cw = [152, 66, 64, 66, 84, 88]
+        rows = [hdr]
+        for item in top_assets[:30]:
+            rs = item.get("risk_score", 0)
+            rows.append([
+                _p(str(item.get("host", "-"))[:42], _PS_BOLD),
+                _p(str(item.get("open_ports", 0)), _PS_BODY),
+                _p(str(item.get("findings", 0)), _PS_BODY),
+                _p(str(rs), ParagraphStyle("rsc", fontName="Helvetica", fontSize=8, textColor=HexColor(_risk_hex(rs)), leading=11)),
+                _p(", ".join(item.get("profiles", []))[:28] or "-", _PS_MUTED),
+                _p(str(item.get("last_seen", "-"))[:16], _PS_MUTED),
+            ])
+        story.append(_styled_table(rows, cw))
+        story.append(Spacer(1, 16))
+
+    # ── Service Inventory ──────────────────────────────
+    if service_inv:
+        story.append(_section_bar("Service Inventory", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Service", "Product", "Version", "Host Count", "Port", "First Seen"]
+        cw = [100, 118, 80, 72, 60, 95]
+        rows = [hdr]
+        for item in service_inv[:30]:
+            rows.append([
+                _p(str(item.get("service", "-")), _PS_BOLD),
+                _p(str(item.get("product", "-"))[:34], _PS_BODY),
+                _p(str(item.get("version", "-"))[:22], _PS_BODY),
+                _p(str(item.get("host_count", 0)), _PS_BODY),
+                _p(str(item.get("port", "-")), _PS_BODY),
+                _p(str(item.get("first_seen", "-"))[:16], _PS_MUTED),
+            ])
+        story.append(_styled_table(rows, cw))
+        story.append(Spacer(1, 16))
+
+    # ── Vulnerability Intelligence ─────────────────────
+    if top_vulns:
+        story.append(PageBreak())
+        story.append(_section_bar("Vulnerability Intelligence", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Severity", "Title", "CVE", "Affected Assets", "Occurrences"]
+        cw = [70, 216, 80, 92, 72]
+        rows = [hdr]
+        sevs = []
+        for item in top_vulns[:80]:
+            sev = str(item.get("severity", "low")).lower()
+            rows.append([
+                _sev_p(sev),
+                _p(str(item.get("title", "Finding"))[:82], _PS_BODY),
+                _p(str(item.get("cve") or "-"), _PS_MUTED),
+                _p(str(item.get("affected_assets", 0)), _PS_BODY),
+                _p(str(item.get("occurrences", 0)), _PS_BODY),
+            ])
+            sevs.append(sev)
+        story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
+        story.append(Spacer(1, 16))
+
+    # ── Aggregated Findings Detail ─────────────────────
+    if findings:
+        story.append(PageBreak())
+        story.append(_section_bar("Aggregated Findings Detail", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Sev", "Title", "CVE", "Type", "Assets", "Occurrences"]
+        cw = [50, 212, 76, 86, 52, 54]
+        rows = [hdr]
+        sevs = []
+        for item in findings[:250]:
+            sev = str(item.get("severity", "low")).lower()
+            rows.append([
+                _sev_p(sev),
+                _p(str(item.get("title", "Finding"))[:82], _PS_BODY),
+                _p(str(item.get("cve") or "-"), _PS_MUTED),
+                _p(str(item.get("type") or "-")[:30], _PS_BODY),
+                _p(str(item.get("asset_count", 0)), _PS_BODY),
+                _p(str(item.get("occurrence_count", 0)), _PS_BODY),
+            ])
+            sevs.append(sev)
+        story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
+
+    doc.build(story)
     buffer.seek(0)
     return buffer
 
 
 def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
-    buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    _, height = A4
-    y = height - 40
-
-    def write_line(text: str, size: int = 10, bold: bool = False, gap: int = 14) -> None:
-        nonlocal y
-        if y < 60:
-            pdf.showPage()
-            y = height - 40
-        font = "Helvetica-Bold" if bold else "Helvetica"
-        pdf.setFont(font, size)
-        pdf.drawString(40, y, text[:120])
-        y -= gap
-
     meta = report.get("meta", {})
     summary = report.get("risk_summary", {})
     metrics = report.get("metrics", {})
     findings = report.get("finding_items", [])
+    hosts = report.get("hosts", [])
+    intel = report.get("intel") or {}
 
-    write_line("vScanner Detailed Scan Report", size=16, bold=True, gap=20)
-    write_line(f"Project: {meta.get('project_name', DEFAULT_PROJECT_NAME)}")
-    write_line(f"Target: {meta.get('target', '-')}")
-    write_line(f"Profile: {meta.get('profile', '-')} | Engine: {meta.get('engine', '-')}")
-    write_line(f"Start: {meta.get('started_at', '-')} | End: {meta.get('finished_at', '-')}")
-    write_line(
-        "Risk Level: {risk} | True Risk Score: {score}".format(
-            risk=meta.get("risk_level", "low"),
-            score=report.get("true_risk_score", 0),
-        ),
-        bold=True,
-    )
-    write_line("", gap=18)
-    write_line("Summary", bold=True)
-    write_line(
-        "Critical: {critical} | High: {high} | Medium: {medium} | Low: {low}".format(
-            critical=summary.get("critical", 0),
-            high=summary.get("high", 0),
-            medium=summary.get("medium", 0),
-            low=summary.get("low", 0),
-        )
-    )
-    write_line(
-        "Open Ports: {open_ports} | Exposed Services: {exposed_services} | CVE Candidates: {cve_candidates}".format(
-            open_ports=metrics.get("open_ports", 0),
-            exposed_services=metrics.get("exposed_services", 0),
-            cve_candidates=metrics.get("cve_candidates", 0),
-        )
-    )
-    write_line("", gap=18)
-    write_line("Top Findings", bold=True)
+    target = str(meta.get("target", "Unknown Target"))[:80]
+    proj_name = str(meta.get("project_name", DEFAULT_PROJECT_NAME))[:55]
+    profile = str(meta.get("profile", "-"))
+    engine = str(meta.get("engine", "-"))
+    started = str(meta.get("started_at", "-"))[:16].replace("T", " ")
+    finished = str(meta.get("finished_at", "-"))[:16].replace("T", " ")
+    risk_level = str(meta.get("risk_level", "low")).lower()
+    risk_score = float(report.get("true_risk_score", 0))
+    risk_hx = _risk_hex(risk_score)
 
-    for item in findings[:220]:
-        write_line(
-            "[{sev}] {host} | {title} | {evidence}".format(
-                sev=(item.get("severity") or "low").upper(),
-                host=item.get("host", "-"),
-                title=item.get("title", "Finding"),
-                evidence=item.get("evidence", "-"),
-            ),
-            size=9,
-            gap=12,
-        )
+    generated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
-    pdf.save()
+    buffer = io.BytesIO()
+    label = f"{proj_name}  ·  {target}"
+    page_cb = lambda c, d: _pdf_page_frame(c, d, label, generated)
+    doc, W = _make_pdf_doc(buffer, f"vScanner – Scan Report – {target}", page_cb)
+
+    story: list = []
+
+    # ── Cover block ───────────────────────────────────
+    cover = Table(
+        [
+            [_p("DETAILED SCAN REPORT", ParagraphStyle("rc1", fontName="Helvetica-Bold", fontSize=9, textColor=_PDF_PRIMARY, leading=13))],
+            [_p(target, ParagraphStyle("rc2", fontName="Helvetica-Bold", fontSize=20, textColor=_PDF_TEXT, leading=26))],
+            [_p(f"Profile: {profile}  ·  Engine: {engine}  ·  Start: {started}  ·  End: {finished}", _PS_MUTED)],
+            [_p(
+                f'Risk Level: <font name="Helvetica-Bold" color="{risk_hx}">{risk_level.upper()}</font>'
+                f'  ·  Risk Score: <font name="Helvetica-Bold" color="{risk_hx}">{risk_score}</font>',
+                _PS_BODY,
+            )],
+        ],
+        colWidths=[W],
+    )
+    cover.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _PDF_BG),
+        ("LEFTPADDING", (0, 0), (-1, -1), 18),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 18),
+        ("TOPPADDING", (0, 0), (-1, 0), 18),
+        ("TOPPADDING", (0, 1), (-1, 1), 4),
+        ("TOPPADDING", (0, 2), (-1, 2), 8),
+        ("TOPPADDING", (0, 3), (-1, 3), 6),
+        ("BOTTOMPADDING", (0, -1), (-1, -1), 18),
+        ("LINEBELOW", (0, -1), (-1, -1), 2, HexColor(risk_hx)),
+    ]))
+    story.append(cover)
+    story.append(Spacer(1, 16))
+
+    # ── Risk Summary KPIs ──────────────────────────────
+    story.append(_section_bar("Risk Summary", W))
+    story.append(Spacer(1, 6))
+    story.append(_kpi_strip([
+        ("Critical", str(summary.get("critical", 0)), "#ff5d73"),
+        ("High", str(summary.get("high", 0)), "#ffc35c"),
+        ("Medium", str(summary.get("medium", 0)), "#67b9ff"),
+        ("Low", str(summary.get("low", 0)), "#4cdd88"),
+        ("Open Ports", str(metrics.get("open_ports", 0)), "#ffc35c"),
+        ("CVE Candidates", str(metrics.get("cve_candidates", 0)), "#ff5d73"),
+    ], W))
+    story.append(Spacer(1, 6))
+    story.append(_kpi_strip([
+        ("Total Findings", str(report.get("total_findings", len(findings))), "#ecf4ff"),
+        ("Exposed Services", str(metrics.get("exposed_services", 0)), "#67b9ff"),
+        ("Hosts Scanned", str(metrics.get("hosts_scanned", len(hosts))), "#64b2ff"),
+    ], W))
+    story.append(Spacer(1, 16))
+
+    # ── Risk Distribution ──────────────────────────────
+    sev_dist = {k: int(summary.get(k, 0)) for k in ("critical", "high", "medium", "low")}
+    if any(sev_dist.values()):
+        story.append(_section_bar("Severity Distribution", W))
+        story.append(Spacer(1, 6))
+        story.append(_risk_bars(sev_dist, W))
+        story.append(Spacer(1, 16))
+
+    # ── Host Overview ───────────────────────────────────
+    if hosts:
+        story.append(_section_bar("Host Overview", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Host / IP", "Open Ports", "Services", "OS / Info", "Risk"]
+        cw = [155, 72, 70, 158, 60]
+        rows = [hdr]
+        sevs: list[str] = []
+        for hdata in hosts[:40]:
+            open_ports = hdata.get("open_ports") or []
+            services = list({p.get("name", "") for p in open_ports if p.get("name")})
+            os_str = str(hdata.get("os") or "-")[:38]
+            risk = str(hdata.get("risk_level") or "low").lower()
+            rows.append([
+                _p(str(hdata.get("host", "-"))[:40], _PS_BOLD),
+                _p(str(hdata.get("open_port_count", len(open_ports))), _PS_BODY),
+                _p(str(len(services)), _PS_BODY),
+                _p(os_str, _PS_MUTED),
+                _sev_p(risk),
+            ])
+            sevs.append(risk)
+        story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
+        story.append(Spacer(1, 16))
+
+        # ── Open Ports & Services ─────────────────────────
+        story.append(_section_bar("Open Ports & Services", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Host", "Port", "Proto", "State", "Service", "Product", "Version"]
+        cw = [108, 38, 36, 40, 78, 115, 100]
+        rows = [hdr]
+        for hdata in hosts[:25]:
+            for port_info in (hdata.get("open_ports") or [])[:35]:
+                rows.append([
+                    _p(str(hdata.get("host", "-"))[:28], _PS_MUTED),
+                    _p(str(port_info.get("port", "-")), _PS_BOLD),
+                    _p(str(port_info.get("proto", "tcp")), _PS_BODY),
+                    _p(str(port_info.get("state", "open")), _PS_BODY),
+                    _p(str(port_info.get("name") or "-")[:18], _PS_BODY),
+                    _p(str(port_info.get("product") or "-")[:30], _PS_BODY),
+                    _p(str(port_info.get("version") or "-")[:28], _PS_BODY),
+                ])
+        if len(rows) > 1:
+            story.append(_styled_table(rows, cw))
+            story.append(Spacer(1, 16))
+
+    # ── Findings ───────────────────────────────────────
+    if findings:
+        story.append(PageBreak())
+        story.append(_section_bar("Findings", W))
+        story.append(Spacer(1, 4))
+        hdr = ["Sev", "Host", "Title", "Evidence", "CVE", "Type"]
+        cw = [50, 92, 142, 118, 64, 54]
+        rows = [hdr]
+        sevs = []
+        for item in findings[:300]:
+            sev = str(item.get("severity", "low")).lower()
+            rows.append([
+                _sev_p(sev),
+                _p(str(item.get("host", "-"))[:28], _PS_MUTED),
+                _p(str(item.get("title", "Finding"))[:62], _PS_BODY),
+                _p(str(item.get("evidence") or "-")[:60], _PS_BODY),
+                _p(str(item.get("cve") or "-"), _PS_MUTED),
+                _p(str(item.get("type") or "-")[:18], _PS_BODY),
+            ])
+            sevs.append(sev)
+        story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
+        story.append(Spacer(1, 12))
+
+    # ── Passive Intelligence ───────────────────────────
+    if intel and isinstance(intel, dict):
+        intel_rows: list[tuple[str, str]] = []
+        whois = intel.get("whois") or {}
+        if whois.get("registrar"):
+            intel_rows.append(("WHOIS Registrar", str(whois["registrar"])[:70]))
+        if whois.get("country"):
+            intel_rows.append(("WHOIS Country", str(whois["country"])))
+        if whois.get("expiration_date"):
+            intel_rows.append(("Domain Expiry", str(whois["expiration_date"])[:20]))
+        dns = intel.get("dns") or {}
+        for rtype, vals in dns.items():
+            if vals and isinstance(vals, list):
+                intel_rows.append((f"DNS {rtype}", ", ".join(str(v) for v in vals[:5])[:80]))
+        ssl = intel.get("ssl") or {}
+        if ssl.get("subject"):
+            intel_rows.append(("SSL Subject", str(ssl["subject"])[:70]))
+        if ssl.get("issuer"):
+            intel_rows.append(("SSL Issuer", str(ssl["issuer"])[:70]))
+        if ssl.get("not_after"):
+            intel_rows.append(("SSL Valid Until", str(ssl["not_after"])[:20]))
+        if intel_rows:
+            story.append(Spacer(1, 8))
+            story.append(_section_bar("Passive Intelligence", W))
+            story.append(Spacer(1, 4))
+            data = [["Field", "Value"]] + [[_p(k, _PS_BOLD), _p(v, _PS_BODY)] for k, v in intel_rows]
+            story.append(_styled_table(data, [130, W - 130]))
+
+    doc.build(story)
     buffer.seek(0)
     return buffer
 
