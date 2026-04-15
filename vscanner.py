@@ -149,6 +149,8 @@ if os.getenv("VERCEL") and not DB_URL:
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
 
+IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("VSCANNER_SERVERLESS"))
+
 MONGO_CLIENT: Any = None
 
 DB_READY = False
@@ -1701,13 +1703,15 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     schemes = ["https", "http"] if port in {443, 8443, 9443} else ["http", "https"]
     headers = {"User-Agent": "vScanner/3.0"}
 
+    http_timeout = 2.5 if IS_SERVERLESS else 6
+
     for scheme in schemes:
         url = f"{scheme}://{host_or_ip}:{port}"
         try:
             response = requests.get(
                 url,
                 headers=headers,
-                timeout=6,
+                timeout=http_timeout,
                 verify=False,
                 allow_redirects=True,
             )
@@ -2188,12 +2192,23 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         total_open_ports += len(open_ports)
 
         web_evidence: list[dict[str, Any]] = []
-        for entry in open_ports:
-            if is_likely_web_port(entry):
-                web_result = probe_http_service(host["host"], entry["port"])
-                if web_result:
-                    web_evidence.append({"port": entry["port"], **web_result})
-                    host_findings.extend(web_result.get("findings", []))
+        web_port_entries = [entry for entry in open_ports if is_likely_web_port(entry)]
+        if web_port_entries:
+            probe_limit = 3 if IS_SERVERLESS else len(web_port_entries)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as _probe_pool:
+                _probe_futures = {
+                    _probe_pool.submit(probe_http_service, host["host"], entry["port"]): entry["port"]
+                    for entry in web_port_entries[:probe_limit]
+                }
+                for _future in concurrent.futures.as_completed(_probe_futures, timeout=12):
+                    try:
+                        web_result = _future.result()
+                        _port = _probe_futures[_future]
+                        if web_result:
+                            web_evidence.append({"port": _port, **web_result})
+                            host_findings.extend(web_result.get("findings", []))
+                    except Exception:
+                        pass
 
         host_findings.sort(
             key=lambda item: SEVERITY_ORDER.get(item.get("severity", "info"), 0),
@@ -2289,7 +2304,7 @@ def set_security_headers(response: Any) -> Any:
         "style-src 'self' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
-        "connect-src 'self' https://api64.ipify.org https://api.ipify.org; "
+        "connect-src 'self' https://api64.ipify.org https://api.ipify.org https://cdn.jsdelivr.net; "
         "frame-ancestors 'none'"
     )
     response.headers["Content-Security-Policy"] = csp

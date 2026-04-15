@@ -407,13 +407,16 @@ async function loadHealth() {
     try {
         const response = await fetch("/api/health");
         const data = await response.json();
-        apiState.textContent = data.status || "unknown";
-        dbState.textContent = data.db_engine || "-";
-        engineState.textContent = data.nmap_available ? "nmap" : "light";
+        const ENGINE_LABELS = { mongodb: "MongoDB", postgres: "Postgres", sqlite: "SQLite" };
+        dbState.textContent = data.db_ready
+            ? `${ENGINE_LABELS[data.db_engine] || data.db_engine} · online`
+            : "offline";
+        apiState.textContent = data.db_ready ? "live" : "degraded";
+        engineState.textContent = data.nmap_available ? "nmap" : "lightweight";
     } catch (_error) {
+        dbState.textContent = "offline";
         apiState.textContent = "offline";
-        dbState.textContent = "-";
-        engineState.textContent = "-";
+        engineState.textContent = "–";
     }
 }
 
