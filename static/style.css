@@ -70,7 +70,7 @@ body {
     background: linear-gradient(180deg, rgba(9, 17, 28, 0.95), rgba(9, 19, 30, 0.85));
     display: grid;
     grid-template-rows: auto auto 1fr;
-    gap: 1rem;
+    gap: 0.85rem;
 }
 
 .brand-card {
@@ -133,30 +133,33 @@ body {
 }
 
 .rail-status {
-    display: grid;
-    gap: 0.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+    align-content: start;
 }
 
 .chip {
     border-radius: 999px;
     border: 1px solid rgba(141, 180, 214, 0.2);
     background: linear-gradient(120deg, rgba(9, 21, 35, 0.86), rgba(13, 27, 41, 0.86));
-    font-size: 0.76rem;
+    font-size: 0.68rem;
     color: var(--muted);
-    padding: 0.45rem 0.74rem;
+    padding: 0.3rem 0.52rem;
     display: inline-flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.45rem;
+    gap: 0.28rem;
     box-shadow: inset 0 0 0 1px rgba(95, 130, 163, 0.18);
     transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    min-width: 86px;
 }
 
 .chip strong {
     color: var(--text);
-    margin-left: 0.25rem;
+    margin-left: 0.14rem;
     font-family: "Sora", sans-serif;
-    font-size: 0.73rem;
+    font-size: 0.64rem;
     letter-spacing: 0.01em;
 }
 
@@ -177,9 +180,9 @@ body {
 }
 
 .workspace {
-    padding: 0.95rem;
+    padding: 0.82rem;
     display: grid;
-    gap: 0.9rem;
+    gap: 0.75rem;
 }
 
 .panel {
@@ -188,7 +191,7 @@ body {
     background: var(--panel);
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
     backdrop-filter: blur(4px);
-    padding: 0.9rem;
+    padding: 0.78rem;
 }
 
 .topbar {
@@ -220,9 +223,10 @@ body {
 
 .top-actions {
     display: flex;
-    gap: 0.55rem;
+    gap: 0.42rem;
     flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
 }
 
 .input {
@@ -248,11 +252,16 @@ body {
 .btn {
     border-radius: 10px;
     border: 1px solid transparent;
-    padding: 0.55rem 0.82rem;
+    padding: 0.48rem 0.72rem;
     font-family: "Sora", sans-serif;
     font-size: 0.82rem;
     font-weight: 600;
     cursor: pointer;
+}
+
+.btn,
+.menu-item {
+    white-space: nowrap;
 }
 
 .btn.primary {
@@ -353,8 +362,8 @@ canvas {
 .chart-wrap {
     position: relative;
     width: 100%;
-    min-height: 220px;
-    height: clamp(220px, 32vh, 310px);
+    min-height: 180px;
+    height: clamp(180px, 28vh, 255px);
 }
 
 .chart-wrap canvas {
@@ -475,8 +484,8 @@ canvas {
 
 .form-grid {
     display: grid;
-    grid-template-columns: 2fr 1fr 1fr auto;
-    gap: 0.65rem;
+    grid-template-columns: 1.2fr 1.6fr 1fr 1fr auto;
+    gap: 0.5rem;
     align-items: end;
 }
 
@@ -485,10 +494,47 @@ canvas {
     align-items: end;
 }
 
+.align-end .btn {
+    min-width: 124px;
+}
+
 .note {
     color: #9db7d2;
-    margin: 0.7rem 0 0;
-    font-size: 0.82rem;
+    margin: 0.55rem 0 0;
+    font-size: 0.78rem;
+}
+
+.network-suggestions {
+    margin-top: 0.55rem;
+    display: grid;
+    gap: 0.28rem;
+}
+
+.network-suggestions > span {
+    color: #9db7d2;
+    font-size: 0.72rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.hint-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+
+.hint-chip {
+    border: 1px solid rgba(136, 175, 211, 0.26);
+    border-radius: 999px;
+    padding: 0.2rem 0.48rem;
+    font-size: 0.72rem;
+    background: rgba(13, 26, 40, 0.78);
+    color: #d6e8fb;
+    cursor: pointer;
+}
+
+.hint-chip:hover {
+    border-color: rgba(103, 185, 255, 0.58);
 }
 
 .error {
@@ -519,7 +565,7 @@ canvas {
     border-radius: 10px;
     border: 1px solid rgba(136, 175, 211, 0.2);
     overflow: auto;
-    max-height: 64vh;
+    max-height: 56vh;
     background: rgba(8, 16, 27, 0.8);
 }
 
@@ -553,7 +599,7 @@ canvas {
 .list-scroll {
     display: grid;
     gap: 0.5rem;
-    max-height: 58vh;
+    max-height: 48vh;
     overflow: auto;
 }
 
@@ -643,6 +689,10 @@ canvas {
         grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
+    .rail-status {
+        justify-content: flex-start;
+    }
+
     .kpi-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -671,7 +721,11 @@ canvas {
     .top-actions {
         width: 100%;
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr;
+    }
+
+    .chip {
+        min-width: 74px;
     }
 
     .risk-legend {

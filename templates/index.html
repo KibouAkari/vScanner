@@ -130,6 +130,14 @@
                     <h3>Run New Scan</h3>
                     <form id="scanForm" class="form-grid">
                         <div>
+                            <label for="scannerType">Scanner Type</label>
+                            <select id="scannerType" class="input">
+                                <option value="standard" selected>Standard Scanner</option>
+                                <option value="network">Network Scanner</option>
+                                <option value="stealth_intel">Stealth & Intel</option>
+                            </select>
+                        </div>
+                        <div>
                             <label for="target">Target</label>
                             <input id="target" class="input" type="text" placeholder="example.com, 8.8.8.8, 192.168.1.0/24" required />
                         </div>
@@ -153,7 +161,11 @@
                             <button id="scanButton" class="btn primary" type="submit">Start Scan</button>
                         </div>
                     </form>
-                    <p class="note">Use this scanner only for authorized assets. Stealth mode is low-noise and does not bypass SIEM/detection systems.</p>
+                    <div class="network-suggestions">
+                        <span>Suggested networks:</span>
+                        <div id="networkHints" class="hint-row"></div>
+                    </div>
+                    <p id="scanModeNote" class="note">Use this scanner only for authorized assets. Stealth mode is low-noise and does not bypass SIEM/detection systems.</p>
                     <div id="scanError" class="error hidden"></div>
                 </article>
 

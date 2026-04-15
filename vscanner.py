@@ -1994,15 +1994,20 @@ def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
         return "-sn"
 
     if profile == "stealth":
-        return "-Pn -T2 --open -sS --top-ports 200"
+        # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
+        return "-Pn -T2 --open -sS --top-ports 400"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS --top-ports 3000"
-        return "-Pn -T4 --open -sS --top-ports 1000"
+            return "-Pn -T4 --open -sS -sV --top-ports 3000 --script=default,safe,banner"
+        return "-Pn -T4 --open -sS -sV --top-ports 1200 --script=default,safe,banner"
 
+    # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
         return "-Pn -T4 --open -sS -sV --version-all -p- --script=default,safe,banner,vuln"
+
+    if not is_public_mode():
+        return "-Pn -T4 --open -sS -sV --version-all --top-ports 5000 --script=default,safe,banner,vuln"
 
     return "-Pn -T4 --open -sS -sV --version-all --top-ports 3500 --script=default,safe,banner,vuln"
 

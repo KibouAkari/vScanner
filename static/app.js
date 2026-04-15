@@ -24,10 +24,13 @@ const topVulns = document.getElementById("topVulns");
 const windowDays = document.getElementById("windowDays");
 
 const scanForm = document.getElementById("scanForm");
+const scannerTypeSelect = document.getElementById("scannerType");
 const targetInput = document.getElementById("target");
 const profileSelect = document.getElementById("profile");
 const portStrategySelect = document.getElementById("portStrategy");
 const scanButton = document.getElementById("scanButton");
+const scanModeNote = document.getElementById("scanModeNote");
+const networkHints = document.getElementById("networkHints");
 const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
@@ -58,6 +61,85 @@ let lastReportId = null;
 let trendChartInstance = null;
 let riskChartInstance = null;
 let severityStackChartInstance = null;
+
+function scannerSettings(mode) {
+    if (mode === "network") {
+        return {
+            profile: "network",
+            portStrategy: "aggressive",
+            placeholder: "192.168.1.0/24",
+            note: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
+            disableProfile: true,
+        };
+    }
+
+    if (mode === "stealth_intel") {
+        return {
+            profile: "stealth",
+            portStrategy: "standard",
+            placeholder: "example.com, 8.8.8.8",
+            note: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
+            disableProfile: true,
+        };
+    }
+
+    return {
+        profile: "light",
+        portStrategy: "standard",
+        placeholder: "example.com, 8.8.8.8, 192.168.1.0/24",
+        note: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
+        disableProfile: false,
+    };
+}
+
+function applyScannerMode(mode) {
+    const cfg = scannerSettings(mode);
+    targetInput.placeholder = cfg.placeholder;
+    scanModeNote.textContent = cfg.note;
+
+    profileSelect.disabled = cfg.disableProfile;
+    profileSelect.value = cfg.profile;
+    portStrategySelect.value = cfg.portStrategy;
+}
+
+function guessLocalNetworkHints() {
+    const hints = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
+    const local = ["127.0.0.1", "localhost", "::1"];
+    const host = (window.location.hostname || "").trim();
+
+    if (host && !local.includes(host)) {
+        if (/^192\.168\./.test(host)) {
+            const parts = host.split(".");
+            hints.unshift(`${parts[0]}.${parts[1]}.${parts[2]}.0/24`);
+        } else if (/^10\./.test(host)) {
+            const parts = host.split(".");
+            hints.unshift(`${parts[0]}.${parts[1]}.${parts[2]}.0/24`);
+        } else if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) {
+            const parts = host.split(".");
+            hints.unshift(`${parts[0]}.${parts[1]}.${parts[2]}.0/24`);
+        }
+    }
+
+    return [...new Set(hints)].slice(0, 6);
+}
+
+function renderNetworkHints() {
+    if (!networkHints) {
+        return;
+    }
+    const hints = guessLocalNetworkHints();
+    networkHints.innerHTML = hints
+        .map((cidr) => `<button type="button" class="hint-chip" data-cidr="${esc(cidr)}">${esc(cidr)}</button>`)
+        .join("");
+
+    networkHints.querySelectorAll(".hint-chip").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            targetInput.value = btn.dataset.cidr || "";
+            scannerTypeSelect.value = "network";
+            applyScannerMode("network");
+        });
+    });
+}
 
 function esc(value) {
     return String(value ?? "")
@@ -549,9 +631,12 @@ scanForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearError();
 
+    const scannerMode = scannerTypeSelect.value || "standard";
+    const selectedProfile = scannerMode === "standard" ? profileSelect.value : scannerSettings(scannerMode).profile;
+
     const payload = {
         target: targetInput.value.trim(),
-        profile: profileSelect.value,
+        profile: selectedProfile,
         port_strategy: portStrategySelect.value,
         project_id: activeProjectId,
     };
@@ -666,6 +751,10 @@ newProjectButton.addEventListener("click", async () => {
     }
 });
 
+scannerTypeSelect.addEventListener("change", () => {
+    applyScannerMode(scannerTypeSelect.value || "standard");
+});
+
 windowDays.addEventListener("change", loadDashboard);
 refreshFindingsButton.addEventListener("click", loadAggregatedFindings);
 refreshHistoryButton.addEventListener("click", loadHistory);
@@ -680,6 +769,8 @@ findingSearch.addEventListener("input", () => {
 
 (async function bootstrap() {
     try {
+        applyScannerMode(scannerTypeSelect.value || "standard");
+        renderNetworkHints();
         await loadHealth();
         await loadProjects();
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
