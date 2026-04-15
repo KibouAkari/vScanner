@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import io
 import ipaddress
 import json
@@ -10,7 +11,7 @@ import socket
 import sqlite3
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import nmap
@@ -20,6 +21,11 @@ from flask import Flask, jsonify, render_template, request, send_file
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from urllib3.exceptions import InsecureRequestWarning
+
+try:
+    import psycopg
+except Exception:  # pragma: no cover
+    psycopg = None
 
 urllib3.disable_warnings(category=InsecureRequestWarning)
 
@@ -121,9 +127,11 @@ WEB_CANDIDATE_PORTS = {
     9200,
 }
 
-SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 1}
+SEVERITY_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
-if os.getenv("VERCEL"):
+
+DB_URL = os.getenv("DATABASE_URL", "").strip()
+if os.getenv("VERCEL") and not DB_URL:
     DB_PATH = "/tmp/vscanner_reports.db"
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
@@ -131,6 +139,7 @@ else:
 DB_READY = False
 DEFAULT_PROJECT_ID = "default"
 DEFAULT_PROJECT_NAME = "General"
+VALID_PROFILES = {"light", "deep", "stealth", "network", "quick", "adaptive", "low_noise"}
 
 CVE_RULES = [
     {
@@ -172,26 +181,99 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def db_connection() -> sqlite3.Connection:
+def now_minus_days(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def normalize_severity(raw: str) -> str:
+    severity = (raw or "").lower().strip()
+    if severity in {"critical", "high", "medium", "low", "info"}:
+        return severity
+    return "low"
+
+
+def severity_rank(raw: str) -> int:
+    return SEVERITY_ORDER.get(normalize_severity(raw), 1)
+
+
+def best_severity(a: str, b: str) -> str:
+    return a if severity_rank(a) >= severity_rank(b) else b
+
+
+def finding_vuln_key(finding: dict[str, Any]) -> str:
+    joined = "|".join(
+        [
+            str(finding.get("type", "-")).strip().lower(),
+            str(finding.get("title", "-")).strip().lower(),
+            str(finding.get("cve", "")).strip().upper(),
+        ]
+    )
+    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+
+
+def db_connection() -> Any:
+    if DB_URL.startswith("postgres"):
+        if psycopg is None:
+            raise RuntimeError("DATABASE_URL set but psycopg package missing.")
+        return psycopg.connect(DB_URL)
+
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     connection = sqlite3.connect(DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
 
 
+def is_postgres_connection(connection: Any) -> bool:
+    return psycopg is not None and isinstance(connection, psycopg.Connection)
+
+
+def adapt_query(connection: Any, query: str) -> str:
+    if is_postgres_connection(connection):
+        return query.replace("?", "%s")
+    return query
+
+
+def fetchall(connection: Any, query: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    cursor = connection.cursor()
+    cursor.execute(adapt_query(connection, query), params)
+    rows = cursor.fetchall()
+
+    if not rows:
+        return []
+
+    if is_postgres_connection(connection):
+        columns = [col.name for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+
+    return [dict(row) for row in rows]
+
+
+def fetchone(connection: Any, query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
+    rows = fetchall(connection, query, params)
+    return rows[0] if rows else None
+
+
+def execute(connection: Any, query: str, params: tuple[Any, ...] = ()) -> None:
+    cursor = connection.cursor()
+    cursor.execute(adapt_query(connection, query), params)
+
+
 def init_report_store() -> None:
     global DB_READY
+
     with db_connection() as connection:
-        connection.execute(
+        execute(
+            connection,
             """
             CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 created_at TEXT NOT NULL
             )
-            """
+            """,
         )
-        connection.execute(
+        execute(
+            connection,
             """
             CREATE TABLE IF NOT EXISTS reports (
                 id TEXT PRIMARY KEY,
@@ -208,47 +290,50 @@ def init_report_store() -> None:
                 cve_count INTEGER NOT NULL,
                 data_json TEXT NOT NULL
             )
+            """,
+        )
+        execute(
+            connection,
             """
+            CREATE TABLE IF NOT EXISTS findings (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                vuln_key TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                finding_type TEXT NOT NULL,
+                cve TEXT NOT NULL,
+                first_seen TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                occurrence_count INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(project_id, asset, vuln_key)
+            )
+            """,
         )
 
-        existing_columns = {
-            row["name"]
-            for row in connection.execute("PRAGMA table_info(reports)").fetchall()
-        }
-        if "project_id" not in existing_columns:
-            connection.execute(
-                "ALTER TABLE reports ADD COLUMN project_id TEXT NOT NULL DEFAULT 'default'"
-            )
-        if "project_name" not in existing_columns:
-            connection.execute(
-                "ALTER TABLE reports ADD COLUMN project_name TEXT NOT NULL DEFAULT 'General'"
-            )
-
-        connection.execute(
+        execute(
+            connection,
             """
-            INSERT OR IGNORE INTO projects (id, name, created_at)
+            INSERT INTO projects (id, name, created_at)
             VALUES (?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
             """,
             (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, utc_now()),
         )
+
+        connection.commit()
     DB_READY = True
 
 
 def list_projects() -> list[dict[str, Any]]:
     if not DB_READY:
-        return [
-            {
-                "id": DEFAULT_PROJECT_ID,
-                "name": DEFAULT_PROJECT_NAME,
-                "created_at": utc_now(),
-                "scan_count": 0,
-                "avg_risk": 0,
-                "last_scan_at": utc_now(),
-            }
-        ]
+        return [{"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()}]
 
     with db_connection() as connection:
-        rows = connection.execute(
+        return fetchall(
+            connection,
             """
             SELECT p.id,
                    p.name,
@@ -260,28 +345,19 @@ def list_projects() -> list[dict[str, Any]]:
             LEFT JOIN reports r ON r.project_id = p.id
             GROUP BY p.id, p.name, p.created_at
             ORDER BY p.created_at ASC
-            """
-        ).fetchall()
-    return [dict(row) for row in rows]
+            """,
+        )
 
 
 def get_project(project_id: str | None) -> dict[str, Any] | None:
     safe_id = (project_id or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
     if not DB_READY:
         if safe_id == DEFAULT_PROJECT_ID:
-            return {
-                "id": DEFAULT_PROJECT_ID,
-                "name": DEFAULT_PROJECT_NAME,
-                "created_at": utc_now(),
-            }
+            return {"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()}
         return None
 
     with db_connection() as connection:
-        row = connection.execute(
-            "SELECT id, name, created_at FROM projects WHERE id = ?",
-            (safe_id,),
-        ).fetchone()
-    return dict(row) if row else None
+        return fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (safe_id,))
 
 
 def create_project(name: str) -> dict[str, Any]:
@@ -296,126 +372,137 @@ def create_project(name: str) -> dict[str, Any]:
 
     project_id = str(uuid.uuid4())
     now = utc_now()
+
     with db_connection() as connection:
         try:
-            connection.execute(
+            execute(
+                connection,
                 "INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)",
                 (project_id, clean_name, now),
             )
-        except sqlite3.IntegrityError:
-            raise ScanInputError("Project name already exists.")
+            connection.commit()
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ScanInputError("Project name already exists.")
+            raise
 
     return {"id": project_id, "name": clean_name, "created_at": now}
 
 
-def get_project_dashboard(project_id: str) -> dict[str, Any]:
+def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[dict[str, Any]]:
     if not DB_READY:
-        return {
-            "project": {
-                "id": DEFAULT_PROJECT_ID,
-                "name": DEFAULT_PROJECT_NAME,
-                "created_at": utc_now(),
-            },
-            "totals": {
-                "scans": 0,
-                "avg_risk": 0,
-                "findings": 0,
-                "open_ports": 0,
-                "exposed_services": 0,
-                "cve_count": 0,
-            },
-            "risk_distribution": {"critical": 0, "high": 0, "medium": 0, "low": 0},
-            "trend": [],
-            "recent_scans": [],
-        }
+        return []
+
+    safe_limit = max(1, min(limit, 200))
 
     with db_connection() as connection:
-        project = connection.execute(
-            "SELECT id, name, created_at FROM projects WHERE id = ?",
-            (project_id,),
-        ).fetchone()
-        if not project:
-            raise ScanInputError("Project not found.")
+        if project_id:
+            return fetchall(
+                connection,
+                """
+                SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
+                       total_findings, open_ports, exposed_services, cve_count
+                FROM reports
+                WHERE project_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (project_id, safe_limit),
+            )
 
-        totals = connection.execute(
+        return fetchall(
+            connection,
             """
-            SELECT COUNT(*) AS scans,
-                   COALESCE(ROUND(AVG(true_risk_score), 1), 0) AS avg_risk,
-                   COALESCE(SUM(total_findings), 0) AS findings,
-                   COALESCE(SUM(open_ports), 0) AS open_ports,
-                   COALESCE(SUM(exposed_services), 0) AS exposed_services,
-                   COALESCE(SUM(cve_count), 0) AS cve_count
+            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
+                   total_findings, open_ports, exposed_services, cve_count
             FROM reports
-            WHERE project_id = ?
-            """,
-            (project_id,),
-        ).fetchone()
-
-        trend_rows = connection.execute(
-            """
-            SELECT created_at, true_risk_score, total_findings
-            FROM reports
-            WHERE project_id = ?
             ORDER BY created_at DESC
-            LIMIT 24
+            LIMIT ?
             """,
-            (project_id,),
-        ).fetchall()
-
-        risk_rows = connection.execute(
-            """
-            SELECT risk_level, COUNT(*) AS count
-            FROM reports
-            WHERE project_id = ?
-            GROUP BY risk_level
-            """,
-            (project_id,),
-        ).fetchall()
-
-        recent_rows = connection.execute(
-            """
-            SELECT id, created_at, target, profile, risk_level, true_risk_score, total_findings
-            FROM reports
-            WHERE project_id = ?
-            ORDER BY created_at DESC
-            LIMIT 8
-            """,
-            (project_id,),
-        ).fetchall()
-
-    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    for row in risk_rows:
-        level = (row["risk_level"] or "low").lower()
-        if level in risk_distribution:
-            risk_distribution[level] = int(row["count"] or 0)
-
-    trend = [dict(row) for row in reversed(trend_rows)]
-
-    return {
-        "project": dict(project),
-        "totals": dict(totals),
-        "risk_distribution": risk_distribution,
-        "trend": trend,
-        "recent_scans": [dict(row) for row in recent_rows],
-    }
-
-
-def maybe_sync_report_to_blob(report_id: str, report_data: dict[str, Any]) -> None:
-    blob_write_url = os.getenv("VSCANNER_BLOB_WRITE_URL", "").strip()
-    if not blob_write_url:
-        return
-
-    target_url = f"{blob_write_url.rstrip('/')}/{report_id}.json"
-    try:
-        requests.put(
-            target_url,
-            data=json.dumps(report_data),
-            headers={"Content-Type": "application/json"},
-            timeout=10,
+            (safe_limit,),
         )
-    except Exception:
-        # Local report persistence remains the source of truth even if blob sync fails.
+
+
+def get_report_entry(report_id: str) -> dict[str, Any] | None:
+    if not DB_READY:
+        return None
+
+    with db_connection() as connection:
+        row = fetchone(connection, "SELECT id, created_at, data_json FROM reports WHERE id = ?", (report_id,))
+    if not row:
+        return None
+
+    payload = json.loads(row["data_json"])
+    payload["report_id"] = row["id"]
+    payload["report_created_at"] = row["created_at"]
+    return payload
+
+
+def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> None:
+    if not DB_READY:
         return
+
+    unique_scan_items: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in finding_items:
+        asset = str(item.get("host") or "-").strip().lower()
+        vuln_key = finding_vuln_key(item)
+        unique_scan_items[(asset, vuln_key)] = {
+            "asset": asset,
+            "vuln_key": vuln_key,
+            "severity": normalize_severity(str(item.get("severity", "low"))),
+            "title": str(item.get("title") or "Finding"),
+            "evidence": str(item.get("evidence") or "-"),
+            "finding_type": str(item.get("type") or "-").lower(),
+            "cve": str(item.get("cve") or "").upper(),
+        }
+
+    if not unique_scan_items:
+        return
+
+    now = utc_now()
+    with db_connection() as connection:
+        for item in unique_scan_items.values():
+            execute(
+                connection,
+                """
+                INSERT INTO findings (
+                    id, project_id, asset, vuln_key, severity, title, evidence, finding_type, cve,
+                    first_seen, last_seen, occurrence_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(project_id, asset, vuln_key)
+                DO UPDATE SET
+                    severity = CASE
+                        WHEN excluded.severity = 'critical' THEN 'critical'
+                        WHEN findings.severity = 'critical' THEN 'critical'
+                        WHEN excluded.severity = 'high' AND findings.severity IN ('medium','low','info') THEN 'high'
+                        WHEN findings.severity = 'high' THEN 'high'
+                        WHEN excluded.severity = 'medium' AND findings.severity IN ('low','info') THEN 'medium'
+                        WHEN findings.severity = 'medium' THEN 'medium'
+                        WHEN excluded.severity = 'low' AND findings.severity = 'info' THEN 'low'
+                        ELSE findings.severity
+                    END,
+                    title = excluded.title,
+                    evidence = excluded.evidence,
+                    finding_type = excluded.finding_type,
+                    cve = excluded.cve,
+                    last_seen = excluded.last_seen,
+                    occurrence_count = findings.occurrence_count + 1
+                """,
+                (
+                    str(uuid.uuid4()),
+                    project_id,
+                    item["asset"],
+                    item["vuln_key"],
+                    item["severity"],
+                    item["title"],
+                    item["evidence"],
+                    item["finding_type"],
+                    item["cve"],
+                    now,
+                    now,
+                ),
+            )
+        connection.commit()
 
 
 def save_report_entry(result: dict[str, Any], project_id: str, project_name: str) -> str:
@@ -425,7 +512,8 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
 
     metrics = result.get("metrics", {})
     with db_connection() as connection:
-        connection.execute(
+        execute(
+            connection,
             """
             INSERT INTO reports (
                 id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
@@ -438,7 +526,7 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
                 project_id,
                 project_name,
                 result.get("meta", {}).get("target", "-"),
-                result.get("meta", {}).get("profile", "quick"),
+                result.get("meta", {}).get("profile", "light"),
                 result.get("meta", {}).get("risk_level", "low"),
                 float(result.get("true_risk_score", 0)),
                 int(result.get("total_findings", 0)),
@@ -448,61 +536,255 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
                 json.dumps(result),
             ),
         )
-    maybe_sync_report_to_blob(report_id, result)
+        connection.commit()
+
+    upsert_findings(project_id, result.get("finding_items", []))
     return report_id
 
 
-def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[dict[str, Any]]:
+def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, Any]:
     if not DB_READY:
-        return []
+        return {
+            "project": {"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()},
+            "totals": {
+                "scans": 0,
+                "avg_risk": 0,
+                "findings": 0,
+                "open_ports": 0,
+                "exposed_services": 0,
+                "cve_count": 0,
+            },
+            "risk_distribution": {"critical": 0, "high": 0, "medium": 0, "low": 0},
+            "trend": [],
+            "recent_scans": [],
+            "top_vulnerabilities": [],
+        }
 
-    safe_limit = max(1, min(limit, 200))
-    if project_id:
-        query = """
-            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
-                   total_findings, open_ports, exposed_services, cve_count
+    since = now_minus_days(max(1, min(window_days, 365)))
+
+    with db_connection() as connection:
+        project = fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (project_id,))
+        if not project:
+            raise ScanInputError("Project not found.")
+
+        totals = fetchone(
+            connection,
+            """
+            SELECT COUNT(*) AS scans,
+                   COALESCE(ROUND(AVG(true_risk_score), 1), 0) AS avg_risk,
+                   COALESCE(SUM(total_findings), 0) AS findings,
+                   COALESCE(SUM(open_ports), 0) AS open_ports,
+                   COALESCE(SUM(exposed_services), 0) AS exposed_services,
+                   COALESCE(SUM(cve_count), 0) AS cve_count
+            FROM reports
+            WHERE project_id = ? AND created_at >= ?
+            """,
+            (project_id, since),
+        )
+
+        trend_rows = fetchall(
+            connection,
+            """
+            SELECT created_at, true_risk_score, total_findings
+            FROM reports
+            WHERE project_id = ? AND created_at >= ?
+            ORDER BY created_at ASC
+            LIMIT 240
+            """,
+            (project_id, since),
+        )
+
+        recent_rows = fetchall(
+            connection,
+            """
+            SELECT id, created_at, target, profile, risk_level, true_risk_score, total_findings
             FROM reports
             WHERE project_id = ?
             ORDER BY created_at DESC
-            LIMIT ?
-        """
-        params: tuple[Any, ...] = (project_id, safe_limit)
-    else:
-        query = """
-            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
-                   total_findings, open_ports, exposed_services, cve_count
-            FROM reports
-            ORDER BY created_at DESC
-            LIMIT ?
-        """
-        params = (safe_limit,)
+            LIMIT 12
+            """,
+            (project_id,),
+        )
 
-    with db_connection() as connection:
-        rows = connection.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+        top_rows = fetchall(
+            connection,
+            """
+            SELECT severity, title, finding_type, cve, COUNT(*) AS affected_assets
+            FROM findings
+            WHERE project_id = ? AND last_seen >= ?
+            GROUP BY severity, title, finding_type, cve
+            ORDER BY affected_assets DESC
+            LIMIT 16
+            """,
+            (project_id, since),
+        )
+
+    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for row in top_rows:
+        sev = normalize_severity(str(row.get("severity") or "low"))
+        if sev in risk_distribution:
+            risk_distribution[sev] += int(row.get("affected_assets") or 0)
+
+    return {
+        "project": project,
+        "window_days": window_days,
+        "totals": totals or {},
+        "risk_distribution": risk_distribution,
+        "trend": trend_rows,
+        "recent_scans": recent_rows,
+        "top_vulnerabilities": [
+            {
+                "severity": normalize_severity(str(row.get("severity") or "low")),
+                "title": row.get("title", "Finding"),
+                "type": row.get("finding_type", "-"),
+                "cve": row.get("cve") or "",
+                "affected_assets": int(row.get("affected_assets") or 0),
+            }
+            for row in top_rows
+        ],
+    }
 
 
-def get_report_entry(report_id: str) -> dict[str, Any] | None:
+def get_project_findings(
+    project_id: str,
+    severity: str = "all",
+    search: str = "",
+    since_days: int = 90,
+    sort_by: str = "severity",
+    sort_dir: str = "desc",
+) -> list[dict[str, Any]]:
     if not DB_READY:
-        return None
+        return []
+
+    since = now_minus_days(max(1, min(since_days, 3650)))
 
     with db_connection() as connection:
-        row = connection.execute(
-            "SELECT id, created_at, data_json FROM reports WHERE id = ?",
-            (report_id,),
-        ).fetchone()
-    if not row:
-        return None
-    payload = json.loads(row["data_json"])
-    payload["report_id"] = row["id"]
-    payload["report_created_at"] = row["created_at"]
-    return payload
+        rows = fetchall(
+            connection,
+            """
+            SELECT asset, vuln_key, severity, title, evidence, finding_type, cve,
+                   first_seen, last_seen, occurrence_count
+            FROM findings
+            WHERE project_id = ? AND last_seen >= ?
+            """,
+            (project_id, since),
+        )
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        item_sev = normalize_severity(str(row.get("severity") or "low"))
+        if severity != "all" and item_sev != severity:
+            continue
+
+        haystack = " ".join(
+            [
+                str(row.get("title", "")),
+                str(row.get("evidence", "")),
+                str(row.get("finding_type", "")),
+                str(row.get("cve", "")),
+                str(row.get("asset", "")),
+            ]
+        ).lower()
+        if search and search.lower() not in haystack:
+            continue
+
+        vuln_key = str(row.get("vuln_key") or "-")
+        if vuln_key not in buckets:
+            buckets[vuln_key] = {
+                "vuln_key": vuln_key,
+                "severity": item_sev,
+                "title": row.get("title", "Finding"),
+                "evidence": row.get("evidence", "-"),
+                "type": row.get("finding_type", "-"),
+                "cve": row.get("cve", ""),
+                "assets": [],
+                "asset_count": 0,
+                "occurrence_count": 0,
+                "first_seen": row.get("first_seen"),
+                "last_seen": row.get("last_seen"),
+            }
+
+        bucket = buckets[vuln_key]
+        bucket["severity"] = best_severity(bucket["severity"], item_sev)
+        bucket["assets"].append(row.get("asset", "-"))
+        bucket["asset_count"] += 1
+        bucket["occurrence_count"] += int(row.get("occurrence_count") or 1)
+        bucket["first_seen"] = min(str(bucket["first_seen"]), str(row.get("first_seen")))
+        bucket["last_seen"] = max(str(bucket["last_seen"]), str(row.get("last_seen")))
+
+    items = list(buckets.values())
+    for item in items:
+        item["assets"] = sorted(set(item["assets"]))[:60]
+
+    reverse = sort_dir.lower() != "asc"
+    if sort_by == "assets":
+        items.sort(key=lambda x: x["asset_count"], reverse=reverse)
+    elif sort_by == "last_seen":
+        items.sort(key=lambda x: x["last_seen"], reverse=reverse)
+    elif sort_by == "occurrences":
+        items.sort(key=lambda x: x["occurrence_count"], reverse=reverse)
+    else:
+        items.sort(key=lambda x: (severity_rank(x["severity"]), x["asset_count"]), reverse=reverse)
+
+    return items
+
+
+def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
+    dashboard = get_project_dashboard(project_id, window_days=window_days)
+    findings = get_project_findings(project_id, since_days=window_days)
+
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    _, height = A4
+    y = height - 40
+
+    def write_line(text: str, size: int = 10, bold: bool = False, gap: int = 14) -> None:
+        nonlocal y
+        if y < 60:
+            pdf.showPage()
+            y = height - 40
+        font = "Helvetica-Bold" if bold else "Helvetica"
+        pdf.setFont(font, size)
+        pdf.drawString(40, y, text[:120])
+        y -= gap
+
+    totals = dashboard.get("totals", {})
+    write_line("vScanner Executive Dashboard Report", size=16, bold=True, gap=20)
+    write_line(f"Project: {dashboard.get('project', {}).get('name', '-')}")
+    write_line(f"Window: Last {window_days} days")
+    write_line(
+        "Scans: {scans} | Avg Risk: {avg_risk} | Findings: {findings} | CVEs: {cves}".format(
+            scans=totals.get("scans", 0),
+            avg_risk=totals.get("avg_risk", 0),
+            findings=totals.get("findings", 0),
+            cves=totals.get("cve_count", 0),
+        )
+    )
+    write_line("", gap=18)
+    write_line("Top Aggregated Vulnerabilities", bold=True)
+
+    for row in findings[:180]:
+        write_line(
+            "[{sev}] assets={assets} occurrences={occ} | {title} | {cve}".format(
+                sev=str(row.get("severity", "low")).upper(),
+                assets=row.get("asset_count", 0),
+                occ=row.get("occurrence_count", 0),
+                title=row.get("title", "Finding"),
+                cve=row.get("cve") or "-",
+            ),
+            size=9,
+            gap=12,
+        )
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer
 
 
 def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    _, height = A4
     y = height - 40
 
     def write_line(text: str, size: int = 10, bold: bool = False, gap: int = 14) -> None:
@@ -520,17 +802,19 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
     metrics = report.get("metrics", {})
     findings = report.get("finding_items", [])
 
-    project_name = meta.get("project_name", DEFAULT_PROJECT_NAME)
-    write_line("vScanner Executive Report v2", size=16, bold=True, gap=20)
-    write_line(f"Project: {project_name}")
+    write_line("vScanner Detailed Scan Report", size=16, bold=True, gap=20)
+    write_line(f"Project: {meta.get('project_name', DEFAULT_PROJECT_NAME)}")
     write_line(f"Target: {meta.get('target', '-')}")
     write_line(f"Profile: {meta.get('profile', '-')} | Engine: {meta.get('engine', '-')}")
     write_line(f"Start: {meta.get('started_at', '-')} | End: {meta.get('finished_at', '-')}")
     write_line(
-        f"Risk Level: {meta.get('risk_level', 'low')} | True Risk Score: {report.get('true_risk_score', 0)}",
+        "Risk Level: {risk} | True Risk Score: {score}".format(
+            risk=meta.get("risk_level", "low"),
+            score=report.get("true_risk_score", 0),
+        ),
         bold=True,
     )
-    write_line("")
+    write_line("", gap=18)
     write_line("Summary", bold=True)
     write_line(
         "Critical: {critical} | High: {high} | Medium: {medium} | Low: {low}".format(
@@ -548,46 +832,9 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         )
     )
     write_line("", gap=18)
-    write_line("Trend Snapshot", bold=True)
-
-    project_id = meta.get("project_id")
-    trend_points: list[dict[str, Any]] = []
-    if project_id:
-        try:
-            dashboard_data = get_project_dashboard(project_id)
-            trend_points = dashboard_data.get("trend", [])[-12:]
-        except Exception:
-            trend_points = []
-
-    chart_x = 44
-    chart_y = y - 120
-    chart_w = width - 88
-    chart_h = 90
-    pdf.setStrokeColorRGB(0.27, 0.34, 0.45)
-    pdf.rect(chart_x, chart_y, chart_w, chart_h, stroke=1, fill=0)
-
-    if trend_points:
-        max_score = max(float(point.get("true_risk_score", 0)) for point in trend_points) or 1.0
-        step_x = chart_w / max(1, (len(trend_points) - 1))
-        pdf.setStrokeColorRGB(0.12, 0.64, 0.76)
-        pdf.setLineWidth(1.8)
-        last_x = chart_x
-        last_y = chart_y
-        for idx, point in enumerate(trend_points):
-            score = float(point.get("true_risk_score", 0))
-            x_pos = chart_x + step_x * idx
-            y_pos = chart_y + 8 + (chart_h - 16) * (score / max_score)
-            if idx == 0:
-                pdf.circle(x_pos, y_pos, 2, stroke=1, fill=1)
-            else:
-                pdf.line(last_x, last_y, x_pos, y_pos)
-                pdf.circle(x_pos, y_pos, 2, stroke=1, fill=1)
-            last_x, last_y = x_pos, y_pos
-    y = chart_y - 20
-
     write_line("Top Findings", bold=True)
 
-    for item in findings[:120]:
+    for item in findings[:220]:
         write_line(
             "[{sev}] {host} | {title} | {evidence}".format(
                 sev=(item.get("severity") or "low").upper(),
@@ -598,22 +845,6 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
             size=9,
             gap=12,
         )
-
-    if findings:
-        pdf.showPage()
-        y = height - 40
-        write_line("Detailed Findings (continued)", size=14, bold=True, gap=18)
-        for item in findings[120:280]:
-            write_line(
-                "[{sev}] {host} | {title} | {evidence}".format(
-                    sev=(item.get("severity") or "low").upper(),
-                    host=item.get("host", "-"),
-                    title=item.get("title", "Finding"),
-                    evidence=item.get("evidence", "-"),
-                ),
-                size=9,
-                gap=12,
-            )
 
     pdf.save()
     buffer.seek(0)
@@ -735,24 +966,19 @@ def enforce_public_safety(target: str, target_type: str) -> None:
 
 
 def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
-    text = (banner or "").strip()
-    text_l = text.lower()
+    text = (banner or "").strip().lower()
 
     signatures = [
         ("OpenSSH", r"openssh[_/ -]([\w\.-]+)"),
         ("nginx", r"nginx[/ ]([\w\.-]+)"),
         ("Apache httpd", r"apache(?:/|\s)([\w\.-]+)"),
         ("Microsoft-IIS", r"microsoft-iis/([\w\.-]+)"),
-        ("Postfix", r"postfix"),
-        ("Exim", r"exim"),
         ("vsftpd", r"vsftpd\s*([\w\.-]+)?"),
         ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
-        ("MySQL", r"mysql"),
-        ("PostgreSQL", r"postgresql"),
     ]
 
     for product, pattern in signatures:
-        match = re.search(pattern, text_l)
+        match = re.search(pattern, text)
         if match:
             version = ""
             if match.groups():
@@ -844,15 +1070,6 @@ def evaluate_version_findings(
                 "evidence": f"Found: {product} {version}",
             }
         )
-    elif "mysql" in product_l and version_tuple and version_tuple < (8, 0, 0):
-        findings.append(
-            {
-                "type": "outdated_service",
-                "severity": "medium",
-                "title": "MySQL version appears outdated",
-                "evidence": f"Found: {product} {version}",
-            }
-        )
 
     banner_l = (banner or "").lower()
     if "docker" in banner_l and port in {2375, 2376}:
@@ -865,24 +1082,13 @@ def evaluate_version_findings(
             }
         )
 
-    if port == 21 and "anonymous" in banner_l:
-        findings.append(
-            {
-                "type": "weak_configuration",
-                "severity": "high",
-                "title": "Potential anonymous FTP access",
-                "evidence": "FTP banner suggests anonymous or weak FTP configuration.",
-            }
-        )
-
     findings.extend(infer_cve_candidates(product, version, port))
-
     return findings
 
 
 def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
-    headers = {"User-Agent": "vScanner/2.2"}
+    headers = {"User-Agent": "vScanner/3.0"}
 
     for path in COMMON_LOGIN_PATHS:
         url = f"{base_url}{path}"
@@ -918,7 +1124,7 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
 
 def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     schemes = ["https", "http"] if port in {443, 8443, 9443} else ["http", "https"]
-    headers = {"User-Agent": "vScanner/2.2"}
+    headers = {"User-Agent": "vScanner/3.0"}
 
     for scheme in schemes:
         url = f"{scheme}://{host_or_ip}:{port}"
@@ -998,6 +1204,19 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     return None
 
 
+def canonical_profile(profile: str) -> str:
+    mapping = {
+        "quick": "light",
+        "low_noise": "stealth",
+        "adaptive": "deep",
+        "light": "light",
+        "deep": "deep",
+        "stealth": "stealth",
+        "network": "network",
+    }
+    return mapping.get((profile or "").lower(), "light")
+
+
 def build_port_list(profile: str, port_strategy: str) -> list[int]:
     base_common = [
         20,
@@ -1043,38 +1262,9 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         27017,
     ]
 
-    if profile == "low_noise":
-        low_noise_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443]
-        return sorted(set(low_noise_ports))
-
-    if profile == "adaptive":
-        adaptive_seed = [
-            21,
-            22,
-            25,
-            53,
-            80,
-            110,
-            143,
-            389,
-            443,
-            445,
-            587,
-            993,
-            995,
-            1433,
-            3306,
-            3389,
-            5432,
-            6379,
-            8080,
-            8443,
-            9200,
-            27017,
-        ]
-        if port_strategy == "aggressive":
-            adaptive_seed.extend([1521, 2049, 2375, 5601, 7001, 8888, 9000, 11211])
-        return sorted(set(adaptive_seed))
+    if profile == "stealth":
+        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443]
+        return sorted(set(stealth_ports))
 
     ranges = set(base_common)
     if profile == "deep":
@@ -1092,7 +1282,7 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
 def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
     request_data = (
         f"HEAD / HTTP/1.1\r\nHost: {host_or_ip}\r\n"
-        "User-Agent: vScanner/2.2\r\nConnection: close\r\n\r\n"
+        "User-Agent: vScanner/3.0\r\nConnection: close\r\n\r\n"
     )
     sock.sendall(request_data.encode())
     return sock.recv(320).decode(errors="ignore").strip()
@@ -1173,11 +1363,11 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
     hosts: list[dict[str, Any]] = []
     scan_ports = build_port_list(profile=profile, port_strategy=port_strategy)
-    if profile == "low_noise":
-        timeout_s = 0.8
-        max_workers = 36
-    elif profile == "adaptive":
-        timeout_s = 0.35 if port_strategy == "standard" else 0.42
+    if profile == "stealth":
+        timeout_s = 0.9
+        max_workers = 32
+    elif profile == "deep":
+        timeout_s = 0.42 if port_strategy == "standard" else 0.5
         max_workers = 120
     else:
         timeout_s = 0.35 if port_strategy == "standard" else 0.45
@@ -1185,36 +1375,7 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
-        if profile == "adaptive":
-            stage_one = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
-            open_stage_one = [entry for entry in stage_one if entry["state"] == "open"]
-
-            pivot_ports = {entry["port"] for entry in open_stage_one}
-            expanded_ports = set()
-            for pivot in pivot_ports:
-                for candidate in range(max(1, pivot - 6), min(65535, pivot + 6) + 1):
-                    if candidate not in pivot_ports:
-                        expanded_ports.add(candidate)
-
-            if port_strategy == "aggressive":
-                expanded_ports.update(range(1, 2049))
-
-            stage_two: list[dict[str, Any]] = []
-            if expanded_ports:
-                stage_two = lightweight_port_scan(
-                    ip_s,
-                    sorted(expanded_ports),
-                    timeout_s=min(0.28, timeout_s),
-                    max_workers=110,
-                )
-
-            merged: dict[int, dict[str, Any]] = {entry["port"]: entry for entry in stage_one}
-            for entry in stage_two:
-                if entry["port"] not in merged or entry["state"] == "open":
-                    merged[entry["port"]] = entry
-            port_entries = sorted(merged.values(), key=lambda item: item["port"])
-        else:
-            port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
+        port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
 
         for entry in port_entries:
             if entry["state"] == "open":
@@ -1253,15 +1414,10 @@ def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
         return "-sn"
 
-    if profile == "low_noise":
+    if profile == "stealth":
         return "-Pn -T2 --open -sS --top-ports 200"
 
-    if profile == "adaptive":
-        if port_strategy == "aggressive":
-            return "-Pn -T3 --open -sS -sV --version-light --top-ports 4000"
-        return "-Pn -T3 --open -sS -sV --version-light --top-ports 1800"
-
-    if profile == "quick":
+    if profile == "light":
         if port_strategy == "aggressive":
             return "-Pn -T4 --open -sS --top-ports 3000"
         return "-Pn -T4 --open -sS --top-ports 1000"
@@ -1269,7 +1425,7 @@ def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if port_strategy == "aggressive" and not is_public_mode():
         return "-Pn -T4 --open -sS -sV --version-all -p- --script=default,safe,banner,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --top-ports 3000 --script=default,safe,banner,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --top-ports 3500 --script=default,safe,banner,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -1333,13 +1489,6 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
     }
 
 
-def normalize_severity(raw: str) -> str:
-    severity = (raw or "").lower().strip()
-    if severity in {"critical", "high", "medium", "low", "info"}:
-        return severity
-    return "low"
-
-
 def build_risk_summary(findings: list[dict[str, Any]]) -> dict[str, int]:
     summary = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
     for finding in findings:
@@ -1371,8 +1520,6 @@ def compute_true_risk_score(summary: dict[str, int], open_ports: int, cve_candid
     return round(score, 1)
 
 
-
-
 def enforce_rate_limit(client_ip: str) -> None:
     window_s = 60
     max_calls = 8
@@ -1397,15 +1544,46 @@ def is_likely_web_port(port_entry: dict[str, Any]) -> bool:
     return any(marker in service_name or marker in product or marker in banner for marker in markers)
 
 
+def deduplicate_finding_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Keep one entry per host + vulnerability + evidence within a single scan.
+    dedup: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in items:
+        host = str(item.get("host") or "-").strip().lower()
+        key = (host, finding_vuln_key(item), str(item.get("evidence") or "-").strip().lower())
+        current = dedup.get(key)
+        if current is None:
+            dedup[key] = item
+        else:
+            current["severity"] = best_severity(str(current.get("severity", "low")), str(item.get("severity", "low")))
+    return sorted(dedup.values(), key=lambda x: severity_rank(str(x.get("severity", "low"))), reverse=True)
+
+
+def deduplicate_cves(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    dedup: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for item in items:
+        key = (
+            str(item.get("host") or "-").strip().lower(),
+            str(item.get("cve") or "-").strip().upper(),
+            str(item.get("title") or "-").strip().lower(),
+        )
+        if key not in dedup:
+            dedup[key] = item
+    return sorted(dedup.values(), key=lambda x: severity_rank(str(x.get("severity", "low"))), reverse=True)
+
+
 def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[str, Any]:
     target_input = (raw_target or "").strip()
     if not target_input:
         raise ScanInputError("Please provide a target.")
 
     target, target_type = normalize_target(target_input)
+    canonical = canonical_profile(profile)
 
-    if target_type == "network" and profile in {"deep", "adaptive"}:
-        raise ScanInputError("Deep/Adaptive profile is not suitable for large networks. Use quick or network.")
+    if canonical == "network" and target_type != "network":
+        raise ScanInputError("Network profile requires a CIDR target (example 192.168.1.0/24).")
+
+    if target_type == "network" and canonical != "network":
+        raise ScanInputError("CIDR target requires profile network.")
 
     enforce_public_safety(target, target_type)
 
@@ -1413,10 +1591,12 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     use_lightweight = should_force_light_scan() or not nmap_available()
 
     if use_lightweight:
-        nmap_data = run_lightweight_scan(target, target_type, profile, port_strategy)
+        if canonical == "network":
+            raise ScanInputError("Network scan requires nmap and is unavailable in lightweight mode.")
+        nmap_data = run_lightweight_scan(target, target_type, canonical, port_strategy)
         engine = "lightweight"
     else:
-        nmap_data = run_nmap_scan(target, profile, port_strategy)
+        nmap_data = run_nmap_scan(target, canonical, port_strategy)
         engine = "nmap"
 
     all_findings: list[dict[str, Any]] = []
@@ -1466,6 +1646,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                     "title": finding.get("title", "Finding"),
                     "evidence": finding.get("evidence", "-"),
                     "type": finding.get("type", "-"),
+                    "cve": finding.get("cve", ""),
                 }
             )
         host_results.append(
@@ -1481,46 +1662,41 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
 
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
-    true_risk_score = compute_true_risk_score(risk_summary, total_open_ports, len(cve_items))
-    finding_items.sort(
-        key=lambda item: SEVERITY_ORDER.get(item.get("severity", "low"), 1),
-        reverse=True,
-    )
-    cve_items.sort(
-        key=lambda item: SEVERITY_ORDER.get(item.get("severity", "low"), 1),
-        reverse=True,
-    )
+    dedup_findings = deduplicate_finding_items(finding_items)
+    dedup_cves = deduplicate_cves(cve_items)
+    true_risk_score = compute_true_risk_score(risk_summary, total_open_ports, len(dedup_cves))
 
     return {
         "meta": {
-            "scanner": "vScanner 2.2",
+            "scanner": "vScanner 3.0",
             "engine": engine,
             "started_at": started_at,
             "finished_at": finished_at,
             "target": target,
             "target_type": target_type,
-            "profile": profile,
+            "profile": canonical,
             "port_strategy": port_strategy,
             "risk_level": risk_level,
             "public_mode": is_public_mode(),
             "authorization_notice": "Only scan systems you are explicitly authorized to test.",
+            "stealth_note": "Stealth profile is low-noise only and does not bypass security monitoring.",
         },
         "nmap": {
             "command": nmap_data.get("command", ""),
             "summary": nmap_data.get("summary", {}),
         },
         "hosts": host_results,
-        "finding_items": finding_items,
-        "cve_items": cve_items,
+        "finding_items": dedup_findings,
+        "cve_items": dedup_cves,
         "risk_summary": risk_summary,
         "true_risk_score": true_risk_score,
         "metrics": {
             "open_ports": total_open_ports,
             "exposed_services": exposed_services,
-            "cve_candidates": len(cve_items),
+            "cve_candidates": len(dedup_cves),
             "hosts_scanned": len(host_results),
         },
-        "total_findings": len(all_findings),
+        "total_findings": len(dedup_findings),
     }
 
 
@@ -1564,6 +1740,8 @@ def health() -> Any:
             "timestamp": utc_now(),
             "public_mode": is_public_mode(),
             "nmap_available": nmap_available(),
+            "db_ready": DB_READY,
+            "db_engine": "postgres" if DB_URL.startswith("postgres") else "sqlite",
         }
     )
 
@@ -1592,35 +1770,85 @@ def projects_api() -> Any:
 @app.route("/api/projects/<project_id>/dashboard")
 def project_dashboard_api(project_id: str) -> Any:
     try:
-        data = get_project_dashboard(project_id)
+        window_days = int(request.args.get("window_days", "30"))
+    except ValueError:
+        window_days = 30
+
+    try:
+        data = get_project_dashboard(project_id, window_days=window_days)
         return jsonify(data)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 404
+
+
+@app.route("/api/projects/<project_id>/findings")
+def project_findings_api(project_id: str) -> Any:
+    severity = (request.args.get("severity") or "all").lower()
+    search = (request.args.get("search") or "").strip()
+    sort_by = (request.args.get("sort_by") or "severity").lower()
+    sort_dir = (request.args.get("sort_dir") or "desc").lower()
+    try:
+        since_days = int(request.args.get("since_days", "90"))
+    except ValueError:
+        since_days = 90
+
+    if severity not in {"all", "critical", "high", "medium", "low", "info"}:
+        return jsonify({"error": "Invalid severity filter."}), 400
+
+    items = get_project_findings(
+        project_id=project_id,
+        severity=severity,
+        search=search,
+        since_days=since_days,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return jsonify({"items": items})
+
+
+@app.route("/api/projects/<project_id>/pdf")
+def project_pdf_api(project_id: str) -> Any:
+    try:
+        window_days = int(request.args.get("window_days", "30"))
+    except ValueError:
+        window_days = 30
+
+    try:
+        pdf_buffer = build_project_pdf(project_id, window_days=window_days)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"vscanner-project-{project_id[:8]}-dashboard.pdf",
+    )
 
 
 @app.route("/api/scan", methods=["POST"])
 def scan_api() -> Any:
     payload = request.get_json(silent=True) or {}
     target = payload.get("target", "")
-    profile = (payload.get("profile") or "quick").lower()
+    profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
     project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
 
-    if profile not in {"quick", "deep", "adaptive", "network", "low_noise"}:
-        return jsonify({"error": "Invalid profile. Allowed: quick, deep, adaptive, network, low_noise."}), 400
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": "Invalid profile. Allowed: light, deep, stealth, network."}), 400
 
     if port_strategy not in {"standard", "aggressive"}:
         return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
 
     client = request.headers.get("X-Forwarded-For", "")
-    client_ip = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
+    client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
         project = get_project(project_id)
         if not project:
             raise ScanInputError("Project not found.")
 
-        enforce_rate_limit(client_ip)
+        enforce_rate_limit(client_ip_value)
         result = orchestrate_scan(target, profile, port_strategy)
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]

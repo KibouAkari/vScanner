@@ -1,83 +1,71 @@
 # vScanner
 
-vScanner started as a small school project: a local vulnerability scanner built with Python, Flask, and Nmap.
+vScanner is a modern vulnerability scanning workspace with a professional web UI, adaptive scan profiles, persistent project analytics, and deduplicated findings intelligence.
 
-It has now evolved into a much larger project: a modern, full-featured vulnerability scanner with a professional web frontend, multiple scan profiles, and structured security reporting for hosts, domains, and networks.
+## Core Capabilities
 
-## What vScanner Can Do
-
-- Scan single hosts (IP), full domains, and CIDR ranges
-- Support multiple scan profiles:
-  - `quick` for fast port and service visibility
-  - `deep` for deeper service/version analysis with NSE scripts
-  - `network` for host discovery in local network segments
-  - `low_noise` for defensive, lower-intensity scans that reduce operational noise
-- Support port coverage strategies:
-  - `standard` for fast and balanced scanning
-  - `aggressive` for broader open-port discovery
-- Detect exposed services and versions
-- Flag potentially outdated services (heuristic checks)
-- Perform banner-based service fingerprinting in lightweight mode
-- Perform HTTP/HTTPS fingerprinting including header analysis
-- Discover login surfaces (for example `/login`, `/admin`, `/wp-login.php`)
-- Provide forensic indicators such as reverse DNS, open ports, and scan timestamps
-- Deliver results through a modern, animated, and clean reporting interface
-- Show a clear Risk Level based on critical/high/medium/low counts
-- Compute a `True Risk Score` (0-100) from severity, attack surface, and CVE pressure
-- Track metrics such as open ports, exposed services, and open CVE candidates
-- Save scan reports in persistent report history
-- Export reports directly as PDF (including dashboard metrics and key findings)
+- Scan targets as:
+  - Single host IP
+  - Domain
+  - CIDR network (for local/authorized network discovery)
+- Scan profiles:
+  - `light` for fast discovery
+  - `deep` for broader service/version analysis
+  - `stealth` for defensive low-noise scanning
+  - `network` for CIDR host discovery
+- Port strategy:
+  - `standard`
+  - `aggressive`
+- Findings model with project persistence:
+  - Same asset + same vulnerability is not duplicated
+  - Same vulnerability across multiple assets is aggregated with affected-assets context
+- Dashboard and analytics:
+  - Risk trend by time window
+  - Risk distribution
+  - Top vulnerabilities
+  - Search, filter, and sort on aggregated findings
+- Reporting:
+  - Single scan PDF export
+  - Project dashboard PDF export
 
 ## Important Legal Notice
 
-Use vScanner only on systems you are explicitly authorized to test.
-Unauthorized scanning of third-party systems or networks may be illegal.
+Use vScanner only on systems and networks you are explicitly authorized to test.
+Unauthorized scanning may violate law or policy.
 
 ## Tech Stack
 
 - Python 3.10+
 - Flask
 - python-nmap
-- requests
-- Local Nmap installation (binary)
+- requests + urllib3
+- reportlab
+- Optional Vercel Postgres support via `DATABASE_URL` and `psycopg`
 
-## Vercel Deployment (Online)
+## Vercel Deployment
 
-This project is now prepared for Vercel deployment:
+This project is ready for Vercel deployment:
 
-- `api/index.py` provides the serverless entrypoint
-- `vercel.json` routes all traffic to the Flask app
-- `requirements.txt` defines Python dependencies
+- `api/index.py` is the serverless entrypoint
+- `vercel.json` routes traffic to Flask
 
-### Deploy Steps
+### Recommended Environment Variables
 
-1. Push this repository to GitHub.
-2. Import the repository into Vercel.
-3. In Vercel Project Settings, add environment variables:
-  - `VSCANNER_PUBLIC_MODE=1`
-  - Optional: `VSCANNER_FORCE_LIGHT_SCAN=1`
-4. Deploy.
-
-### Important Runtime Note for Vercel
-
-In serverless environments, the full Nmap binary is often unavailable.
-vScanner therefore supports a lightweight fallback mode for online usage:
-
-- Lightweight mode scans a curated set of common ports.
-- It still performs HTTP fingerprinting and login-surface discovery.
-- Full network and deep low-level scans remain best on a local machine with Nmap installed.
+- `VSCANNER_PUBLIC_MODE=1`
+- Optional: `VSCANNER_FORCE_LIGHT_SCAN=1`
+- Optional: `DATABASE_URL=<vercel-postgres-url>`
 
 ## Installation
 
-1. Install Nmap:
+1. Install Nmap
    - Windows: https://nmap.org/download.html
-   - Linux: using your package manager (for example `sudo apt install nmap`)
-   - macOS: for example `brew install nmap`
+   - Linux: package manager (example: `sudo apt install nmap`)
+   - macOS: example `brew install nmap`
 
-2. Install Python dependencies:
+2. Install dependencies
 
 ```bash
-pip install flask python-nmap requests
+pip install -r requirements.txt
 ```
 
 ## Run
@@ -86,7 +74,7 @@ pip install flask python-nmap requests
 python vscanner.py
 ```
 
-Then open in your browser:
+Open browser:
 
 - `http://127.0.0.1:5000`
 
@@ -94,39 +82,46 @@ Then open in your browser:
 
 - `GET /api/health`
 - `GET /api/client-ip`
+- `GET /api/projects`
+- `POST /api/projects`
+- `GET /api/projects/<project_id>/dashboard?window_days=30`
+- `GET /api/projects/<project_id>/findings?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
+- `GET /api/projects/<project_id>/pdf?window_days=30`
 - `POST /api/scan`
 - `GET /api/reports`
 - `GET /api/reports/<report_id>`
 - `GET /api/reports/<report_id>/pdf`
 
-Example for `POST /api/scan`:
+Example `POST /api/scan` body:
 
 ```json
 {
   "target": "example.com",
-  "profile": "deep"
+  "profile": "deep",
+  "port_strategy": "standard",
+  "project_id": "default"
 }
 ```
 
 ## Project Structure
 
-- `vscanner.py` - Flask backend and scan engine
-- `templates/index.html` - main UI template
-- `static/style.css` - modern visual design and animations
-- `static/app.js` - frontend logic and result rendering
-- `api/index.py` - Vercel serverless entrypoint
-- `vercel.json` - Vercel routing/build config
-- `requirements.txt` - Python dependency manifest
+- `vscanner.py` backend scanner, persistence, analytics, API routes
+- `templates/index.html` redesigned UI shell
+- `static/style.css` responsive visual system
+- `static/app.js` dynamic dashboard and interaction logic
+- `api/index.py` Vercel entrypoint
+- `vercel.json` Vercel routing/build config
+- `requirements.txt` dependency manifest
 
-## Security Hardening Included
+## Security Posture
 
-- Strict input validation for target types
-- Public mode guard against private/internal target scanning
-- Basic API rate limiting per client IP
-- Security headers (CSP, X-Frame-Options, X-Content-Type-Options, and more)
-- Debug mode disabled by default
+- Input validation for target type and profile combinations
+- Public mode guard against private/internal scans when enabled
+- Per-client API rate limiting
+- Security response headers (CSP, X-Frame-Options, etc.)
+- Debug mode off by default
 
-## Note on Vercel Blob Storage
+## Stealth Profile Clarification
 
-Blob storage is not required for the current scanner because reports are rendered directly in the frontend.
-If persistent report history or uploads are needed later, Vercel Blob can be integrated as an optional module.
+`stealth` means low-noise defensive scanning behavior.
+It does not provide SIEM evasion, IDS bypass, or hidden offensive capabilities.

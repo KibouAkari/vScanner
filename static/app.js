@@ -1,48 +1,55 @@
-const form = document.getElementById("scanForm");
+const apiState = document.getElementById("apiState");
+const dbState = document.getElementById("dbState");
+const engineState = document.getElementById("engineState");
+
+const projectSelect = document.getElementById("projectSelect");
+const newProjectButton = document.getElementById("newProjectButton");
+const projectPdfButton = document.getElementById("projectPdfButton");
+
+const menuItems = Array.from(document.querySelectorAll(".menu-item"));
+const tabs = Array.from(document.querySelectorAll(".tab"));
+
+const kpiAvgRisk = document.getElementById("kpiAvgRisk");
+const kpiScans = document.getElementById("kpiScans");
+const kpiUnique = document.getElementById("kpiUnique");
+const kpiAssets = document.getElementById("kpiAssets");
+
+const trendChart = document.getElementById("trendChart");
+const riskChart = document.getElementById("riskChart");
+const riskLegend = document.getElementById("riskLegend");
+const topVulns = document.getElementById("topVulns");
+const windowDays = document.getElementById("windowDays");
+
+const scanForm = document.getElementById("scanForm");
 const targetInput = document.getElementById("target");
 const profileSelect = document.getElementById("profile");
 const portStrategySelect = document.getElementById("portStrategy");
 const scanButton = document.getElementById("scanButton");
-const statusPill = document.getElementById("statusPill");
-const resultOutput = document.getElementById("resultOutput");
-const errorBox = document.getElementById("errorBox");
-const riskSummary = document.getElementById("riskSummary");
-const scanMeta = document.getElementById("scanMeta");
-const ipButton = document.getElementById("ipButton");
-const exportPdfButton = document.getElementById("exportPdfButton");
-const refreshHistoryButton = document.getElementById("refreshHistoryButton");
-const historyOutput = document.getElementById("historyOutput");
-const projectSelect = document.getElementById("projectSelect");
-const scanProjectSelect = document.getElementById("scanProjectSelect");
-const newProjectButton = document.getElementById("newProjectButton");
+const reportPdfButton = document.getElementById("reportPdfButton");
+const scanError = document.getElementById("scanError");
+const scanResult = document.getElementById("scanResult");
+
 const severityFilter = document.getElementById("severityFilter");
+const sinceDays = document.getElementById("sinceDays");
+const sortBy = document.getElementById("sortBy");
+const sortDir = document.getElementById("sortDir");
 const findingSearch = document.getElementById("findingSearch");
-const apiState = document.getElementById("apiState");
+const refreshFindingsButton = document.getElementById("refreshFindingsButton");
+const findingsTable = document.getElementById("findingsTable");
 
-const kpiTrueRisk = document.getElementById("kpiTrueRisk");
-const kpiEngine = document.getElementById("kpiEngine");
-const kpiPorts = document.getElementById("kpiPorts");
-const kpiExposed = document.getElementById("kpiExposed");
-const kpiCve = document.getElementById("kpiCve");
-const kpiRiskLevel = document.getElementById("kpiRiskLevel");
+const historyList = document.getElementById("historyList");
+const refreshHistoryButton = document.getElementById("refreshHistoryButton");
 
-const riskChart = document.getElementById("riskChart");
-const surfaceChart = document.getElementById("surfaceChart");
-
-const navButtons = Array.from(document.querySelectorAll(".nav-item"));
-const tabs = Array.from(document.querySelectorAll(".tab-panel"));
-
-let lastScanResult = null;
-let activeProjectId = "default";
-
-const ORDER = ["critical", "high", "medium", "low", "info"];
+const ORDER = ["critical", "high", "medium", "low"];
 const COLORS = {
-    critical: "#ff4f6f",
-    high: "#ff9551",
-    medium: "#efc45d",
-    low: "#5cc8ff",
-    info: "#8da6c3",
+    critical: "#ff5d73",
+    high: "#ffc35c",
+    medium: "#67b9ff",
+    low: "#4cdd88",
 };
+
+let activeProjectId = "default";
+let lastReportId = null;
 
 function esc(value) {
     return String(value ?? "")
@@ -53,156 +60,74 @@ function esc(value) {
         .replaceAll("'", "&#039;");
 }
 
-function setStatus(status, text) {
-    statusPill.className = `pill ${status}`;
-    statusPill.textContent = text;
-}
-
 function showError(message) {
-    errorBox.textContent = message;
-    errorBox.classList.remove("hidden");
+    scanError.textContent = message;
+    scanError.classList.remove("hidden");
 }
 
 function clearError() {
-    errorBox.classList.add("hidden");
-    errorBox.textContent = "";
+    scanError.textContent = "";
+    scanError.classList.add("hidden");
 }
 
-function normalizeSeverity(raw) {
-    const sev = String(raw || "").toLowerCase();
-    return ORDER.includes(sev) ? sev : "low";
+function activateTab(tabName) {
+    menuItems.forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === tabName);
+    });
+
+    tabs.forEach((tab) => {
+        tab.classList.toggle("active", tab.id === `tab-${tabName}`);
+    });
 }
 
-function drawDonutChart(canvasEl, valuesByKey) {
-    const ctx = canvasEl.getContext("2d");
-    const width = canvasEl.width;
-    const height = canvasEl.height;
-    const centerX = 118;
-    const centerY = 120;
-    const radius = 76;
-
-    ctx.clearRect(0, 0, width, height);
-
-    const values = ORDER.map((k) => Number(valuesByKey[k] || 0));
-    const total = values.reduce((a, b) => a + b, 0);
-
-    if (total <= 0) {
-        ctx.fillStyle = "#95afce";
-        ctx.font = "14px Outfit";
-        ctx.fillText("No data", 96, 122);
-        return;
-    }
-
-    let start = -Math.PI / 2;
-    ORDER.forEach((key) => {
-        const value = Number(valuesByKey[key] || 0);
-        if (!value) {
-            return;
+menuItems.forEach((button) => {
+    button.addEventListener("click", () => {
+        activateTab(button.dataset.tab);
+        if (button.dataset.tab === "history") {
+            loadHistory();
         }
-        const angle = (value / total) * Math.PI * 2;
-        ctx.beginPath();
-        ctx.moveTo(centerX, centerY);
-        ctx.arc(centerX, centerY, radius, start, start + angle);
-        ctx.closePath();
-        ctx.fillStyle = COLORS[key];
-        ctx.fill();
-        start += angle;
+        if (button.dataset.tab === "findings") {
+            loadAggregatedFindings();
+        }
     });
+});
 
-    ctx.beginPath();
-    ctx.arc(centerX, centerY, 40, 0, Math.PI * 2);
-    ctx.fillStyle = "#08152a";
-    ctx.fill();
-
-    ctx.fillStyle = "#d8e8ff";
-    ctx.font = "700 17px Space Grotesk";
-    ctx.fillText(String(total), centerX - 10, centerY + 5);
-
-    ctx.font = "12px Outfit";
-    let y = 42;
-    ORDER.forEach((key) => {
-        const val = Number(valuesByKey[key] || 0);
-        ctx.fillStyle = COLORS[key];
-        ctx.fillRect(230, y, 10, 10);
-        ctx.fillStyle = "#c7ddfb";
-        ctx.fillText(`${key.toUpperCase()} ${val}`, 246, y + 9);
-        y += 20;
-    });
-}
-
-function drawSurfaceChart(metrics = {}) {
-    const ctx = surfaceChart.getContext("2d");
-    const width = surfaceChart.width;
-    const height = surfaceChart.height;
+function drawTrend(points) {
+    const ctx = trendChart.getContext("2d");
+    const width = trendChart.width;
+    const height = trendChart.height;
     ctx.clearRect(0, 0, width, height);
 
-    const bars = [
-        { label: "Open Ports", value: Number(metrics.open_ports || 0), color: "#5cc8ff" },
-        { label: "Exposed", value: Number(metrics.exposed_services || 0), color: "#ff9551" },
-        { label: "CVEs", value: Number(metrics.cve_candidates || 0), color: "#ff4f6f" },
-        { label: "Hosts", value: Number(metrics.hosts_scanned || 0), color: "#1ec8a3" },
-    ];
-
-    const maxValue = Math.max(1, ...bars.map((b) => b.value));
-    const barWidth = 44;
-    const gap = 28;
-    const baseY = 198;
-
-    bars.forEach((bar, index) => {
-        const x = 60 + index * (barWidth + gap);
-        const scaled = Math.max(6, (bar.value / maxValue) * 120);
-
-        ctx.fillStyle = "rgba(98, 131, 173, 0.18)";
-        ctx.fillRect(x, baseY - 122, barWidth, 122);
-
-        ctx.fillStyle = bar.color;
-        ctx.fillRect(x, baseY - scaled, barWidth, scaled);
-
-        ctx.fillStyle = "#d8e8ff";
-        ctx.font = "700 12px Space Grotesk";
-        ctx.fillText(String(bar.value), x + 8, baseY - scaled - 8);
-
-        ctx.fillStyle = "#9eb8d9";
-        ctx.font = "11px Outfit";
-        ctx.fillText(bar.label, x - 6, baseY + 16);
-    });
-}
-
-function drawTrendChart(points = []) {
-    const ctx = surfaceChart.getContext("2d");
-    const width = surfaceChart.width;
-    const height = surfaceChart.height;
-    ctx.clearRect(0, 0, width, height);
-
-    ctx.strokeStyle = "rgba(88, 120, 160, 0.4)";
+    ctx.strokeStyle = "rgba(126, 161, 198, 0.36)";
     ctx.lineWidth = 1;
-    for (let i = 0; i < 4; i += 1) {
-        const y = 36 + i * 50;
+    for (let i = 0; i < 5; i += 1) {
+        const y = 26 + i * 46;
         ctx.beginPath();
-        ctx.moveTo(36, y);
-        ctx.lineTo(width - 24, y);
+        ctx.moveTo(30, y);
+        ctx.lineTo(width - 20, y);
         ctx.stroke();
     }
 
     if (!points.length) {
-        ctx.fillStyle = "#9ab6d8";
-        ctx.font = "13px Outfit";
-        ctx.fillText("Keine Trend-Daten vorhanden", 42, 58);
+        ctx.fillStyle = "#9bb4cb";
+        ctx.font = "13px Manrope";
+        ctx.fillText("No trend data in this window.", 36, 50);
         return;
     }
 
-    const maxValue = Math.max(1, ...points.map((point) => Number(point.true_risk_score || 0)));
-    const chartW = width - 70;
-    const chartH = height - 70;
-    const stepX = chartW / Math.max(1, points.length - 1);
+    const maxValue = Math.max(1, ...points.map((item) => Number(item.true_risk_score || 0)));
+    const chartW = width - 66;
+    const chartH = height - 54;
+    const stepX = chartW / Math.max(points.length - 1, 1);
 
-    ctx.strokeStyle = "#1ec7c3";
+    ctx.strokeStyle = "#39d4b5";
     ctx.lineWidth = 2.2;
     ctx.beginPath();
+
     points.forEach((point, index) => {
-        const score = Number(point.true_risk_score || 0);
-        const x = 36 + index * stepX;
-        const y = 28 + chartH - (score / maxValue) * chartH;
+        const val = Number(point.true_risk_score || 0);
+        const x = 32 + stepX * index;
+        const y = 20 + chartH - (val / maxValue) * chartH;
         if (index === 0) {
             ctx.moveTo(x, y);
         } else {
@@ -212,89 +137,89 @@ function drawTrendChart(points = []) {
     ctx.stroke();
 
     points.forEach((point, index) => {
-        const score = Number(point.true_risk_score || 0);
-        const x = 36 + index * stepX;
-        const y = 28 + chartH - (score / maxValue) * chartH;
-        ctx.fillStyle = "#1ec7c3";
+        const val = Number(point.true_risk_score || 0);
+        const x = 32 + stepX * index;
+        const y = 20 + chartH - (val / maxValue) * chartH;
         ctx.beginPath();
+        ctx.fillStyle = "#67b9ff";
         ctx.arc(x, y, 3, 0, Math.PI * 2);
         ctx.fill();
 
-        const stamp = String(point.created_at || "").slice(11, 16) || "--:--";
-        ctx.fillStyle = "#8ea9ca";
-        ctx.font = "10px Outfit";
-        ctx.fillText(stamp, x - 12, height - 12);
-    });
-}
-
-function renderRiskSummary(summary = {}) {
-    riskSummary.innerHTML = "";
-    ORDER.forEach((key) => {
-        const row = document.createElement("div");
-        row.className = "risk-item";
-        row.innerHTML = `<span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong>`;
-        riskSummary.appendChild(row);
-    });
-}
-
-function renderMeta(meta = {}) {
-    const lines = [
-        `Target: ${meta.target || "-"}`,
-        `Type: ${meta.target_type || "-"}`,
-        `Profile: ${meta.profile || "-"}`,
-        `Port Strategy: ${meta.port_strategy || "-"}`,
-        `Engine: ${meta.engine || "-"}`,
-        `Started: ${meta.started_at || "-"}`,
-        `Finished: ${meta.finished_at || "-"}`,
-    ];
-    scanMeta.innerHTML = lines.map((line) => `<div>${esc(line)}</div>`).join("");
-}
-
-function renderKpis(data) {
-    const metrics = data.metrics || {};
-    kpiTrueRisk.textContent = String(data.true_risk_score || 0);
-    kpiEngine.textContent = data.meta?.engine || "-";
-    kpiPorts.textContent = String(metrics.open_ports || 0);
-    kpiExposed.textContent = String(metrics.exposed_services || 0);
-    kpiCve.textContent = String(metrics.cve_candidates || 0);
-    kpiRiskLevel.textContent = String(data.meta?.risk_level || "low").toUpperCase();
-}
-
-function filteredFindings() {
-    if (!lastScanResult) {
-        return [];
-    }
-
-    const selectedSeverity = severityFilter.value;
-    const term = findingSearch.value.trim().toLowerCase();
-
-    return (lastScanResult.finding_items || []).filter((item) => {
-        const sev = normalizeSeverity(item.severity);
-        if (selectedSeverity !== "all" && sev !== selectedSeverity) {
-            return false;
+        if (index % Math.ceil(points.length / 6) === 0) {
+            const stamp = String(point.created_at || "").slice(5, 10);
+            ctx.fillStyle = "#8fa9c3";
+            ctx.font = "10px Manrope";
+            ctx.fillText(stamp, x - 12, height - 8);
         }
-
-        if (!term) {
-            return true;
-        }
-
-        const text = `${item.host} ${item.title} ${item.evidence} ${item.type}`.toLowerCase();
-        return text.includes(term);
     });
 }
 
-function renderFindingsTable(items) {
+function drawRiskBars(summary) {
+    const ctx = riskChart.getContext("2d");
+    const width = riskChart.width;
+    const height = riskChart.height;
+    ctx.clearRect(0, 0, width, height);
+
+    const bars = ORDER.map((key) => ({ key, val: Number(summary[key] || 0), color: COLORS[key] }));
+    const maxValue = Math.max(1, ...bars.map((item) => item.val));
+
+    const barWidth = 70;
+    const gap = 34;
+    const baseY = 214;
+
+    bars.forEach((bar, index) => {
+        const x = 56 + index * (barWidth + gap);
+        const h = Math.max(6, (bar.val / maxValue) * 150);
+
+        ctx.fillStyle = "rgba(133, 173, 210, 0.18)";
+        ctx.fillRect(x, baseY - 150, barWidth, 150);
+
+        ctx.fillStyle = bar.color;
+        ctx.fillRect(x, baseY - h, barWidth, h);
+
+        ctx.fillStyle = "#dce9f7";
+        ctx.font = "700 12px Sora";
+        ctx.fillText(String(bar.val), x + 28, baseY - h - 8);
+
+        ctx.fillStyle = "#9bb4cb";
+        ctx.font = "11px Manrope";
+        ctx.fillText(bar.key.toUpperCase(), x + 13, baseY + 14);
+    });
+
+    riskLegend.innerHTML = ORDER.map((key) => `<div class="risk-item"><span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong></div>`).join("");
+}
+
+function renderTopVulns(items) {
     if (!items.length) {
-        return '<p class="summary-banner">Keine Findings fuer den aktuellen Filter.</p>';
+        topVulns.innerHTML = '<div class="list-item"><div class="list-line">No data available.</div></div>';
+        return;
     }
 
-    const rows = items
-        .slice(0, 900)
+    topVulns.innerHTML = items
+        .slice(0, 12)
         .map((item) => {
-            const sev = normalizeSeverity(item.severity);
+            const sev = String(item.severity || "low").toLowerCase();
+            return `
+                <div class="list-item">
+                    <div class="list-line">
+                        <span class="badge badge-${esc(sev)}">${esc(sev)}</span>
+                        <strong>Assets: ${esc(item.affected_assets || 0)}</strong>
+                    </div>
+                    <div class="list-line"><span>${esc(item.title || "Finding")}</span></div>
+                    <div class="list-line"><span>${esc(item.cve || "-")}</span><span>${esc(item.type || "-")}</span></div>
+                </div>
+            `;
+        })
+        .join("");
+}
+
+function renderScanResult(data) {
+    const rows = (data.finding_items || [])
+        .map((item) => {
+            const sev = String(item.severity || "low").toLowerCase();
             return `
                 <tr>
-                    <td><span class="sev-pill sev-${esc(sev)}">${esc(sev)}</span></td>
+                    <td><span class="badge badge-${esc(sev)}">${esc(sev)}</span></td>
                     <td class="mono">${esc(item.host || "-")}</td>
                     <td>${esc(item.title || "-")}</td>
                     <td>${esc(item.evidence || "-")}</td>
@@ -304,243 +229,187 @@ function renderFindingsTable(items) {
         })
         .join("");
 
-    return `
-        <div class="summary-banner">Findings gesamt: ${items.length}</div>
-        <div class="table-wrap">
-            <table class="findings-table">
-                <thead>
-                    <tr>
-                        <th>Severity</th>
-                        <th>Host</th>
-                        <th>Title</th>
-                        <th>Evidence</th>
-                        <th>Type</th>
-                    </tr>
-                </thead>
-                <tbody>${rows}</tbody>
-            </table>
-        </div>
+    scanResult.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Asset</th>
+                    <th>Title</th>
+                    <th>Evidence</th>
+                    <th>Type</th>
+                </tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="5">No findings</td></tr>'}</tbody>
+        </table>
     `;
 }
 
-function renderCveSection(cves = []) {
-    if (!cves.length) {
-        return "";
-    }
-
-    const rows = cves
-        .slice(0, 60)
-        .map(
-            (item) =>
-                `<tr><td>${esc(item.cve || "-")}</td><td>${esc(item.host || "-")}</td><td>${esc(item.title || "-")}</td><td>${esc(item.evidence || "-")}</td></tr>`
-        )
+function renderFindings(items) {
+    const rows = (items || [])
+        .map((item) => {
+            const sev = String(item.severity || "low").toLowerCase();
+            const assets = (item.assets || []).slice(0, 6).map((asset) => `<span>${esc(asset)}</span>`).join(", ");
+            return `
+                <tr>
+                    <td><span class="badge badge-${esc(sev)}">${esc(sev)}</span></td>
+                    <td>${esc(item.title || "-")}</td>
+                    <td>${esc(item.cve || "-")}</td>
+                    <td>${esc(item.asset_count || 0)}</td>
+                    <td>${esc(item.occurrence_count || 0)}</td>
+                    <td>${assets || "-"}</td>
+                    <td>${esc(item.last_seen || "-")}</td>
+                </tr>
+            `;
+        })
         .join("");
 
-    return `
-        <div class="summary-banner">Open CVE Candidates: ${cves.length}</div>
-        <div class="table-wrap">
-            <table class="findings-table">
-                <thead><tr><th>CVE</th><th>Host</th><th>Title</th><th>Evidence</th></tr></thead>
-                <tbody>${rows}</tbody>
-            </table>
-        </div>
+    findingsTable.innerHTML = `
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Vulnerability</th>
+                    <th>CVE</th>
+                    <th>Affected Assets</th>
+                    <th>Occurrences</th>
+                    <th>Assets (sample)</th>
+                    <th>Last Seen</th>
+                </tr>
+            </thead>
+            <tbody>${rows || '<tr><td colspan="7">No matching findings.</td></tr>'}</tbody>
+        </table>
     `;
 }
 
-function renderResult() {
-    if (!lastScanResult) {
+function renderHistory(items) {
+    if (!items.length) {
+        historyList.innerHTML = '<div class="list-item"><div class="list-line">No reports yet.</div></div>';
         return;
     }
 
-    const selected = filteredFindings();
-    resultOutput.innerHTML = `${renderFindingsTable(selected)}${renderCveSection(lastScanResult.cve_items || [])}`;
-
-    renderRiskSummary(lastScanResult.risk_summary || {});
-    renderMeta(lastScanResult.meta || {});
-    renderKpis(lastScanResult);
-    drawDonutChart(riskChart, lastScanResult.risk_summary || {});
-    drawSurfaceChart(lastScanResult.metrics || {});
-}
-
-function syncProjectSelects(items) {
-    const options = (items || []).map((item) => `<option value="${esc(item.id)}">${esc(item.name)}</option>`).join("");
-    projectSelect.innerHTML = options;
-    scanProjectSelect.innerHTML = options;
-
-    projectSelect.value = activeProjectId;
-    scanProjectSelect.value = activeProjectId;
-}
-
-async function loadProjects() {
-    try {
-        const response = await fetch("/api/projects");
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || "Projects konnten nicht geladen werden.");
-        }
-        const items = data.items || [];
-        if (!items.length) {
-            return;
-        }
-        if (!items.some((item) => item.id === activeProjectId)) {
-            activeProjectId = items[0].id;
-        }
-        syncProjectSelects(items);
-    } catch (_error) {
-        // Keep defaults if project list fails.
-    }
-}
-
-async function loadProjectDashboard() {
-    try {
-        const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/dashboard`);
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || "Dashboard konnte nicht geladen werden.");
-        }
-
-        const totals = data.totals || {};
-        kpiTrueRisk.textContent = String(totals.avg_risk || 0);
-        kpiExposed.textContent = String(totals.exposed_services || 0);
-        kpiCve.textContent = String(totals.cve_count || 0);
-        kpiPorts.textContent = String(totals.open_ports || 0);
-        kpiEngine.textContent = "history";
-        kpiRiskLevel.textContent = Object.entries(data.risk_distribution || {}).sort((a, b) => b[1] - a[1])[0]?.[0]?.toUpperCase() || "LOW";
-
-        drawDonutChart(riskChart, { ...(data.risk_distribution || {}), info: 0 });
-        drawTrendChart(data.trend || []);
-        renderRiskSummary({ ...(data.risk_distribution || {}), info: 0 });
-
-        const metaLines = [
-            `Project: ${data.project?.name || "-"}`,
-            `Total Scans: ${totals.scans || 0}`,
-            `Total Findings: ${totals.findings || 0}`,
-            `Last Scan: ${(data.recent_scans || [])[0]?.created_at || "-"}`,
-        ];
-        scanMeta.innerHTML = metaLines.map((line) => `<div>${esc(line)}</div>`).join("");
-    } catch (_error) {
-        // Dashboard still works with latest scan fallback.
-    }
-}
-
-function activateTab(tabName) {
-    navButtons.forEach((button) => {
-        button.classList.toggle("active", button.dataset.tab === tabName);
-    });
-
-    tabs.forEach((tab) => {
-        tab.classList.toggle("active", tab.id === `tab-${tabName}`);
-    });
-}
-
-window.activateTab = activateTab;
-
-async function fetchPublicIp() {
-    const endpoints = ["https://api64.ipify.org?format=json", "https://api.ipify.org?format=json"];
-    for (const url of endpoints) {
-        try {
-            const response = await fetch(url, { method: "GET" });
-            if (!response.ok) {
-                continue;
-            }
-            const data = await response.json();
-            if (data.ip) {
-                return data.ip;
-            }
-        } catch (_error) {
-            // try next endpoint
-        }
-    }
-    throw new Error("Public IP konnte nicht ermittelt werden.");
+    historyList.innerHTML = items
+        .map((item) => {
+            const sev = String(item.risk_level || "low").toLowerCase();
+            return `
+                <div class="list-item">
+                    <div class="list-line"><strong>${esc(item.target || "-")}</strong><span>${esc(item.created_at || "-")}</span></div>
+                    <div class="list-line"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
+                    <div class="list-line"><span>Risk Score: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
+                    <div class="list-line">
+                        <button class="btn ghost" type="button" onclick="window.openReport('${esc(item.id)}')">Open</button>
+                        <button class="btn ghost" type="button" onclick="window.openReportPdf('${esc(item.id)}')">PDF</button>
+                    </div>
+                </div>
+            `;
+        })
+        .join("");
 }
 
 async function loadHealth() {
     try {
         const response = await fetch("/api/health");
         const data = await response.json();
-        apiState.textContent = data.status === "ok" ? "online" : "unknown";
+        apiState.textContent = data.status || "unknown";
+        dbState.textContent = data.db_engine || "-";
+        engineState.textContent = data.nmap_available ? "nmap" : "light";
     } catch (_error) {
         apiState.textContent = "offline";
+        dbState.textContent = "-";
+        engineState.textContent = "-";
     }
 }
 
-function historyItemHtml(item) {
-    return `
-        <article class="history-item">
-            <div class="history-line">
-                <strong>${esc(item.target || "-")}</strong>
-                <span>${esc(item.created_at || "-")}</span>
-            </div>
-            <div class="history-line">
-                <span>Profile: ${esc(item.profile || "-")}</span>
-                <span>Risk: ${esc(String(item.risk_level || "low").toUpperCase())}</span>
-                <span>True Score: ${esc(item.true_risk_score || 0)}</span>
-            </div>
-            <div class="history-line">
-                <span>Ports: ${esc(item.open_ports || 0)}</span>
-                <span>Exposed: ${esc(item.exposed_services || 0)}</span>
-                <span>CVEs: ${esc(item.cve_count || 0)}</span>
-            </div>
-            <div class="history-actions">
-                <button class="ghost-button" type="button" onclick="window.loadReportDetail('${esc(item.id)}')">Open</button>
-                <button class="primary-button" type="button" onclick="window.downloadReportPdf('${esc(item.id)}')">PDF</button>
-            </div>
-        </article>
-    `;
+function syncProjectSelects(items) {
+    const options = (items || []).map((project) => `<option value="${esc(project.id)}">${esc(project.name)}</option>`).join("");
+    projectSelect.innerHTML = options;
+    if (!(items || []).some((item) => item.id === activeProjectId)) {
+        activeProjectId = (items || [])[0]?.id || "default";
+    }
+    projectSelect.value = activeProjectId;
+}
+
+async function loadProjects() {
+    const response = await fetch("/api/projects");
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Projects could not be loaded");
+    }
+    syncProjectSelects(data.items || []);
+}
+
+async function loadDashboard() {
+    const days = Number(windowDays.value || 30);
+    const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/dashboard?window_days=${days}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Dashboard unavailable");
+    }
+
+    const totals = data.totals || {};
+    kpiAvgRisk.textContent = String(totals.avg_risk || 0);
+    kpiScans.textContent = String(totals.scans || 0);
+
+    const uniqueCount = (data.top_vulnerabilities || []).length;
+    const affectedAssets = (data.top_vulnerabilities || []).reduce((sum, item) => sum + Number(item.affected_assets || 0), 0);
+    kpiUnique.textContent = String(uniqueCount);
+    kpiAssets.textContent = String(affectedAssets);
+
+    drawTrend(data.trend || []);
+    drawRiskBars(data.risk_distribution || {});
+    renderTopVulns(data.top_vulnerabilities || []);
+}
+
+async function loadAggregatedFindings() {
+    const params = new URLSearchParams({
+        severity: severityFilter.value,
+        since_days: sinceDays.value,
+        sort_by: sortBy.value,
+        sort_dir: sortDir.value,
+        search: findingSearch.value.trim(),
+    });
+
+    const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/findings?${params.toString()}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Findings unavailable");
+    }
+
+    renderFindings(data.items || []);
 }
 
 async function loadHistory() {
-    historyOutput.innerHTML = '<div class="summary-banner">History wird geladen...</div>';
-    try {
-        const response = await fetch(`/api/reports?limit=50&project_id=${encodeURIComponent(activeProjectId)}`);
-        const data = await response.json();
-        if (!response.ok) {
-            throw new Error(data.error || "History konnte nicht geladen werden.");
-        }
-
-        const items = data.items || [];
-        if (!items.length) {
-            historyOutput.innerHTML = '<div class="summary-banner">Noch keine Reports vorhanden.</div>';
-            return;
-        }
-
-        historyOutput.innerHTML = items.map(historyItemHtml).join("");
-    } catch (error) {
-        historyOutput.innerHTML = `<div class="summary-banner">${esc(error.message || "History Fehler")}</div>`;
+    const response = await fetch(`/api/reports?limit=60&project_id=${encodeURIComponent(activeProjectId)}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "History unavailable");
     }
+
+    renderHistory(data.items || []);
 }
 
-window.loadHistory = loadHistory;
-
-window.loadReportDetail = async function loadReportDetail(reportId) {
+window.openReport = async function openReport(reportId) {
     try {
         const response = await fetch(`/api/reports/${encodeURIComponent(reportId)}`);
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.error || "Report konnte nicht geladen werden.");
+            throw new Error(data.error || "Report not found");
         }
 
-        lastScanResult = data;
-        exportPdfButton.disabled = false;
-        renderResult();
-        activateTab("scan");
-        setStatus("done", "Report loaded");
+        lastReportId = reportId;
+        reportPdfButton.disabled = false;
+        renderScanResult(data);
+        activateTab("scanner");
     } catch (error) {
-        showError(error.message || "Report laden fehlgeschlagen.");
+        showError(error.message || "Could not open report");
     }
 };
 
-window.downloadReportPdf = function downloadReportPdf(reportId) {
-    const id = reportId || lastScanResult?.report_id;
-    if (!id) {
-        showError("Kein Report fuer den PDF Export vorhanden.");
-        return;
-    }
-
-    window.open(`/api/reports/${encodeURIComponent(id)}/pdf`, "_blank", "noopener,noreferrer");
+window.openReportPdf = function openReportPdf(reportId) {
+    window.open(`/api/reports/${encodeURIComponent(reportId)}/pdf`, "_blank", "noopener,noreferrer");
 };
 
-form.addEventListener("submit", async (event) => {
+scanForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearError();
 
@@ -548,14 +417,11 @@ form.addEventListener("submit", async (event) => {
         target: targetInput.value.trim(),
         profile: profileSelect.value,
         port_strategy: portStrategySelect.value,
-        project_id: scanProjectSelect.value || activeProjectId,
+        project_id: activeProjectId,
     };
 
-    setStatus("running", "Scanning");
     scanButton.disabled = true;
-    exportPdfButton.disabled = true;
-    scanButton.textContent = "Scanne...";
-    resultOutput.innerHTML = '<div class="summary-banner">Scan laeuft. Bitte warten...</div>';
+    scanButton.textContent = "Scanning...";
 
     try {
         const response = await fetch("/api/scan", {
@@ -566,68 +432,51 @@ form.addEventListener("submit", async (event) => {
 
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.error || "Unbekannter Fehler");
+            throw new Error(data.error || "Scan failed");
         }
 
-        lastScanResult = data;
-        exportPdfButton.disabled = false;
-        renderResult();
-        await loadHistory();
-        await loadProjectDashboard();
+        lastReportId = data.report_id;
+        reportPdfButton.disabled = false;
+
+        renderScanResult(data);
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
         activateTab("dashboard");
-        setStatus("done", "Fertig");
     } catch (error) {
-        showError(error.message || "Scan fehlgeschlagen.");
-        setStatus("idle", "Fehler");
-        resultOutput.innerHTML = "";
+        showError(error.message || "Scan failed");
     } finally {
         scanButton.disabled = false;
-        scanButton.textContent = "Scan starten";
+        scanButton.textContent = "Start Scan";
     }
 });
 
-severityFilter.addEventListener("change", () => {
-    if (lastScanResult) {
-        renderResult();
+reportPdfButton.addEventListener("click", () => {
+    if (!lastReportId) {
+        showError("No report available for PDF export.");
+        return;
     }
+    window.open(`/api/reports/${encodeURIComponent(lastReportId)}/pdf`, "_blank", "noopener,noreferrer");
 });
 
-findingSearch.addEventListener("input", () => {
-    if (lastScanResult) {
-        renderResult();
-    }
+projectPdfButton.addEventListener("click", () => {
+    const days = Number(windowDays.value || 30);
+    window.open(
+        `/api/projects/${encodeURIComponent(activeProjectId)}/pdf?window_days=${days}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
 });
-
-ipButton.addEventListener("click", async () => {
-    clearError();
-    try {
-        const ip = await fetchPublicIp();
-        alert(`Deine oeffentliche IP: ${ip}`);
-    } catch (error) {
-        showError(error.message || "IP konnte nicht geladen werden.");
-    }
-});
-
-exportPdfButton.addEventListener("click", () => window.downloadReportPdf());
-refreshHistoryButton.addEventListener("click", loadHistory);
 
 projectSelect.addEventListener("change", async () => {
     activeProjectId = projectSelect.value || "default";
-    scanProjectSelect.value = activeProjectId;
-    await loadHistory();
-    await loadProjectDashboard();
-});
-
-scanProjectSelect.addEventListener("change", () => {
-    activeProjectId = scanProjectSelect.value || "default";
-    projectSelect.value = activeProjectId;
+    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
 });
 
 newProjectButton.addEventListener("click", async () => {
-    const name = prompt("Projektname eingeben (z.B. simi.ch)");
+    const name = prompt("Projektname eingeben");
     if (!name || !name.trim()) {
         return;
     }
+
     try {
         const response = await fetch("/api/projects", {
             method: "POST",
@@ -636,34 +485,36 @@ newProjectButton.addEventListener("click", async () => {
         });
         const data = await response.json();
         if (!response.ok) {
-            throw new Error(data.error || "Projekt konnte nicht erstellt werden.");
+            throw new Error(data.error || "Project could not be created");
         }
 
         await loadProjects();
         activeProjectId = data.id;
         projectSelect.value = data.id;
-        scanProjectSelect.value = data.id;
-        await loadHistory();
-        await loadProjectDashboard();
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
     } catch (error) {
-        showError(error.message || "Projektanlage fehlgeschlagen.");
+        showError(error.message || "Project creation failed");
     }
 });
 
-navButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-        activateTab(button.dataset.tab);
-        if (button.dataset.tab === "history") {
-            loadHistory();
-        }
-    });
+windowDays.addEventListener("change", loadDashboard);
+refreshFindingsButton.addEventListener("click", loadAggregatedFindings);
+refreshHistoryButton.addEventListener("click", loadHistory);
+severityFilter.addEventListener("change", loadAggregatedFindings);
+sinceDays.addEventListener("change", loadAggregatedFindings);
+sortBy.addEventListener("change", loadAggregatedFindings);
+sortDir.addEventListener("change", loadAggregatedFindings);
+findingSearch.addEventListener("input", () => {
+    window.clearTimeout(window.__findingSearchTimer);
+    window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
 });
 
-renderRiskSummary({});
-drawDonutChart(riskChart, {});
-drawSurfaceChart({});
-loadHealth();
-loadProjects().then(async () => {
-    await loadHistory();
-    await loadProjectDashboard();
-});
+(async function bootstrap() {
+    try {
+        await loadHealth();
+        await loadProjects();
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+    } catch (error) {
+        showError(error.message || "Initial load failed");
+    }
+})();
