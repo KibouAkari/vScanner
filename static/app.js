@@ -75,110 +75,118 @@ const historyCache = new Map();
 
 const I18N = {
     de: {
-        documentTitle: "vScanner | Adaptive Security Platform",
-        brandSubtitle: "Adaptive Vulnerability Platform",
+        documentTitle: "vScanner | Adaptive Sicherheitsplattform",
+        brandSubtitle: "Adaptive Schwachstellen-Plattform",
         dashboard: "Dashboard",
         scanner: "Scanner",
-        findings: "Findings",
-        history: "History",
-        settings: "Settings",
-        workspaceEyebrow: "Security Workspace",
-        workspaceTitle: "Vulnerability Intelligence",
-        workspaceSubtitle: "Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.",
-        modeDark: "Dark",
-        modeBright: "Bright",
-        window: "Window",
-        runScan: "Run New Scan",
-        target: "Target",
-        scanProfile: "Scan Profile",
-        portStrategy: "Port Strategy",
-        suggestedNetworks: "Suggested networks:",
-        latestFindings: "Latest Scan Findings",
-        aggregatedFindings: "Aggregated Findings",
-        scanHistory: "Scan History",
-        workspacePreferences: "Workspace Preferences",
-        language: "Language",
-        mode: "Mode",
-        theme: "Theme",
-        preferencesNote: "Preferences are stored in the browser and applied instantly across the workspace.",
-        riskScanner: "Risk Scanner",
-        riskScannerDesc: "Normal scanner for host/domain audits with light and deep profiles.",
-        networkScanner: "Network Discovery",
-        networkScannerDesc: "Discovery and service mapping for authorized local/lab CIDR ranges.",
+        findings: "Befunde",
+        history: "Verlauf",
+        settings: "Einstellungen",
+        workspaceEyebrow: "Sicherheits-Arbeitsbereich",
+        workspaceTitle: "Schwachstellen-Intelligenz",
+        workspaceSubtitle: "Übersichtliches Dashboard, adaptive Scan-Profile und deduplizierte Asset-Befunde.",
+        modeDark: "Dunkel",
+        modeBright: "Hell",
+        window: "Zeitraum",
+        runScan: "Neuer Scan",
+        target: "Ziel",
+        scanProfile: "Scan-Profil",
+        portStrategy: "Port-Strategie",
+        suggestedNetworks: "Empfohlene Netzwerke:",
+        latestFindings: "Letzte Scan-Befunde",
+        aggregatedFindings: "Aggregierte Befunde",
+        scanHistory: "Scan-Verlauf",
+        workspacePreferences: "Arbeitsbereich-Einstellungen",
+        language: "Sprache",
+        mode: "Modus",
+        theme: "Design",
+        preferencesNote: "Einstellungen werden im Browser gespeichert und sofort im gesamten Arbeitsbereich angewendet.",
+        riskScanner: "Risiko-Scanner",
+        riskScannerDesc: "Standard-Scanner für Host/Domain-Audits mit leichten und tiefen Profilen.",
+        networkScanner: "Netzwerk-Erkundung",
+        networkScannerDesc: "Erkennung und Service-Mapping für autorisierte lokale/Lab-CIDR-Bereiche.",
         stealthScanner: "Stealth & Intel",
-        stealthScannerDesc: "Low-noise scan plus passive metadata enrichment, no evasion behavior.",
-        standardModeNote: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
-        networkModeNote: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
-        stealthModeNote: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
-        operationalNotes: "Operational Notes",
-        scannerReference: "Scanner Reference",
-        refresh: "Refresh",
-        noData: "No data",
-        noScansWindow: "No scans in this window.",
-        noAssetInventory: "No asset inventory yet.",
-        noServiceInventory: "No service inventory yet.",
+        stealthScannerDesc: "Rauscharmer Scan mit passiver Metadaten-Anreicherung, kein Ausweichverhalten.",
+        standardModeNote: "Standardscanner unterstützt Domain/IP-Ziele mit leichten oder tiefen Scan-Profilen.",
+        networkModeNote: "Netzwerkscanner erwartet ein CIDR-Ziel für autorisierte lokale/Lab-Netzwerke.",
+        stealthModeNote: "Stealth & Intel verwendet rauscharmes Profiling und passive Metadatensammlung. Es umgeht keine Überwachung oder SIEM.",
+        operationalNotes: "Betriebshinweise",
+        scannerReference: "Scanner-Referenz",
+        refresh: "Aktualisieren",
+        noData: "Keine Daten",
+        noScansWindow: "Keine Scans in diesem Zeitraum.",
+        noAssetInventory: "Noch kein Asset-Inventar.",
+        noServiceInventory: "Noch kein Service-Inventar.",
         assets: "Assets",
-        profile: "Profile",
-        risk: "Risk",
-        findingsLabel: "Findings",
-        openPorts: "Open Ports",
-        exposedServices: "Exposed Services",
-        cveCandidates: "CVE Candidates",
-        totalFindings: "Total Findings",
-        observedServices: "Observed Services",
+        profile: "Profil",
+        risk: "Risiko",
+        findingsLabel: "Befunde",
+        openPorts: "Offene Ports",
+        exposedServices: "Exponierte Dienste",
+        cveCandidates: "CVE-Kandidaten",
+        totalFindings: "Gesamtbefunde",
+        observedServices: "Beobachtete Dienste",
         passiveIntel: "Passive Intel",
-        riskScore: "Risk Score",
-        hostsScanned: "Hosts Scanned",
-        severity: "Severity",
+        riskScore: "Risikowert",
+        hostsScanned: "Gescannte Hosts",
+        severity: "Schweregrad",
         asset: "Asset",
-        title: "Title",
-        evidence: "Evidence",
-        type: "Type",
-        service: "Service",
-        product: "Product",
+        title: "Titel",
+        evidence: "Nachweis",
+        type: "Typ",
+        service: "Dienst",
+        product: "Produkt",
         version: "Version",
-        vulnerability: "Vulnerability",
-        affectedAssets: "Affected Assets",
-        occurrences: "Occurrences",
-        assetsSample: "Assets (sample)",
-        lastSeen: "Last Seen",
-        noReportsYet: "No reports yet.",
-        severityAll: "All",
-        severityCritical: "Critical",
-        severityHigh: "High",
-        severityMedium: "Medium",
-        severityLow: "Low",
+        vulnerability: "Schwachstelle",
+        affectedAssets: "Betroffene Assets",
+        occurrences: "Vorkommen",
+        assetsSample: "Assets (Auswahl)",
+        lastSeen: "Zuletzt gesehen",
+        noReportsYet: "Noch keine Berichte.",
+        severityAll: "Alle",
+        severityCritical: "Kritisch",
+        severityHigh: "Hoch",
+        severityMedium: "Mittel",
+        severityLow: "Niedrig",
         severityInfo: "Info",
-        profileLight: "Light Scan",
-        profileDeep: "Deep Scan",
-        profileStealth: "Stealth Scan (Low Noise)",
-        profileNetwork: "Network Discovery",
+        profileLight: "Leichter Scan",
+        profileDeep: "Tiefer Scan",
+        profileStealth: "Stealth-Scan (geräuscharm)",
+        profileNetwork: "Netzwerk-Erkundung",
         strategyStandard: "Standard",
-        strategyAggressive: "Aggressive",
-        sortBy: "Sort By",
-        direction: "Direction",
-        since: "Since",
-        search: "Search",
-        asc: "Asc",
-        desc: "Desc",
-        newProject: "New Project",
-        projectCsv: "Project CSV",
-        projectPdf: "Project PDF",
-        reportCsv: "Report CSV",
-        reportPdf: "Report PDF",
-        findingsCsv: "Findings CSV",
-        startScan: "Start Scan",
-        intelOnly: "Intel Only",
-        scanning: "Scanning...",
-        loading: "Loading...",
-        themeOcean: "Ocean",
-        themeEmerald: "Emerald",
-        themeGraphite: "Graphite",
-        themeSunset: "Sunset",
-        themeDawn: "Dawn",
-        themeMint: "Mint",
-        themeIvory: "Ivory",
-        themeSlate: "Slate",
+        strategyAggressive: "Aggressiv",
+        sortBy: "Sortieren nach",
+        direction: "Richtung",
+        since: "Seit",
+        search: "Suche",
+        asc: "Aufsteigend",
+        desc: "Absteigend",
+        newProject: "Neues Projekt",
+        projectCsv: "Projekt CSV",
+        projectPdf: "Projekt PDF",
+        reportCsv: "Bericht CSV",
+        reportPdf: "Bericht PDF",
+        findingsCsv: "Befunde CSV",
+        startScan: "Scan starten",
+        intelOnly: "Nur Intel",
+        scanning: "Scannt...",
+        loading: "Lädt...",
+        riskDistributionTitle: "Risikoverteilung",
+        topVulnerabilitiesTitle: "Top-Schwachstellen",
+        severityTimelineTitle: "Schweregrad-Zeitlinie (Executive)",
+        severityHeatmapTitle: "Schweregrad-Heatmap",
+        recentScansTitle: "Letzte Scans",
+        exposureSnapshotTitle: "Exposure-Snapshot",
+        topAssetsTitle: "Top exponierte Assets",
+        serviceInventoryTitle: "Service-Inventar",
+        themeOcean: "Ozean",
+        themeEmerald: "Smaragd",
+        themeVoid: "Void",
+        themeCrimson: "Karmesin",
+        themeDawn: "Morgenröte",
+        themeMint: "Minze",
+        themeIvory: "Elfenbein",
+        themeSlate: "Schiefer",
     },
     en: {
         documentTitle: "vScanner | Adaptive Security Platform",
@@ -277,10 +285,18 @@ const I18N = {
         intelOnly: "Intel Only",
         scanning: "Scanning...",
         loading: "Loading...",
+        riskDistributionTitle: "Risk Distribution",
+        topVulnerabilitiesTitle: "Top Vulnerabilities",
+        severityTimelineTitle: "Severity Timeline (Executive)",
+        severityHeatmapTitle: "Severity Heatmap",
+        recentScansTitle: "Recent Scans",
+        exposureSnapshotTitle: "Exposure Snapshot",
+        topAssetsTitle: "Top Exposed Assets",
+        serviceInventoryTitle: "Service Inventory",
         themeOcean: "Ocean",
         themeEmerald: "Emerald",
-        themeGraphite: "Graphite",
-        themeSunset: "Sunset",
+        themeVoid: "Void",
+        themeCrimson: "Crimson",
         themeDawn: "Dawn",
         themeMint: "Mint",
         themeIvory: "Ivory",
@@ -304,10 +320,18 @@ const I18N = {
         intelOnly: "Solo Intel",
         scanning: "Escaneando...",
         loading: "Cargando...",
+        riskDistributionTitle: "Distribución de Riesgos",
+        topVulnerabilitiesTitle: "Principales Vulnerabilidades",
+        severityTimelineTitle: "Línea de Tiempo de Gravedad",
+        severityHeatmapTitle: "Mapa de Calor de Gravedad",
+        recentScansTitle: "Escaneos Recientes",
+        exposureSnapshotTitle: "Instantánea de Exposición",
+        topAssetsTitle: "Activos más Expuestos",
+        serviceInventoryTitle: "Inventario de Servicios",
         themeOcean: "Océano",
         themeEmerald: "Esmeralda",
-        themeGraphite: "Grafito",
-        themeSunset: "Atardecer",
+        themeVoid: "Void",
+        themeCrimson: "Carmesí",
         themeDawn: "Aurora",
         themeMint: "Menta",
         themeIvory: "Marfil",
@@ -331,10 +355,18 @@ const I18N = {
         intelOnly: "仅情报",
         scanning: "扫描中...",
         loading: "加载中...",
+        riskDistributionTitle: "风险分布",
+        topVulnerabilitiesTitle: "主要漏洞",
+        severityTimelineTitle: "严重性时间线",
+        severityHeatmapTitle: "严重性热图",
+        recentScansTitle: "最近扫描",
+        exposureSnapshotTitle: "暴露快照",
+        topAssetsTitle: "最高暴露资产",
+        serviceInventoryTitle: "服务清单",
         themeOcean: "海洋",
         themeEmerald: "翡翠",
-        themeGraphite: "石墨",
-        themeSunset: "日落",
+        themeVoid: "虚空",
+        themeCrimson: "深红",
         themeDawn: "黎明",
         themeMint: "薄荷",
         themeIvory: "象牙",
@@ -358,10 +390,18 @@ const I18N = {
         intelOnly: "インテルのみ",
         scanning: "スキャン中...",
         loading: "読み込み中...",
+        riskDistributionTitle: "リスク分布",
+        topVulnerabilitiesTitle: "主要脆弱性",
+        severityTimelineTitle: "重大度タイムライン",
+        severityHeatmapTitle: "重大度ヒートマップ",
+        recentScansTitle: "最近のスキャン",
+        exposureSnapshotTitle: "露出スナップショット",
+        topAssetsTitle: "最も露出されたアセット",
+        serviceInventoryTitle: "サービスインベントリ",
         themeOcean: "オーシャン",
         themeEmerald: "エメラルド",
-        themeGraphite: "グラファイト",
-        themeSunset: "サンセット",
+        themeVoid: "ヴォイド",
+        themeCrimson: "クリムゾン",
         themeDawn: "ドーン",
         themeMint: "ミント",
         themeIvory: "アイボリー",
@@ -385,10 +425,18 @@ const I18N = {
         intelOnly: "Только Intel",
         scanning: "Сканирование...",
         loading: "Загрузка...",
+        riskDistributionTitle: "Распределение рисков",
+        topVulnerabilitiesTitle: "Главные уязвимости",
+        severityTimelineTitle: "Хронология серьёзности",
+        severityHeatmapTitle: "Тепловая карта серьёзности",
+        recentScansTitle: "Недавние сканирования",
+        exposureSnapshotTitle: "Снимок уязвимостей",
+        topAssetsTitle: "Наиболее уязвимые активы",
+        serviceInventoryTitle: "Инвентарь сервисов",
         themeOcean: "Океан",
         themeEmerald: "Изумруд",
-        themeGraphite: "Графит",
-        themeSunset: "Закат",
+        themeVoid: "Войд",
+        themeCrimson: "Карминный",
         themeDawn: "Рассвет",
         themeMint: "Мята",
         themeIvory: "Слоновая кость",
@@ -397,13 +445,13 @@ const I18N = {
 };
 
 const THEMES_BY_MODE = {
-    dark: ["ocean", "emerald", "graphite", "sunset"],
+    dark: ["ocean", "emerald", "void", "crimson"],
     bright: ["dawn", "mint", "ivory", "slate"],
 };
 
 function t(key) {
-    const lang = localStorage.getItem("vscanner.language") || "de";
-    const base = I18N[lang] || I18N.de;
+    const lang = localStorage.getItem("vscanner.language") || "en";
+    const base = I18N[lang] || I18N.en;
     return base[key] || I18N.en[key] || I18N.de[key] || key;
 }
 
@@ -919,11 +967,11 @@ function applyTheme(theme) {
 }
 
 function applyLanguage(lang) {
-    const safeLang = I18N[lang] ? lang : "de";
-    const text = I18N[safeLang] || I18N.de;
+    const safeLang = I18N[lang] ? lang : "en";
+    const text = I18N[safeLang] || I18N.en;
     document.documentElement.lang = safeLang;
     localStorage.setItem("vscanner.language", safeLang);
-    document.title = text.documentTitle || I18N.de.documentTitle;
+    document.title = text.documentTitle || I18N.en.documentTitle;
 
     const mode = localStorage.getItem("vscanner.mode") || "dark";
     const currentTheme = localStorage.getItem("vscanner.theme") || (THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark)[0];
@@ -935,79 +983,79 @@ function applyLanguage(lang) {
         }
     };
 
-    setText("brandSubtitle", text.brandSubtitle || I18N.de.brandSubtitle);
-    setText("workspaceEyebrow", text.workspaceEyebrow || I18N.de.workspaceEyebrow);
-    setText("workspaceTitle", text.workspaceTitle || I18N.de.workspaceTitle);
-    setText("workspaceSubtitle", text.workspaceSubtitle || I18N.de.workspaceSubtitle);
-    setText("riskDistributionTitle", text.riskDistributionTitle || "Risk Distribution");
-    setText("topVulnerabilitiesTitle", text.topVulnerabilitiesTitle || "Top Vulnerabilities");
-    setText("severityTimelineTitle", text.severityTimelineTitle || "Severity Timeline (Executive)");
-    setText("severityHeatmapTitle", text.severityHeatmapTitle || "Severity Heatmap");
-    setText("recentScansTitle", text.recentScansTitle || "Recent Scans");
-    setText("exposureSnapshotTitle", text.exposureSnapshotTitle || "Exposure Snapshot");
-    setText("topAssetsTitle", text.topAssetsTitle || "Top Exposed Assets");
-    setText("serviceInventoryTitle", text.serviceInventoryTitle || "Service Inventory");
-    setText("runNewScanTitle", text.runScan || I18N.de.runScan);
-    setText("modeRiskTitle", text.riskScanner || I18N.de.riskScanner);
-    setText("modeRiskDesc", text.riskScannerDesc || I18N.de.riskScannerDesc);
-    setText("modeNetworkTitle", text.networkScanner || I18N.de.networkScanner);
-    setText("modeNetworkDesc", text.networkScannerDesc || I18N.de.networkScannerDesc);
-    setText("modeStealthTitle", text.stealthScanner || I18N.de.stealthScanner);
-    setText("modeStealthDesc", text.stealthScannerDesc || I18N.de.stealthScannerDesc);
-    setText("suggestedNetworksLabel", text.suggestedNetworks || I18N.de.suggestedNetworks);
-    setText("latestScanFindingsTitle", text.latestFindings || I18N.de.latestFindings);
-    setText("aggregatedFindingsTitle", text.aggregatedFindings || I18N.de.aggregatedFindings);
-    setText("scanHistoryTitle", text.scanHistory || I18N.de.scanHistory);
-    setText("workspacePreferencesTitle", text.workspacePreferences || I18N.de.workspacePreferences);
-    setText("preferencesNote", text.preferencesNote || I18N.de.preferencesNote);
-    setText("operationalNotesTitle", text.operationalNotes || I18N.de.operationalNotes);
-    setText("scannerReferenceTitle", text.scannerReference || I18N.de.scannerReference);
+    setText("brandSubtitle", text.brandSubtitle || I18N.en.brandSubtitle);
+    setText("workspaceEyebrow", text.workspaceEyebrow || I18N.en.workspaceEyebrow);
+    setText("workspaceTitle", text.workspaceTitle || I18N.en.workspaceTitle);
+    setText("workspaceSubtitle", text.workspaceSubtitle || I18N.en.workspaceSubtitle);
+    setText("riskDistributionTitle", t("riskDistributionTitle"));
+    setText("topVulnerabilitiesTitle", t("topVulnerabilitiesTitle"));
+    setText("severityTimelineTitle", t("severityTimelineTitle"));
+    setText("severityHeatmapTitle", t("severityHeatmapTitle"));
+    setText("recentScansTitle", t("recentScansTitle"));
+    setText("exposureSnapshotTitle", t("exposureSnapshotTitle"));
+    setText("topAssetsTitle", t("topAssetsTitle"));
+    setText("serviceInventoryTitle", t("serviceInventoryTitle"));
+    setText("runNewScanTitle", text.runScan || I18N.en.runScan);
+    setText("modeRiskTitle", text.riskScanner || I18N.en.riskScanner);
+    setText("modeRiskDesc", text.riskScannerDesc || I18N.en.riskScannerDesc);
+    setText("modeNetworkTitle", text.networkScanner || I18N.en.networkScanner);
+    setText("modeNetworkDesc", text.networkScannerDesc || I18N.en.networkScannerDesc);
+    setText("modeStealthTitle", text.stealthScanner || I18N.en.stealthScanner);
+    setText("modeStealthDesc", text.stealthScannerDesc || I18N.en.stealthScannerDesc);
+    setText("suggestedNetworksLabel", text.suggestedNetworks || I18N.en.suggestedNetworks);
+    setText("latestScanFindingsTitle", text.latestFindings || I18N.en.latestFindings);
+    setText("aggregatedFindingsTitle", text.aggregatedFindings || I18N.en.aggregatedFindings);
+    setText("scanHistoryTitle", text.scanHistory || I18N.en.scanHistory);
+    setText("workspacePreferencesTitle", text.workspacePreferences || I18N.en.workspacePreferences);
+    setText("preferencesNote", text.preferencesNote || I18N.en.preferencesNote);
+    setText("operationalNotesTitle", text.operationalNotes || I18N.en.operationalNotes);
+    setText("scannerReferenceTitle", text.scannerReference || I18N.en.scannerReference);
 
-    document.querySelector('label[for="target"]').textContent = text.target || I18N.de.target;
-    document.querySelector('label[for="profile"]').textContent = text.scanProfile || I18N.de.scanProfile;
-    document.querySelector('label[for="portStrategy"]').textContent = text.portStrategy || I18N.de.portStrategy;
-    document.querySelector('label[for="languageSelect"]').textContent = text.language || I18N.de.language;
-    document.querySelector('label[for="modeSelect"]').textContent = text.mode || I18N.de.mode;
-    document.querySelector('label[for="themeSelect"]').textContent = text.theme || I18N.de.theme;
-    document.querySelector('label[for="windowDays"]').textContent = text.window || I18N.de.window;
-    document.querySelector('label[for="severityFilter"]').textContent = text.severity || "Severity";
-    document.querySelector('label[for="sinceDays"]').textContent = text.since || "Since";
-    document.querySelector('label[for="sortBy"]').textContent = text.sortBy || "Sort By";
-    document.querySelector('label[for="sortDir"]').textContent = text.direction || "Direction";
-    document.querySelector('label[for="findingSearch"]').textContent = text.search || "Search";
+    document.querySelector('label[for="target"]').textContent = text.target || I18N.en.target;
+    document.querySelector('label[for="profile"]').textContent = text.scanProfile || I18N.en.scanProfile;
+    document.querySelector('label[for="portStrategy"]').textContent = text.portStrategy || I18N.en.portStrategy;
+    document.querySelector('label[for="languageSelect"]').textContent = text.language || I18N.en.language;
+    document.querySelector('label[for="modeSelect"]').textContent = text.mode || I18N.en.mode;
+    document.querySelector('label[for="themeSelect"]').textContent = text.theme || I18N.en.theme;
+    document.querySelector('label[for="windowDays"]').textContent = text.window || I18N.en.window;
+    document.querySelector('label[for="severityFilter"]').textContent = text.severity || I18N.en.severity;
+    document.querySelector('label[for="sinceDays"]').textContent = text.since || I18N.en.since;
+    document.querySelector('label[for="sortBy"]').textContent = text.sortBy || I18N.en.sortBy;
+    document.querySelector('label[for="sortDir"]').textContent = text.direction || I18N.en.direction;
+    document.querySelector('label[for="findingSearch"]').textContent = text.search || I18N.en.search;
 
     const profileOptions = profileSelect?.options;
     if (profileOptions && profileOptions.length >= 4) {
-        profileOptions[0].textContent = text.profileLight || "Light Scan";
-        profileOptions[1].textContent = text.profileDeep || "Deep Scan";
-        profileOptions[2].textContent = text.profileStealth || "Stealth Scan (Low Noise)";
-        profileOptions[3].textContent = text.profileNetwork || "Network Discovery";
+        profileOptions[0].textContent = text.profileLight || I18N.en.profileLight;
+        profileOptions[1].textContent = text.profileDeep || I18N.en.profileDeep;
+        profileOptions[2].textContent = text.profileStealth || I18N.en.profileStealth;
+        profileOptions[3].textContent = text.profileNetwork || I18N.en.profileNetwork;
     }
 
     const strategyOptions = portStrategySelect?.options;
     if (strategyOptions && strategyOptions.length >= 2) {
-        strategyOptions[0].textContent = text.strategyStandard || "Standard";
-        strategyOptions[1].textContent = text.strategyAggressive || "Aggressive";
+        strategyOptions[0].textContent = text.strategyStandard || I18N.en.strategyStandard;
+        strategyOptions[1].textContent = text.strategyAggressive || I18N.en.strategyAggressive;
     }
 
     const severityOptions = severityFilter?.options;
     if (severityOptions && severityOptions.length >= 6) {
-        severityOptions[0].textContent = text.severityAll || "All";
-        severityOptions[1].textContent = text.severityCritical || "Critical";
-        severityOptions[2].textContent = text.severityHigh || "High";
-        severityOptions[3].textContent = text.severityMedium || "Medium";
-        severityOptions[4].textContent = text.severityLow || "Low";
-        severityOptions[5].textContent = text.severityInfo || "Info";
+        severityOptions[0].textContent = text.severityAll || I18N.en.severityAll;
+        severityOptions[1].textContent = text.severityCritical || I18N.en.severityCritical;
+        severityOptions[2].textContent = text.severityHigh || I18N.en.severityHigh;
+        severityOptions[3].textContent = text.severityMedium || I18N.en.severityMedium;
+        severityOptions[4].textContent = text.severityLow || I18N.en.severityLow;
+        severityOptions[5].textContent = text.severityInfo || I18N.en.severityInfo;
     }
 
     const dirOptions = sortDir?.options;
     if (dirOptions && dirOptions.length >= 2) {
-        dirOptions[0].textContent = text.desc || "Desc";
-        dirOptions[1].textContent = text.asc || "Asc";
+        dirOptions[0].textContent = text.desc || I18N.en.desc;
+        dirOptions[1].textContent = text.asc || I18N.en.asc;
     }
 
-    modeSelect.options[0].textContent = text.modeDark || I18N.de.modeDark;
-    modeSelect.options[1].textContent = text.modeBright || I18N.de.modeBright;
+    modeSelect.options[0].textContent = text.modeDark || I18N.en.modeDark;
+    modeSelect.options[1].textContent = text.modeBright || I18N.en.modeBright;
 
     populateThemeOptions(mode, currentTheme);
 
@@ -1629,7 +1677,7 @@ findingSearch.addEventListener("input", () => {
     try {
         const savedMode = localStorage.getItem("vscanner.mode") || "dark";
         const savedTheme = localStorage.getItem("vscanner.theme") || "ocean";
-        const savedLanguage = localStorage.getItem("vscanner.language") || "de";
+        const savedLanguage = localStorage.getItem("vscanner.language") || "en";
         modeSelect.value = savedMode;
         themeSelect.value = savedTheme;
         languageSelect.value = savedLanguage;

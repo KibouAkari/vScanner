@@ -40,26 +40,36 @@ body[data-mode="dark"][data-theme="emerald"] {
     --secondary: #7fd7c2;
 }
 
-body[data-mode="dark"][data-theme="graphite"] {
-    --bg-0: #0d1015;
-    --bg-1: #161d28;
-    --panel: rgba(20, 25, 33, 0.86);
-    --panel-border: rgba(171, 181, 197, 0.16);
-    --text: #f0f4fb;
-    --muted: #afbacd;
-    --primary: #8ad3ff;
-    --secondary: #9db4ff;
+body[data-mode="dark"][data-theme="void"] {
+    --bg-0: #09090c;
+    --bg-1: #111118;
+    --panel: rgba(15, 15, 22, 0.92);
+    --panel-border: rgba(180, 180, 220, 0.12);
+    --text: #e6e6f0;
+    --muted: #888899;
+    --primary: #9090ff;
+    --secondary: #b8b8ff;
+    --rail-bg-start: rgba(7, 7, 12, 0.98);
+    --rail-bg-end: rgba(10, 10, 16, 0.96);
+    --surface-soft: rgba(16, 16, 24, 0.82);
+    --surface-elev: rgba(20, 20, 30, 0.72);
+    --input-bg: rgba(7, 7, 12, 0.9);
 }
 
-body[data-mode="dark"][data-theme="sunset"] {
-    --bg-0: #1a0f15;
-    --bg-1: #221824;
-    --panel: rgba(30, 19, 30, 0.84);
-    --panel-border: rgba(224, 164, 137, 0.18);
-    --text: #ffeef0;
-    --muted: #d5b8bd;
-    --primary: #ffb36b;
-    --secondary: #ff7c87;
+body[data-mode="dark"][data-theme="crimson"] {
+    --bg-0: #160308;
+    --bg-1: #230b14;
+    --panel: rgba(25, 7, 16, 0.9);
+    --panel-border: rgba(255, 110, 140, 0.2);
+    --text: #ffe6ee;
+    --muted: #c48a9a;
+    --primary: #ff4a72;
+    --secondary: #ff8faa;
+    --rail-bg-start: rgba(14, 3, 9, 0.98);
+    --rail-bg-end: rgba(18, 4, 11, 0.96);
+    --surface-soft: rgba(28, 8, 18, 0.8);
+    --surface-elev: rgba(35, 10, 22, 0.68);
+    --input-bg: rgba(12, 3, 8, 0.9);
 }
 
 body[data-mode="bright"][data-theme="dawn"] {
@@ -213,10 +223,11 @@ body {
 }
 
 .brand-icon {
-    width: 22px;
-    height: 22px;
-    border-radius: 7px;
-    box-shadow: 0 0 14px rgba(103, 185, 255, 0.4);
+    width: 38px;
+    height: 38px;
+    border-radius: 9px;
+    box-shadow: 0 0 18px rgba(103, 185, 255, 0.4);
+    flex-shrink: 0;
 }
 
 .brand-card h2 {
@@ -1014,6 +1025,128 @@ canvas {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.6rem;
+}
+
+/* ===== BRIGHT MODE GLOBAL OVERRIDES ===== */
+body[data-mode="bright"] .eyebrow,
+body[data-mode="bright"] .kpi span,
+body[data-mode="bright"] label,
+body[data-mode="bright"] .control-inline label,
+body[data-mode="bright"] .note,
+body[data-mode="bright"] .network-suggestions > span,
+body[data-mode="bright"] .scan-summary-item span {
+    color: var(--muted);
+}
+
+body[data-mode="bright"] .host-head,
+body[data-mode="bright"] .mini-head {
+    color: var(--text);
+}
+
+body[data-mode="bright"] .scanner-mode-card span {
+    color: var(--muted);
+}
+
+body[data-mode="bright"] .chip {
+    background: rgba(0, 0, 0, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .chip strong {
+    color: var(--text);
+}
+
+body[data-mode="bright"] .btn.ghost {
+    background: rgba(0, 0, 0, 0.07);
+    border-color: rgba(0, 0, 0, 0.12);
+    color: var(--text);
+}
+
+body[data-mode="bright"] .menu-item.active {
+    background: linear-gradient(120deg, var(--primary), var(--secondary));
+    color: #fff;
+    border-color: transparent;
+}
+
+body[data-mode="bright"] .scanner-mode-card {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text);
+}
+
+body[data-mode="bright"] .scanner-mode-card.active {
+    background: rgba(0, 0, 0, 0.07);
+    border-color: var(--primary);
+    box-shadow: inset 0 0 0 1px var(--primary), 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .heat-cell {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text);
+}
+
+body[data-mode="bright"] .risk-item {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--text);
+}
+
+body[data-mode="bright"] .table-host {
+    background: rgba(255, 255, 255, 0.85);
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .table th {
+    background: rgba(0, 0, 0, 0.05);
+    color: var(--muted);
+}
+
+body[data-mode="bright"] .table td {
+    color: var(--text);
+    border-color: rgba(0, 0, 0, 0.07);
+}
+
+body[data-mode="bright"] canvas {
+    background: rgba(255, 255, 255, 0.65);
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .scan-summary-item {
+    background: rgba(0, 0, 0, 0.04);
+    color: var(--text);
+}
+
+body[data-mode="bright"] .scan-summary-item strong {
+    color: var(--text);
+}
+
+body[data-mode="bright"] .host-card {
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .history-card {
+    background: rgba(0, 0, 0, 0.04);
+    border-color: rgba(0, 0, 0, 0.1);
+}
+
+body[data-mode="bright"] .history-toggle {
+    color: var(--text);
+}
+
+body[data-mode="bright"] .hint-chip {
+    background: rgba(0, 0, 0, 0.06);
+    color: var(--text);
+    border-color: rgba(0, 0, 0, 0.12);
+}
+
+body[data-mode="bright"] .bg-grad-a,
+body[data-mode="bright"] .bg-grad-b {
+    opacity: 0.05;
+}
+
+body[data-mode="bright"] .error {
+    border-color: rgba(180, 30, 50, 0.45);
+    background: rgba(180, 30, 50, 0.1);
+    color: #6a0015;
 }
 
 @keyframes panelFadeIn {
