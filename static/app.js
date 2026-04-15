@@ -88,6 +88,15 @@ function activateTab(tabName) {
     });
 }
 
+function setChipState(element, state) {
+    const chip = element?.closest?.(".chip");
+    if (!chip) {
+        return;
+    }
+    chip.classList.remove("state-live", "state-degraded", "state-offline", "state-warn");
+    chip.classList.add(`state-${state}`);
+}
+
 menuItems.forEach((button) => {
     button.addEventListener("click", () => {
         activateTab(button.dataset.tab);
@@ -143,6 +152,10 @@ function drawTrend(points) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: {
+                duration: 950,
+                easing: "easeOutQuart",
+            },
             plugins: {
                 legend: {
                     labels: { color: "#dce9f7" },
@@ -195,6 +208,12 @@ function drawRiskBars(summary) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: {
+                animateRotate: true,
+                animateScale: true,
+                duration: 1250,
+                easing: "easeOutExpo",
+            },
             plugins: {
                 legend: { display: false },
             },
@@ -234,6 +253,10 @@ function drawSeverityStack(points) {
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            animation: {
+                duration: 1100,
+                easing: "easeOutQuart",
+            },
             plugins: { legend: { labels: { color: "#dce9f7" } } },
             scales: {
                 x: {
@@ -413,10 +436,16 @@ async function loadHealth() {
             : "offline";
         apiState.textContent = data.db_ready ? "live" : "degraded";
         engineState.textContent = data.nmap_available ? "nmap" : "lightweight";
+        setChipState(dbState, data.db_ready ? "live" : "offline");
+        setChipState(apiState, data.db_ready ? "live" : "degraded");
+        setChipState(engineState, data.nmap_available ? "warn" : "live");
     } catch (_error) {
         dbState.textContent = "offline";
         apiState.textContent = "offline";
         engineState.textContent = "–";
+        setChipState(dbState, "offline");
+        setChipState(apiState, "offline");
+        setChipState(engineState, "offline");
     }
 }
 

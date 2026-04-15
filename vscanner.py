@@ -2200,7 +2200,14 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                     _probe_pool.submit(probe_http_service, host["host"], entry["port"]): entry["port"]
                     for entry in web_port_entries[:probe_limit]
                 }
-                for _future in concurrent.futures.as_completed(_probe_futures, timeout=12):
+
+                # Never fail the scan if HTTP probing is slow.
+                _done, _pending = concurrent.futures.wait(
+                    list(_probe_futures.keys()),
+                    timeout=6 if IS_SERVERLESS else 12,
+                )
+
+                for _future in _done:
                     try:
                         web_result = _future.result()
                         _port = _probe_futures[_future]
@@ -2209,6 +2216,9 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                             host_findings.extend(web_result.get("findings", []))
                     except Exception:
                         pass
+
+                for _future in _pending:
+                    _future.cancel()
 
         host_findings.sort(
             key=lambda item: SEVERITY_ORDER.get(item.get("severity", "info"), 0),
@@ -2626,8 +2636,14 @@ def scan_api() -> Any:
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]
 
-        report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
-        result["report_id"] = report_id
+        try:
+            report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
+            result["report_id"] = report_id
+            result["persisted"] = True
+        except Exception as exc:
+            result["persisted"] = False
+            result["warning"] = "Scan completed, but saving the report failed."
+            result["persist_error"] = str(exc)
         return jsonify(result)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
