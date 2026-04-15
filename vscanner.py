@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import csv
 import hashlib
 import io
 import ipaddress
@@ -26,6 +27,15 @@ try:
     import psycopg
 except Exception:  # pragma: no cover
     psycopg = None
+
+try:
+    from pymongo import ASCENDING, DESCENDING, MongoClient
+    from pymongo.errors import DuplicateKeyError
+except Exception:  # pragma: no cover
+    MongoClient = None
+    ASCENDING = 1
+    DESCENDING = -1
+    DuplicateKeyError = Exception
 
 urllib3.disable_warnings(category=InsecureRequestWarning)
 
@@ -131,10 +141,15 @@ SEVERITY_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
+MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "vscanner").strip() or "vscanner"
+
 if os.getenv("VERCEL") and not DB_URL:
     DB_PATH = "/tmp/vscanner_reports.db"
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
+
+MONGO_CLIENT: Any = None
 
 DB_READY = False
 DEFAULT_PROJECT_ID = "default"
@@ -258,8 +273,62 @@ def execute(connection: Any, query: str, params: tuple[Any, ...] = ()) -> None:
     cursor.execute(adapt_query(connection, query), params)
 
 
+def use_mongodb() -> bool:
+    return bool(MONGODB_URI and MongoClient is not None)
+
+
+def get_mongo_db() -> Any:
+    global MONGO_CLIENT
+    if not use_mongodb():
+        raise RuntimeError("MongoDB requested but not configured")
+    if MongoClient is None:
+        raise RuntimeError("pymongo is not installed")
+    if MONGO_CLIENT is None:
+        MONGO_CLIENT = MongoClient(
+            MONGODB_URI,
+            serverSelectionTimeoutMS=5000,
+            maxPoolSize=25,
+        )
+        # Fail fast on invalid credentials / network issues.
+        MONGO_CLIENT.admin.command("ping")
+    return MONGO_CLIENT[MONGODB_DB_NAME]
+
+
+def ensure_mongo_indexes() -> None:
+    db = get_mongo_db()
+    db.projects.create_index([("id", ASCENDING)], unique=True)
+    db.projects.create_index([("created_at", DESCENDING)])
+
+    db.reports.create_index([("id", ASCENDING)], unique=True)
+    db.reports.create_index([("project_id", ASCENDING), ("created_at", DESCENDING)])
+
+    db.findings.create_index(
+        [("project_id", ASCENDING), ("asset", ASCENDING), ("vuln_key", ASCENDING)],
+        unique=True,
+    )
+    db.findings.create_index([("project_id", ASCENDING), ("last_seen", DESCENDING)])
+    db.findings.create_index([("project_id", ASCENDING), ("severity", ASCENDING)])
+
+
 def init_report_store() -> None:
     global DB_READY
+
+    if use_mongodb():
+        ensure_mongo_indexes()
+        db = get_mongo_db()
+        db.projects.update_one(
+            {"id": DEFAULT_PROJECT_ID},
+            {
+                "$setOnInsert": {
+                    "id": DEFAULT_PROJECT_ID,
+                    "name": DEFAULT_PROJECT_NAME,
+                    "created_at": utc_now(),
+                }
+            },
+            upsert=True,
+        )
+        DB_READY = True
+        return
 
     with db_connection() as connection:
         execute(
@@ -331,6 +400,46 @@ def list_projects() -> list[dict[str, Any]]:
     if not DB_READY:
         return [{"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()}]
 
+    if use_mongodb():
+        db = get_mongo_db()
+        projects = list(
+            db.projects.find({}, {"_id": 0, "id": 1, "name": 1, "created_at": 1}).sort("created_at", ASCENDING)
+        )
+        stats = {
+            row["_id"]: {
+                "scan_count": int(row.get("scan_count", 0)),
+                "avg_risk": float(round(row.get("avg_risk", 0), 1)),
+                "last_scan_at": row.get("last_scan_at"),
+            }
+            for row in db.reports.aggregate(
+                [
+                    {
+                        "$group": {
+                            "_id": "$project_id",
+                            "scan_count": {"$sum": 1},
+                            "avg_risk": {"$avg": "$true_risk_score"},
+                            "last_scan_at": {"$max": "$created_at"},
+                        }
+                    }
+                ]
+            )
+        }
+
+        merged: list[dict[str, Any]] = []
+        for project in projects:
+            project_stats = stats.get(project.get("id", ""), {})
+            merged.append(
+                {
+                    "id": project.get("id", ""),
+                    "name": project.get("name", "Untitled"),
+                    "created_at": project.get("created_at", utc_now()),
+                    "scan_count": project_stats.get("scan_count", 0),
+                    "avg_risk": project_stats.get("avg_risk", 0),
+                    "last_scan_at": project_stats.get("last_scan_at") or project.get("created_at", utc_now()),
+                }
+            )
+        return merged
+
     with db_connection() as connection:
         return fetchall(
             connection,
@@ -356,6 +465,10 @@ def get_project(project_id: str | None) -> dict[str, Any] | None:
             return {"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()}
         return None
 
+    if use_mongodb():
+        db = get_mongo_db()
+        return db.projects.find_one({"id": safe_id}, {"_id": 0, "id": 1, "name": 1, "created_at": 1})
+
     with db_connection() as connection:
         return fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (safe_id,))
 
@@ -372,6 +485,14 @@ def create_project(name: str) -> dict[str, Any]:
 
     project_id = str(uuid.uuid4())
     now = utc_now()
+
+    if use_mongodb():
+        db = get_mongo_db()
+        try:
+            db.projects.insert_one({"id": project_id, "name": clean_name, "created_at": now})
+        except DuplicateKeyError:
+            raise ScanInputError("Project with this name already exists.")
+        return {"id": project_id, "name": clean_name, "created_at": now}
 
     with db_connection() as connection:
         try:
@@ -394,6 +515,34 @@ def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[
         return []
 
     safe_limit = max(1, min(limit, 200))
+
+    if use_mongodb():
+        db = get_mongo_db()
+        query: dict[str, Any] = {}
+        if project_id:
+            query["project_id"] = project_id
+        return list(
+            db.reports.find(
+                query,
+                {
+                    "_id": 0,
+                    "id": 1,
+                    "created_at": 1,
+                    "project_id": 1,
+                    "project_name": 1,
+                    "target": 1,
+                    "profile": 1,
+                    "risk_level": 1,
+                    "true_risk_score": 1,
+                    "total_findings": 1,
+                    "open_ports": 1,
+                    "exposed_services": 1,
+                    "cve_count": 1,
+                },
+            )
+            .sort("created_at", DESCENDING)
+            .limit(safe_limit)
+        )
 
     with db_connection() as connection:
         if project_id:
@@ -426,6 +575,20 @@ def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[
 def get_report_entry(report_id: str) -> dict[str, Any] | None:
     if not DB_READY:
         return None
+
+    if use_mongodb():
+        db = get_mongo_db()
+        row = db.reports.find_one({"id": report_id}, {"_id": 0, "id": 1, "created_at": 1, "data_json": 1})
+        if not row:
+            return None
+        payload = row.get("data_json")
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        if not isinstance(payload, dict):
+            return None
+        payload["report_id"] = row.get("id", report_id)
+        payload["report_created_at"] = row.get("created_at", utc_now())
+        return payload
 
     with db_connection() as connection:
         row = fetchone(connection, "SELECT id, created_at, data_json FROM reports WHERE id = ?", (report_id,))
@@ -460,6 +623,51 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
         return
 
     now = utc_now()
+
+    if use_mongodb():
+        db = get_mongo_db()
+        for item in unique_scan_items.values():
+            existing = db.findings.find_one(
+                {
+                    "project_id": project_id,
+                    "asset": item["asset"],
+                    "vuln_key": item["vuln_key"],
+                },
+                {"_id": 0, "severity": 1},
+            )
+            merged_severity = item["severity"]
+            if existing:
+                merged_severity = best_severity(str(existing.get("severity", "low")), merged_severity)
+
+            db.findings.update_one(
+                {
+                    "project_id": project_id,
+                    "asset": item["asset"],
+                    "vuln_key": item["vuln_key"],
+                },
+                {
+                    "$setOnInsert": {
+                        "id": str(uuid.uuid4()),
+                        "project_id": project_id,
+                        "asset": item["asset"],
+                        "vuln_key": item["vuln_key"],
+                        "first_seen": now,
+                        "occurrence_count": 0,
+                    },
+                    "$set": {
+                        "severity": merged_severity,
+                        "title": item["title"],
+                        "evidence": item["evidence"],
+                        "finding_type": item["finding_type"],
+                        "cve": item["cve"],
+                        "last_seen": now,
+                    },
+                    "$inc": {"occurrence_count": 1},
+                },
+                upsert=True,
+            )
+        return
+
     with db_connection() as connection:
         for item in unique_scan_items.values():
             execute(
@@ -511,6 +719,30 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
         return report_id
 
     metrics = result.get("metrics", {})
+    created_at = utc_now()
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.reports.insert_one(
+            {
+                "id": report_id,
+                "created_at": created_at,
+                "project_id": project_id,
+                "project_name": project_name,
+                "target": result.get("meta", {}).get("target", "-"),
+                "profile": result.get("meta", {}).get("profile", "light"),
+                "risk_level": result.get("meta", {}).get("risk_level", "low"),
+                "true_risk_score": float(result.get("true_risk_score", 0)),
+                "total_findings": int(result.get("total_findings", 0)),
+                "open_ports": int(metrics.get("open_ports", 0)),
+                "exposed_services": int(metrics.get("exposed_services", 0)),
+                "cve_count": int(metrics.get("cve_candidates", 0)),
+                "data_json": result,
+            }
+        )
+        upsert_findings(project_id, result.get("finding_items", []))
+        return report_id
+
     with db_connection() as connection:
         execute(
             connection,
@@ -522,7 +754,7 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
             """,
             (
                 report_id,
-                utc_now(),
+                created_at,
                 project_id,
                 project_name,
                 result.get("meta", {}).get("target", "-"),
@@ -561,6 +793,114 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         }
 
     since = now_minus_days(max(1, min(window_days, 365)))
+
+    if use_mongodb():
+        db = get_mongo_db()
+        project = db.projects.find_one({"id": project_id}, {"_id": 0, "id": 1, "name": 1, "created_at": 1})
+        if not project:
+            raise ScanInputError("Project not found.")
+
+        trend_rows = list(
+            db.reports.find(
+                {"project_id": project_id, "created_at": {"$gte": since}},
+                {"_id": 0, "created_at": 1, "true_risk_score": 1, "total_findings": 1},
+            )
+            .sort("created_at", ASCENDING)
+            .limit(240)
+        )
+
+        recent_rows = list(
+            db.reports.find(
+                {"project_id": project_id},
+                {
+                    "_id": 0,
+                    "id": 1,
+                    "created_at": 1,
+                    "target": 1,
+                    "profile": 1,
+                    "risk_level": 1,
+                    "true_risk_score": 1,
+                    "total_findings": 1,
+                },
+            )
+            .sort("created_at", DESCENDING)
+            .limit(12)
+        )
+
+        mongo_totals: dict[str, Any] = {
+            "scans": len(trend_rows),
+            "avg_risk": 0,
+            "findings": 0,
+            "open_ports": 0,
+            "exposed_services": 0,
+            "cve_count": 0,
+        }
+        if trend_rows:
+            mongo_totals["avg_risk"] = round(
+                sum(float(row.get("true_risk_score", 0)) for row in trend_rows) / len(trend_rows),
+                1,
+            )
+
+        window_report_rows = list(
+            db.reports.find(
+                {"project_id": project_id, "created_at": {"$gte": since}},
+                {"_id": 0, "total_findings": 1, "open_ports": 1, "exposed_services": 1, "cve_count": 1},
+            )
+        )
+        for row in window_report_rows:
+            mongo_totals["findings"] += int(row.get("total_findings", 0) or 0)
+            mongo_totals["open_ports"] += int(row.get("open_ports", 0) or 0)
+            mongo_totals["exposed_services"] += int(row.get("exposed_services", 0) or 0)
+            mongo_totals["cve_count"] += int(row.get("cve_count", 0) or 0)
+
+        top_rows = list(
+            db.findings.aggregate(
+                [
+                    {"$match": {"project_id": project_id, "last_seen": {"$gte": since}}},
+                    {
+                        "$group": {
+                            "_id": {
+                                "severity": "$severity",
+                                "title": "$title",
+                                "finding_type": "$finding_type",
+                                "cve": "$cve",
+                            },
+                            "affected_assets": {"$sum": 1},
+                        }
+                    },
+                    {"$sort": {"affected_assets": -1}},
+                    {"$limit": 16},
+                ]
+            )
+        )
+
+        risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+        top_vulns: list[dict[str, Any]] = []
+        for row in top_rows:
+            grouping = row.get("_id", {})
+            severity = normalize_severity(str(grouping.get("severity") or "low"))
+            affected_assets = int(row.get("affected_assets", 0) or 0)
+            if severity in risk_distribution:
+                risk_distribution[severity] += affected_assets
+            top_vulns.append(
+                {
+                    "severity": severity,
+                    "title": grouping.get("title", "Finding"),
+                    "type": grouping.get("finding_type", "-"),
+                    "cve": grouping.get("cve") or "",
+                    "affected_assets": affected_assets,
+                }
+            )
+
+        return {
+            "project": project,
+            "window_days": window_days,
+            "totals": mongo_totals,
+            "risk_distribution": risk_distribution,
+            "trend": trend_rows,
+            "recent_scans": recent_rows,
+            "top_vulnerabilities": top_vulns,
+        }
 
     with db_connection() as connection:
         project = fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (project_id,))
@@ -658,17 +998,38 @@ def get_project_findings(
 
     since = now_minus_days(max(1, min(since_days, 3650)))
 
-    with db_connection() as connection:
-        rows = fetchall(
-            connection,
-            """
-            SELECT asset, vuln_key, severity, title, evidence, finding_type, cve,
-                   first_seen, last_seen, occurrence_count
-            FROM findings
-            WHERE project_id = ? AND last_seen >= ?
-            """,
-            (project_id, since),
+    if use_mongodb():
+        db = get_mongo_db()
+        rows = list(
+            db.findings.find(
+                {"project_id": project_id, "last_seen": {"$gte": since}},
+                {
+                    "_id": 0,
+                    "asset": 1,
+                    "vuln_key": 1,
+                    "severity": 1,
+                    "title": 1,
+                    "evidence": 1,
+                    "finding_type": 1,
+                    "cve": 1,
+                    "first_seen": 1,
+                    "last_seen": 1,
+                    "occurrence_count": 1,
+                },
+            )
         )
+    else:
+        with db_connection() as connection:
+            rows = fetchall(
+                connection,
+                """
+                SELECT asset, vuln_key, severity, title, evidence, finding_type, cve,
+                       first_seen, last_seen, occurrence_count
+                FROM findings
+                WHERE project_id = ? AND last_seen >= ?
+                """,
+                (project_id, since),
+            )
 
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -1710,7 +2071,7 @@ def set_security_headers(response: Any) -> Any:
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     csp = (
         "default-src 'self'; "
-        "script-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' https://fonts.googleapis.com; "
         "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
@@ -1734,6 +2095,13 @@ def index() -> str:
 
 @app.route("/api/health")
 def health() -> Any:
+    if use_mongodb():
+        engine = "mongodb"
+    elif DB_URL.startswith("postgres"):
+        engine = "postgres"
+    else:
+        engine = "sqlite"
+
     return jsonify(
         {
             "status": "ok",
@@ -1741,7 +2109,7 @@ def health() -> Any:
             "public_mode": is_public_mode(),
             "nmap_available": nmap_available(),
             "db_ready": DB_READY,
-            "db_engine": "postgres" if DB_URL.startswith("postgres") else "sqlite",
+            "db_engine": engine,
         }
     )
 
@@ -1804,6 +2172,73 @@ def project_findings_api(project_id: str) -> Any:
         sort_dir=sort_dir,
     )
     return jsonify({"items": items})
+
+
+def findings_csv_response(project_id: str, items: list[dict[str, Any]]) -> Any:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "vuln_key",
+            "severity",
+            "title",
+            "type",
+            "cve",
+            "asset_count",
+            "occurrence_count",
+            "first_seen",
+            "last_seen",
+            "assets",
+            "evidence",
+        ]
+    )
+    for item in items:
+        writer.writerow(
+            [
+                item.get("vuln_key", ""),
+                item.get("severity", ""),
+                item.get("title", ""),
+                item.get("type", ""),
+                item.get("cve", ""),
+                item.get("asset_count", 0),
+                item.get("occurrence_count", 0),
+                item.get("first_seen", ""),
+                item.get("last_seen", ""),
+                ", ".join(item.get("assets", [])),
+                item.get("evidence", ""),
+            ]
+        )
+
+    csv_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
+    csv_bytes.seek(0)
+    return send_file(
+        csv_bytes,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"vscanner-findings-{project_id[:8]}.csv",
+    )
+
+
+@app.route("/api/projects/<project_id>/findings.csv")
+def project_findings_csv_api(project_id: str) -> Any:
+    severity = (request.args.get("severity") or "all").lower()
+    search = (request.args.get("search") or "").strip()
+    sort_by = (request.args.get("sort_by") or "severity").lower()
+    sort_dir = (request.args.get("sort_dir") or "desc").lower()
+    try:
+        since_days = int(request.args.get("since_days", "90"))
+    except ValueError:
+        since_days = 90
+
+    items = get_project_findings(
+        project_id=project_id,
+        severity=severity,
+        search=search,
+        since_days=since_days,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return findings_csv_response(project_id, items)
 
 
 @app.route("/api/projects/<project_id>/pdf")
@@ -1885,6 +2320,61 @@ def report_detail_api(report_id: str) -> Any:
     if not data:
         return jsonify({"error": "Report not found."}), 404
     return jsonify(data)
+
+
+@app.route("/api/reports/<report_id>/csv")
+def report_csv_api(report_id: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["report_id", report_id])
+    writer.writerow(["created_at", data.get("report_created_at", "")])
+    writer.writerow(["project", data.get("meta", {}).get("project_name", "")])
+    writer.writerow(["target", data.get("meta", {}).get("target", "")])
+    writer.writerow(["profile", data.get("meta", {}).get("profile", "")])
+    writer.writerow(["risk_level", data.get("meta", {}).get("risk_level", "")])
+    writer.writerow(["risk_score", data.get("true_risk_score", 0)])
+    writer.writerow([])
+    writer.writerow(
+        [
+            "host",
+            "port",
+            "service",
+            "version",
+            "type",
+            "severity",
+            "title",
+            "evidence",
+            "cve",
+        ]
+    )
+
+    for finding in data.get("finding_items", []):
+        writer.writerow(
+            [
+                finding.get("host", ""),
+                finding.get("port", ""),
+                finding.get("service", ""),
+                finding.get("version", ""),
+                finding.get("type", ""),
+                finding.get("severity", ""),
+                finding.get("title", ""),
+                finding.get("evidence", ""),
+                finding.get("cve", ""),
+            ]
+        )
+
+    csv_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
+    csv_bytes.seek(0)
+    return send_file(
+        csv_bytes,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"vscanner-report-{report_id[:8]}.csv",
+    )
 
 
 @app.route("/api/reports/<report_id>/pdf")

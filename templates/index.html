@@ -141,7 +141,10 @@
                 <article class="panel">
                     <div class="panel-head">
                         <h3>Latest Scan Findings</h3>
-                        <button id="reportPdfButton" class="btn ghost" type="button" disabled>Report PDF</button>
+                        <div class="control-inline">
+                            <button id="reportCsvButton" class="btn ghost" type="button" disabled>Report CSV</button>
+                            <button id="reportPdfButton" class="btn ghost" type="button" disabled>Report PDF</button>
+                        </div>
                     </div>
                     <div id="scanResult" class="table-host"></div>
                 </article>
@@ -151,7 +154,10 @@
                 <article class="panel">
                     <div class="panel-head">
                         <h3>Aggregated Findings</h3>
-                        <button id="refreshFindingsButton" class="btn ghost" type="button">Refresh</button>
+                        <div class="control-inline">
+                            <button id="findingsCsvButton" class="btn ghost" type="button">Findings CSV</button>
+                            <button id="refreshFindingsButton" class="btn ghost" type="button">Refresh</button>
+                        </div>
                     </div>
 
                     <div class="filter-grid">
@@ -219,12 +225,14 @@
                         <li>When two assets share the same vulnerability, it appears once with multiple affected assets.</li>
                         <li>Use NETWORK only on local/private networks where authorization is clear.</li>
                         <li>For Vercel Postgres set DATABASE_URL and install psycopg in requirements.</li>
+                        <li>For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.</li>
                     </ul>
                 </article>
             </section>
         </main>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

@@ -26,6 +26,7 @@ const profileSelect = document.getElementById("profile");
 const portStrategySelect = document.getElementById("portStrategy");
 const scanButton = document.getElementById("scanButton");
 const reportPdfButton = document.getElementById("reportPdfButton");
+const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
 
@@ -35,6 +36,7 @@ const sortBy = document.getElementById("sortBy");
 const sortDir = document.getElementById("sortDir");
 const findingSearch = document.getElementById("findingSearch");
 const refreshFindingsButton = document.getElementById("refreshFindingsButton");
+const findingsCsvButton = document.getElementById("findingsCsvButton");
 const findingsTable = document.getElementById("findingsTable");
 
 const historyList = document.getElementById("historyList");
@@ -50,6 +52,8 @@ const COLORS = {
 
 let activeProjectId = "default";
 let lastReportId = null;
+let trendChartInstance = null;
+let riskChartInstance = null;
 
 function esc(value) {
     return String(value ?? "")
@@ -93,97 +97,105 @@ menuItems.forEach((button) => {
 });
 
 function drawTrend(points) {
-    const ctx = trendChart.getContext("2d");
-    const width = trendChart.width;
-    const height = trendChart.height;
-    ctx.clearRect(0, 0, width, height);
-
-    ctx.strokeStyle = "rgba(126, 161, 198, 0.36)";
-    ctx.lineWidth = 1;
-    for (let i = 0; i < 5; i += 1) {
-        const y = 26 + i * 46;
-        ctx.beginPath();
-        ctx.moveTo(30, y);
-        ctx.lineTo(width - 20, y);
-        ctx.stroke();
-    }
-
-    if (!points.length) {
-        ctx.fillStyle = "#9bb4cb";
-        ctx.font = "13px Manrope";
-        ctx.fillText("No trend data in this window.", 36, 50);
+    if (!window.Chart) {
         return;
     }
 
-    const maxValue = Math.max(1, ...points.map((item) => Number(item.true_risk_score || 0)));
-    const chartW = width - 66;
-    const chartH = height - 54;
-    const stepX = chartW / Math.max(points.length - 1, 1);
+    if (trendChartInstance) {
+        trendChartInstance.destroy();
+    }
 
-    ctx.strokeStyle = "#39d4b5";
-    ctx.lineWidth = 2.2;
-    ctx.beginPath();
+    const labels = points.map((item) => String(item.created_at || "").slice(0, 10));
+    const risks = points.map((item) => Number(item.true_risk_score || 0));
+    const findings = points.map((item) => Number(item.total_findings || 0));
 
-    points.forEach((point, index) => {
-        const val = Number(point.true_risk_score || 0);
-        const x = 32 + stepX * index;
-        const y = 20 + chartH - (val / maxValue) * chartH;
-        if (index === 0) {
-            ctx.moveTo(x, y);
-        } else {
-            ctx.lineTo(x, y);
-        }
-    });
-    ctx.stroke();
-
-    points.forEach((point, index) => {
-        const val = Number(point.true_risk_score || 0);
-        const x = 32 + stepX * index;
-        const y = 20 + chartH - (val / maxValue) * chartH;
-        ctx.beginPath();
-        ctx.fillStyle = "#67b9ff";
-        ctx.arc(x, y, 3, 0, Math.PI * 2);
-        ctx.fill();
-
-        if (index % Math.ceil(points.length / 6) === 0) {
-            const stamp = String(point.created_at || "").slice(5, 10);
-            ctx.fillStyle = "#8fa9c3";
-            ctx.font = "10px Manrope";
-            ctx.fillText(stamp, x - 12, height - 8);
-        }
+    trendChartInstance = new window.Chart(trendChart, {
+        type: "line",
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: "Risk Score",
+                    data: risks,
+                    borderColor: "#39d4b5",
+                    backgroundColor: "rgba(57,212,181,0.2)",
+                    borderWidth: 2,
+                    tension: 0.3,
+                    pointRadius: 2,
+                    yAxisID: "y",
+                },
+                {
+                    label: "Findings",
+                    data: findings,
+                    borderColor: "#67b9ff",
+                    backgroundColor: "rgba(103,185,255,0.16)",
+                    borderWidth: 2,
+                    tension: 0.25,
+                    pointRadius: 2,
+                    yAxisID: "y1",
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    labels: { color: "#dce9f7" },
+                },
+            },
+            scales: {
+                x: {
+                    ticks: { color: "#9bb4cb", maxTicksLimit: 8 },
+                    grid: { color: "rgba(126,161,198,0.2)" },
+                },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: "#9bb4cb" },
+                    grid: { color: "rgba(126,161,198,0.2)" },
+                },
+                y1: {
+                    beginAtZero: true,
+                    position: "right",
+                    ticks: { color: "#9bb4cb" },
+                    grid: { drawOnChartArea: false },
+                },
+            },
+        },
     });
 }
 
 function drawRiskBars(summary) {
-    const ctx = riskChart.getContext("2d");
-    const width = riskChart.width;
-    const height = riskChart.height;
-    ctx.clearRect(0, 0, width, height);
+    if (!window.Chart) {
+        return;
+    }
 
-    const bars = ORDER.map((key) => ({ key, val: Number(summary[key] || 0), color: COLORS[key] }));
-    const maxValue = Math.max(1, ...bars.map((item) => item.val));
+    if (riskChartInstance) {
+        riskChartInstance.destroy();
+    }
 
-    const barWidth = 70;
-    const gap = 34;
-    const baseY = 214;
-
-    bars.forEach((bar, index) => {
-        const x = 56 + index * (barWidth + gap);
-        const h = Math.max(6, (bar.val / maxValue) * 150);
-
-        ctx.fillStyle = "rgba(133, 173, 210, 0.18)";
-        ctx.fillRect(x, baseY - 150, barWidth, 150);
-
-        ctx.fillStyle = bar.color;
-        ctx.fillRect(x, baseY - h, barWidth, h);
-
-        ctx.fillStyle = "#dce9f7";
-        ctx.font = "700 12px Sora";
-        ctx.fillText(String(bar.val), x + 28, baseY - h - 8);
-
-        ctx.fillStyle = "#9bb4cb";
-        ctx.font = "11px Manrope";
-        ctx.fillText(bar.key.toUpperCase(), x + 13, baseY + 14);
+    const values = ORDER.map((key) => Number(summary[key] || 0));
+    riskChartInstance = new window.Chart(riskChart, {
+        type: "doughnut",
+        data: {
+            labels: ORDER.map((key) => key.toUpperCase()),
+            datasets: [
+                {
+                    data: values,
+                    backgroundColor: ORDER.map((key) => COLORS[key]),
+                    borderColor: "rgba(11,17,26,0.4)",
+                    borderWidth: 2,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { display: false },
+            },
+            cutout: "62%",
+        },
     });
 
     riskLegend.innerHTML = ORDER.map((key) => `<div class="risk-item"><span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong></div>`).join("");
@@ -298,6 +310,7 @@ function renderHistory(items) {
                     <div class="list-line"><span>Risk Score: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
                     <div class="list-line">
                         <button class="btn ghost" type="button" onclick="window.openReport('${esc(item.id)}')">Open</button>
+                        <button class="btn ghost" type="button" onclick="window.openReportCsv('${esc(item.id)}')">CSV</button>
                         <button class="btn ghost" type="button" onclick="window.openReportPdf('${esc(item.id)}')">PDF</button>
                     </div>
                 </div>
@@ -398,6 +411,7 @@ window.openReport = async function openReport(reportId) {
 
         lastReportId = reportId;
         reportPdfButton.disabled = false;
+        reportCsvButton.disabled = false;
         renderScanResult(data);
         activateTab("scanner");
     } catch (error) {
@@ -407,6 +421,10 @@ window.openReport = async function openReport(reportId) {
 
 window.openReportPdf = function openReportPdf(reportId) {
     window.open(`/api/reports/${encodeURIComponent(reportId)}/pdf`, "_blank", "noopener,noreferrer");
+};
+
+window.openReportCsv = function openReportCsv(reportId) {
+    window.open(`/api/reports/${encodeURIComponent(reportId)}/csv`, "_blank", "noopener,noreferrer");
 };
 
 scanForm.addEventListener("submit", async (event) => {
@@ -437,6 +455,7 @@ scanForm.addEventListener("submit", async (event) => {
 
         lastReportId = data.report_id;
         reportPdfButton.disabled = false;
+        reportCsvButton.disabled = false;
 
         renderScanResult(data);
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
@@ -457,10 +476,33 @@ reportPdfButton.addEventListener("click", () => {
     window.open(`/api/reports/${encodeURIComponent(lastReportId)}/pdf`, "_blank", "noopener,noreferrer");
 });
 
+reportCsvButton.addEventListener("click", () => {
+    if (!lastReportId) {
+        showError("No report available for CSV export.");
+        return;
+    }
+    window.open(`/api/reports/${encodeURIComponent(lastReportId)}/csv`, "_blank", "noopener,noreferrer");
+});
+
 projectPdfButton.addEventListener("click", () => {
     const days = Number(windowDays.value || 30);
     window.open(
         `/api/projects/${encodeURIComponent(activeProjectId)}/pdf?window_days=${days}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
+});
+
+findingsCsvButton.addEventListener("click", () => {
+    const params = new URLSearchParams({
+        severity: severityFilter.value,
+        since_days: sinceDays.value,
+        sort_by: sortBy.value,
+        sort_dir: sortDir.value,
+        search: findingSearch.value.trim(),
+    });
+    window.open(
+        `/api/projects/${encodeURIComponent(activeProjectId)}/findings.csv?${params.toString()}`,
         "_blank",
         "noopener,noreferrer"
     );
