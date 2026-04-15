@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>vScanner | Adaptive Security Platform</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='icons/vscanner-shield.svg') }}" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -17,9 +18,10 @@
         <aside class="left-rail">
             <div class="brand-card">
                 <div class="brand-dot"></div>
+                <img class="brand-icon" src="{{ url_for('static', filename='icons/vscanner-shield.svg') }}" alt="vScanner icon" />
                 <div>
                     <h2>vScanner</h2>
-                    <p>Adaptive Vulnerability Platform</p>
+                    <p id="brandSubtitle">Adaptive Vulnerability Platform</p>
                 </div>
             </div>
 
@@ -41,9 +43,9 @@
         <main class="workspace">
             <header class="topbar panel">
                 <div>
-                    <div class="eyebrow">Security Workspace</div>
-                    <h1>Professional Vulnerability Intelligence</h1>
-                    <p>Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.</p>
+                    <div class="eyebrow" id="workspaceEyebrow">Security Workspace</div>
+                    <h1 id="workspaceTitle">Vulnerability Intelligence</h1>
+                    <p id="workspaceSubtitle">Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.</p>
                 </div>
                 <div class="top-actions">
                     <select id="projectSelect" class="input"></select>
@@ -97,7 +99,7 @@
 
                 <div class="split-grid">
                     <article class="panel">
-                        <h3>Risk Distribution</h3>
+                        <h3 id="riskDistributionTitle">Risk Distribution</h3>
                         <div class="chart-wrap">
                             <canvas id="riskChart"></canvas>
                         </div>
@@ -105,45 +107,45 @@
                     </article>
 
                     <article class="panel">
-                        <h3>Top Vulnerabilities</h3>
+                        <h3 id="topVulnerabilitiesTitle">Top Vulnerabilities</h3>
                         <div id="topVulns" class="list-scroll"></div>
                     </article>
                 </div>
 
                 <div class="exec-grid">
                     <article class="panel stack-panel">
-                        <h3>Severity Timeline (Executive)</h3>
+                        <h3 id="severityTimelineTitle">Severity Timeline (Executive)</h3>
                         <div class="chart-wrap">
                             <canvas id="severityStackChart"></canvas>
                         </div>
                     </article>
 
                     <article class="panel heatmap-panel">
-                        <h3>Severity Heatmap</h3>
+                        <h3 id="severityHeatmapTitle">Severity Heatmap</h3>
                         <div id="severityHeatmap" class="heatmap"></div>
                     </article>
                 </div>
 
                 <div class="split-grid">
                     <article class="panel">
-                        <h3>Recent Scans</h3>
+                        <h3 id="recentScansTitle">Recent Scans</h3>
                         <div id="recentScans" class="list-scroll"></div>
                     </article>
 
                     <article class="panel">
-                        <h3>Exposure Snapshot</h3>
+                        <h3 id="exposureSnapshotTitle">Exposure Snapshot</h3>
                         <div id="exposureSummary" class="risk-legend"></div>
                     </article>
                 </div>
 
                 <div class="split-grid">
                     <article class="panel">
-                        <h3>Top Exposed Assets</h3>
+                        <h3 id="topAssetsTitle">Top Exposed Assets</h3>
                         <div id="topAssets" class="list-scroll"></div>
                     </article>
 
                     <article class="panel">
-                        <h3>Service Inventory</h3>
+                        <h3 id="serviceInventoryTitle">Service Inventory</h3>
                         <div id="serviceInventory" class="list-scroll"></div>
                     </article>
                 </div>
@@ -151,19 +153,19 @@
 
             <section class="tab" id="tab-scanner">
                 <article class="panel">
-                    <h3>Run New Scan</h3>
+                    <h3 id="runNewScanTitle">Run New Scan</h3>
                     <div class="scanner-mode-grid" id="scannerModeGrid">
                         <button type="button" class="scanner-mode-card active" data-mode="standard">
-                            <strong>Risk Scanner</strong>
-                            <span>Normal scanner for host/domain audits with light and deep profiles.</span>
+                            <strong id="modeRiskTitle">Risk Scanner</strong>
+                            <span id="modeRiskDesc">Normal scanner for host/domain audits with light and deep profiles.</span>
                         </button>
                         <button type="button" class="scanner-mode-card" data-mode="network">
-                            <strong>Network Discovery</strong>
-                            <span>Discovery and service mapping for authorized local/lab CIDR ranges.</span>
+                            <strong id="modeNetworkTitle">Network Discovery</strong>
+                            <span id="modeNetworkDesc">Discovery and service mapping for authorized local/lab CIDR ranges.</span>
                         </button>
                         <button type="button" class="scanner-mode-card" data-mode="stealth_intel">
-                            <strong>Stealth & Intel</strong>
-                            <span>Low-noise scan plus passive metadata enrichment, no evasion behavior.</span>
+                            <strong id="modeStealthTitle">Stealth & Intel</strong>
+                            <span id="modeStealthDesc">Low-noise scan plus passive metadata enrichment, no evasion behavior.</span>
                         </button>
                     </div>
                     <form id="scanForm" class="form-grid">
@@ -194,7 +196,7 @@
                         </div>
                     </form>
                     <div class="network-suggestions">
-                        <span>Suggested networks:</span>
+                        <span id="suggestedNetworksLabel">Suggested networks:</span>
                         <div id="networkHints" class="hint-row"></div>
                     </div>
                     <p id="scanModeNote" class="note">Use this scanner only for authorized assets. Stealth mode is low-noise and does not bypass SIEM/detection systems.</p>
@@ -203,7 +205,7 @@
 
                 <article class="panel">
                     <div class="panel-head">
-                        <h3>Latest Scan Findings</h3>
+                        <h3 id="latestScanFindingsTitle">Latest Scan Findings</h3>
                         <div class="control-inline">
                             <button id="reportCsvButton" class="btn ghost" type="button" disabled>Report CSV</button>
                             <button id="reportPdfButton" class="btn ghost" type="button" disabled>Report PDF</button>
@@ -216,7 +218,7 @@
             <section class="tab" id="tab-findings">
                 <article class="panel">
                     <div class="panel-head">
-                        <h3>Aggregated Findings</h3>
+                        <h3 id="aggregatedFindingsTitle">Aggregated Findings</h3>
                         <div class="control-inline">
                             <button id="findingsCsvButton" class="btn ghost" type="button">Findings CSV</button>
                             <button id="refreshFindingsButton" class="btn ghost" type="button">Refresh</button>
@@ -273,7 +275,7 @@
             <section class="tab" id="tab-history">
                 <article class="panel">
                     <div class="panel-head">
-                        <h3>Scan History</h3>
+                        <h3 id="scanHistoryTitle">Scan History</h3>
                         <button id="refreshHistoryButton" class="btn ghost" type="button">Refresh</button>
                     </div>
                     <div id="historyList" class="history-list"></div>
@@ -283,30 +285,36 @@
             <section class="tab" id="tab-settings">
                 <div class="split-grid settings-grid">
                     <article class="panel">
-                        <h3>Workspace Preferences</h3>
+                        <h3 id="workspacePreferencesTitle">Workspace Preferences</h3>
                         <div class="settings-control-grid">
                             <div>
                                 <label for="languageSelect">Language</label>
                                 <select id="languageSelect" class="input compact">
                                     <option value="de">Deutsch</option>
                                     <option value="en">English</option>
+                                    <option value="es">Español</option>
+                                    <option value="zh">中文</option>
+                                    <option value="ja">日本語</option>
+                                    <option value="ru">Русский</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="modeSelect">Mode</label>
+                                <select id="modeSelect" class="input compact">
+                                    <option value="dark">Dark</option>
+                                    <option value="bright">Bright</option>
                                 </select>
                             </div>
                             <div>
                                 <label for="themeSelect">Theme</label>
-                                <select id="themeSelect" class="input compact">
-                                    <option value="ocean">Ocean</option>
-                                    <option value="emerald">Emerald</option>
-                                    <option value="graphite">Graphite</option>
-                                    <option value="sunset">Sunset</option>
-                                </select>
+                                <select id="themeSelect" class="input compact"></select>
                             </div>
                         </div>
-                        <p class="note">Preferences are stored in the browser and applied instantly across the workspace.</p>
+                        <p class="note" id="preferencesNote">Preferences are stored in the browser and applied instantly across the workspace.</p>
                     </article>
 
                     <article class="panel">
-                        <h3>Operational Notes</h3>
+                        <h3 id="operationalNotesTitle">Operational Notes</h3>
                         <ul class="settings-list">
                             <li>Findings are deduplicated per project, asset and vulnerability key.</li>
                             <li>Dashboard metrics now separate unique host-port exposures from repeated scans.</li>
@@ -319,7 +327,7 @@
                 </div>
 
                 <article class="panel">
-                    <h3>Scanner Reference</h3>
+                    <h3 id="scannerReferenceTitle">Scanner Reference</h3>
                     <div id="settingsInfoCards" class="scanner-mode-grid">
                         <div class="scanner-mode-card active">
                             <strong>Risk Scanner</strong>

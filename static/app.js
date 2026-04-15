@@ -55,6 +55,7 @@ const findingsTable = document.getElementById("findingsTable");
 const historyList = document.getElementById("historyList");
 const refreshHistoryButton = document.getElementById("refreshHistoryButton");
 const languageSelect = document.getElementById("languageSelect");
+const modeSelect = document.getElementById("modeSelect");
 const themeSelect = document.getElementById("themeSelect");
 
 const ORDER = ["critical", "high", "medium", "low"];
@@ -74,44 +75,345 @@ const historyCache = new Map();
 
 const I18N = {
     de: {
+        documentTitle: "vScanner | Adaptive Security Platform",
+        brandSubtitle: "Adaptive Vulnerability Platform",
         dashboard: "Dashboard",
         scanner: "Scanner",
         findings: "Findings",
         history: "History",
         settings: "Settings",
         workspaceEyebrow: "Security Workspace",
-        workspaceTitle: "Professional Vulnerability Intelligence",
+        workspaceTitle: "Vulnerability Intelligence",
         workspaceSubtitle: "Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.",
+        modeDark: "Dark",
+        modeBright: "Bright",
+        window: "Window",
+        runScan: "Run New Scan",
+        target: "Target",
+        scanProfile: "Scan Profile",
+        portStrategy: "Port Strategy",
+        suggestedNetworks: "Suggested networks:",
+        latestFindings: "Latest Scan Findings",
+        aggregatedFindings: "Aggregated Findings",
+        scanHistory: "Scan History",
+        workspacePreferences: "Workspace Preferences",
+        language: "Language",
+        mode: "Mode",
+        theme: "Theme",
+        preferencesNote: "Preferences are stored in the browser and applied instantly across the workspace.",
+        riskScanner: "Risk Scanner",
+        riskScannerDesc: "Normal scanner for host/domain audits with light and deep profiles.",
+        networkScanner: "Network Discovery",
+        networkScannerDesc: "Discovery and service mapping for authorized local/lab CIDR ranges.",
+        stealthScanner: "Stealth & Intel",
+        stealthScannerDesc: "Low-noise scan plus passive metadata enrichment, no evasion behavior.",
+        standardModeNote: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
+        networkModeNote: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
+        stealthModeNote: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
+        operationalNotes: "Operational Notes",
+        scannerReference: "Scanner Reference",
+        refresh: "Refresh",
+        noData: "No data",
+        noScansWindow: "No scans in this window.",
+        noAssetInventory: "No asset inventory yet.",
+        noServiceInventory: "No service inventory yet.",
+        assets: "Assets",
+        profile: "Profile",
+        risk: "Risk",
+        findingsLabel: "Findings",
+        openPorts: "Open Ports",
+        exposedServices: "Exposed Services",
+        cveCandidates: "CVE Candidates",
+        totalFindings: "Total Findings",
+        observedServices: "Observed Services",
+        passiveIntel: "Passive Intel",
+        riskScore: "Risk Score",
+        hostsScanned: "Hosts Scanned",
+        severity: "Severity",
+        asset: "Asset",
+        title: "Title",
+        evidence: "Evidence",
+        type: "Type",
+        service: "Service",
+        product: "Product",
+        version: "Version",
+        vulnerability: "Vulnerability",
+        affectedAssets: "Affected Assets",
+        occurrences: "Occurrences",
+        assetsSample: "Assets (sample)",
+        lastSeen: "Last Seen",
+        noReportsYet: "No reports yet.",
+        severityAll: "All",
+        severityCritical: "Critical",
+        severityHigh: "High",
+        severityMedium: "Medium",
+        severityLow: "Low",
+        severityInfo: "Info",
+        profileLight: "Light Scan",
+        profileDeep: "Deep Scan",
+        profileStealth: "Stealth Scan (Low Noise)",
+        profileNetwork: "Network Discovery",
+        strategyStandard: "Standard",
+        strategyAggressive: "Aggressive",
+        sortBy: "Sort By",
+        direction: "Direction",
+        since: "Since",
+        search: "Search",
+        asc: "Asc",
+        desc: "Desc",
         newProject: "New Project",
         projectCsv: "Project CSV",
         projectPdf: "Project PDF",
         reportCsv: "Report CSV",
         reportPdf: "Report PDF",
         findingsCsv: "Findings CSV",
-        refresh: "Refresh",
         startScan: "Start Scan",
         intelOnly: "Intel Only",
+        scanning: "Scanning...",
+        loading: "Loading...",
+        themeOcean: "Ocean",
+        themeEmerald: "Emerald",
+        themeGraphite: "Graphite",
+        themeSunset: "Sunset",
+        themeDawn: "Dawn",
+        themeMint: "Mint",
+        themeIvory: "Ivory",
+        themeSlate: "Slate",
     },
     en: {
+        documentTitle: "vScanner | Adaptive Security Platform",
+        brandSubtitle: "Adaptive Vulnerability Platform",
         dashboard: "Dashboard",
         scanner: "Scanner",
         findings: "Findings",
         history: "History",
         settings: "Settings",
         workspaceEyebrow: "Security Workspace",
-        workspaceTitle: "Professional Vulnerability Intelligence",
+        workspaceTitle: "Vulnerability Intelligence",
         workspaceSubtitle: "Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.",
+        modeDark: "Dark",
+        modeBright: "Bright",
+        window: "Window",
+        runScan: "Run New Scan",
+        target: "Target",
+        scanProfile: "Scan Profile",
+        portStrategy: "Port Strategy",
+        suggestedNetworks: "Suggested networks:",
+        latestFindings: "Latest Scan Findings",
+        aggregatedFindings: "Aggregated Findings",
+        scanHistory: "Scan History",
+        workspacePreferences: "Workspace Preferences",
+        language: "Language",
+        mode: "Mode",
+        theme: "Theme",
+        preferencesNote: "Preferences are stored in the browser and applied instantly across the workspace.",
+        riskScanner: "Risk Scanner",
+        riskScannerDesc: "Normal scanner for host/domain audits with light and deep profiles.",
+        networkScanner: "Network Discovery",
+        networkScannerDesc: "Discovery and service mapping for authorized local/lab CIDR ranges.",
+        stealthScanner: "Stealth & Intel",
+        stealthScannerDesc: "Low-noise scan plus passive metadata enrichment, no evasion behavior.",
+        standardModeNote: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
+        networkModeNote: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
+        stealthModeNote: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
+        operationalNotes: "Operational Notes",
+        scannerReference: "Scanner Reference",
+        refresh: "Refresh",
+        noData: "No data",
+        noScansWindow: "No scans in this window.",
+        noAssetInventory: "No asset inventory yet.",
+        noServiceInventory: "No service inventory yet.",
+        assets: "Assets",
+        profile: "Profile",
+        risk: "Risk",
+        findingsLabel: "Findings",
+        openPorts: "Open Ports",
+        exposedServices: "Exposed Services",
+        cveCandidates: "CVE Candidates",
+        totalFindings: "Total Findings",
+        observedServices: "Observed Services",
+        passiveIntel: "Passive Intel",
+        riskScore: "Risk Score",
+        hostsScanned: "Hosts Scanned",
+        severity: "Severity",
+        asset: "Asset",
+        title: "Title",
+        evidence: "Evidence",
+        type: "Type",
+        service: "Service",
+        product: "Product",
+        version: "Version",
+        vulnerability: "Vulnerability",
+        affectedAssets: "Affected Assets",
+        occurrences: "Occurrences",
+        assetsSample: "Assets (sample)",
+        lastSeen: "Last Seen",
+        noReportsYet: "No reports yet.",
+        severityAll: "All",
+        severityCritical: "Critical",
+        severityHigh: "High",
+        severityMedium: "Medium",
+        severityLow: "Low",
+        severityInfo: "Info",
+        profileLight: "Light Scan",
+        profileDeep: "Deep Scan",
+        profileStealth: "Stealth Scan (Low Noise)",
+        profileNetwork: "Network Discovery",
+        strategyStandard: "Standard",
+        strategyAggressive: "Aggressive",
+        sortBy: "Sort By",
+        direction: "Direction",
+        since: "Since",
+        search: "Search",
+        asc: "Asc",
+        desc: "Desc",
         newProject: "New Project",
         projectCsv: "Project CSV",
         projectPdf: "Project PDF",
         reportCsv: "Report CSV",
         reportPdf: "Report PDF",
         findingsCsv: "Findings CSV",
-        refresh: "Refresh",
         startScan: "Start Scan",
         intelOnly: "Intel Only",
+        scanning: "Scanning...",
+        loading: "Loading...",
+        themeOcean: "Ocean",
+        themeEmerald: "Emerald",
+        themeGraphite: "Graphite",
+        themeSunset: "Sunset",
+        themeDawn: "Dawn",
+        themeMint: "Mint",
+        themeIvory: "Ivory",
+        themeSlate: "Slate",
+    },
+    es: {
+        documentTitle: "vScanner | Plataforma de Seguridad Adaptativa",
+        brandSubtitle: "Plataforma Adaptativa de Vulnerabilidades",
+        dashboard: "Panel",
+        scanner: "Escáner",
+        findings: "Hallazgos",
+        history: "Historial",
+        settings: "Ajustes",
+        workspaceEyebrow: "Espacio de Seguridad",
+        workspaceTitle: "Inteligencia de Vulnerabilidades",
+        workspaceSubtitle: "Panel limpio, perfiles adaptativos y hallazgos deduplicados por activo.",
+        modeDark: "Oscuro",
+        modeBright: "Claro",
+        refresh: "Actualizar",
+        startScan: "Iniciar Escaneo",
+        intelOnly: "Solo Intel",
+        scanning: "Escaneando...",
+        loading: "Cargando...",
+        themeOcean: "Océano",
+        themeEmerald: "Esmeralda",
+        themeGraphite: "Grafito",
+        themeSunset: "Atardecer",
+        themeDawn: "Aurora",
+        themeMint: "Menta",
+        themeIvory: "Marfil",
+        themeSlate: "Pizarra",
+    },
+    zh: {
+        documentTitle: "vScanner | 自适应安全平台",
+        brandSubtitle: "自适应漏洞平台",
+        dashboard: "仪表盘",
+        scanner: "扫描器",
+        findings: "发现",
+        history: "历史",
+        settings: "设置",
+        workspaceEyebrow: "安全工作区",
+        workspaceTitle: "漏洞情报",
+        workspaceSubtitle: "清晰面板，自适应扫描配置，按资产去重发现。",
+        modeDark: "深色",
+        modeBright: "明亮",
+        refresh: "刷新",
+        startScan: "开始扫描",
+        intelOnly: "仅情报",
+        scanning: "扫描中...",
+        loading: "加载中...",
+        themeOcean: "海洋",
+        themeEmerald: "翡翠",
+        themeGraphite: "石墨",
+        themeSunset: "日落",
+        themeDawn: "黎明",
+        themeMint: "薄荷",
+        themeIvory: "象牙",
+        themeSlate: "板岩",
+    },
+    ja: {
+        documentTitle: "vScanner | 適応型セキュリティプラットフォーム",
+        brandSubtitle: "適応型脆弱性プラットフォーム",
+        dashboard: "ダッシュボード",
+        scanner: "スキャナー",
+        findings: "検出結果",
+        history: "履歴",
+        settings: "設定",
+        workspaceEyebrow: "セキュリティワークスペース",
+        workspaceTitle: "脆弱性インテリジェンス",
+        workspaceSubtitle: "見やすいダッシュボード、適応スキャン、重複排除された資産別検出。",
+        modeDark: "ダーク",
+        modeBright: "ライト",
+        refresh: "更新",
+        startScan: "スキャン開始",
+        intelOnly: "インテルのみ",
+        scanning: "スキャン中...",
+        loading: "読み込み中...",
+        themeOcean: "オーシャン",
+        themeEmerald: "エメラルド",
+        themeGraphite: "グラファイト",
+        themeSunset: "サンセット",
+        themeDawn: "ドーン",
+        themeMint: "ミント",
+        themeIvory: "アイボリー",
+        themeSlate: "スレート",
+    },
+    ru: {
+        documentTitle: "vScanner | Адаптивная платформа безопасности",
+        brandSubtitle: "Адаптивная платформа уязвимостей",
+        dashboard: "Панель",
+        scanner: "Сканер",
+        findings: "Находки",
+        history: "История",
+        settings: "Настройки",
+        workspaceEyebrow: "Пространство безопасности",
+        workspaceTitle: "Аналитика уязвимостей",
+        workspaceSubtitle: "Чистая панель, адаптивные профили сканирования и дедупликация находок по активам.",
+        modeDark: "Темный",
+        modeBright: "Светлый",
+        refresh: "Обновить",
+        startScan: "Запустить скан",
+        intelOnly: "Только Intel",
+        scanning: "Сканирование...",
+        loading: "Загрузка...",
+        themeOcean: "Океан",
+        themeEmerald: "Изумруд",
+        themeGraphite: "Графит",
+        themeSunset: "Закат",
+        themeDawn: "Рассвет",
+        themeMint: "Мята",
+        themeIvory: "Слоновая кость",
+        themeSlate: "Сланец",
     },
 };
+
+const THEMES_BY_MODE = {
+    dark: ["ocean", "emerald", "graphite", "sunset"],
+    bright: ["dawn", "mint", "ivory", "slate"],
+};
+
+function t(key) {
+    const lang = localStorage.getItem("vscanner.language") || "de";
+    const base = I18N[lang] || I18N.de;
+    return base[key] || I18N.en[key] || I18N.de[key] || key;
+}
+
+function populateThemeOptions(mode, selectedTheme) {
+    const themes = THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark;
+    themeSelect.innerHTML = themes
+        .map((theme) => `<option value="${esc(theme)}">${esc(t(`theme${theme.charAt(0).toUpperCase()}${theme.slice(1)}`))}</option>`)
+        .join("");
+    themeSelect.value = themes.includes(selectedTheme) ? selectedTheme : themes[0];
+}
 
 function scannerSettings(mode) {
     if (mode === "network") {
@@ -119,7 +421,7 @@ function scannerSettings(mode) {
             profile: "network",
             portStrategy: "aggressive",
             placeholder: "192.168.1.0/24",
-            note: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
+            note: t("networkModeNote"),
             disableProfile: true,
             hidePortStrategy: true,
             showIntelOnly: false,
@@ -132,7 +434,7 @@ function scannerSettings(mode) {
             profile: "stealth",
             portStrategy: "standard",
             placeholder: "example.com, 8.8.8.8",
-            note: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
+            note: t("stealthModeNote"),
             disableProfile: true,
             hidePortStrategy: true,
             showIntelOnly: true,
@@ -144,7 +446,7 @@ function scannerSettings(mode) {
         profile: "light",
         portStrategy: "standard",
         placeholder: "example.com, 8.8.8.8, 192.168.1.0/24",
-        note: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
+        note: t("standardModeNote"),
         disableProfile: false,
         hidePortStrategy: false,
         showIntelOnly: false,
@@ -470,7 +772,7 @@ function renderSeverityHeatmap(items) {
         return;
     }
     if (!items.length) {
-        severityHeatmap.innerHTML = '<div class="heat-cell"><strong>No data</strong><small>Run scans to build heatmap.</small></div>';
+        severityHeatmap.innerHTML = `<div class="heat-cell"><strong>${esc(t("noData"))}</strong><small>${esc(t("noScansWindow"))}</small></div>`;
         return;
     }
 
@@ -500,7 +802,7 @@ function renderSeverityHeatmap(items) {
 
 function renderTopVulns(items) {
     if (!items.length) {
-        topVulns.innerHTML = '<div class="list-item"><div class="list-line">No data available.</div></div>';
+        topVulns.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noData"))}</div></div>`;
         return;
     }
 
@@ -512,7 +814,7 @@ function renderTopVulns(items) {
                 <div class="list-item">
                     <div class="list-line">
                         <span class="badge badge-${esc(sev)}">${esc(sev)}</span>
-                        <strong>Assets: ${esc(item.affected_assets || 0)}</strong>
+                        <strong>${esc(t("assets"))}: ${esc(item.affected_assets || 0)}</strong>
                     </div>
                     <div class="list-line"><span>${esc(item.title || "Finding")}</span></div>
                     <div class="list-line"><span>${esc(item.cve || "-")}</span><span>${esc(item.type || "-")}</span></div>
@@ -527,7 +829,7 @@ function renderRecentScans(items) {
         return;
     }
     if (!items.length) {
-        recentScans.innerHTML = '<div class="list-item"><div class="list-line">No scans in this window.</div></div>';
+        recentScans.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noScansWindow"))}</div></div>`;
         return;
     }
 
@@ -538,8 +840,8 @@ function renderRecentScans(items) {
             return `
                 <div class="list-item">
                     <div class="list-line"><strong>${esc(item.target || "-")}</strong><span>${esc(String(item.created_at || "").slice(0, 16).replace("T", " "))}</span></div>
-                    <div class="list-line"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
-                    <div class="list-line"><span>Risk: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
+                    <div class="list-line"><span>${esc(t("profile"))}: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
+                    <div class="list-line"><span>${esc(t("risk"))}: ${esc(item.true_risk_score || 0)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.total_findings || 0)}</span></div>
                 </div>
             `;
         })
@@ -552,10 +854,10 @@ function renderExposureSummary(totals) {
     }
 
     const cards = [
-        { label: "Open Ports", value: totals.open_ports || 0 },
-        { label: "Exposed Services", value: totals.exposed_services || 0 },
-        { label: "CVE Candidates", value: totals.cve_count || 0 },
-        { label: "Total Findings", value: totals.findings || 0 },
+        { label: t("openPorts"), value: totals.open_ports || 0 },
+        { label: t("exposedServices"), value: totals.exposed_services || 0 },
+        { label: t("cveCandidates"), value: totals.cve_count || 0 },
+        { label: t("totalFindings"), value: totals.findings || 0 },
     ];
     exposureSummary.innerHTML = cards
         .map((item) => `<div class="risk-item"><span>${esc(item.label)}</span><strong>${esc(item.value)}</strong></div>`)
@@ -567,7 +869,7 @@ function renderTopAssets(items) {
         return;
     }
     if (!items.length) {
-        topAssets.innerHTML = '<div class="list-item"><div class="list-line">No asset inventory yet.</div></div>';
+        topAssets.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noAssetInventory"))}</div></div>`;
         return;
     }
 
@@ -577,8 +879,8 @@ function renderTopAssets(items) {
             (item) => `
                 <div class="list-item">
                     <div class="list-line"><strong>${esc(item.host || "-")}</strong><span>${esc(item.last_seen || "-")}</span></div>
-                    <div class="list-line"><span>Open ports: ${esc(item.open_ports || 0)}</span><span>Findings: ${esc(item.findings || 0)}</span></div>
-                    <div class="list-line"><span>Risk: ${esc(item.risk_score || 0)}</span><span>${esc((item.profiles || []).join(", ") || "-")}</span></div>
+                    <div class="list-line"><span>${esc(t("openPorts"))}: ${esc(item.open_ports || 0)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.findings || 0)}</span></div>
+                    <div class="list-line"><span>${esc(t("risk"))}: ${esc(item.risk_score || 0)}</span><span>${esc((item.profiles || []).join(", ") || "-")}</span></div>
                 </div>
             `
         )
@@ -590,7 +892,7 @@ function renderServiceInventory(items) {
         return;
     }
     if (!items.length) {
-        serviceInventory.innerHTML = '<div class="list-item"><div class="list-line">No service inventory yet.</div></div>';
+        serviceInventory.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noServiceInventory"))}</div></div>`;
         return;
     }
 
@@ -599,7 +901,7 @@ function renderServiceInventory(items) {
         .map(
             (item) => `
                 <div class="list-item">
-                    <div class="list-line"><strong>${esc(item.service || "unknown")}</strong><span>Assets: ${esc(item.asset_count || 0)}</span></div>
+                    <div class="list-line"><strong>${esc(item.service || "unknown")}</strong><span>${esc(t("assets"))}: ${esc(item.asset_count || 0)}</span></div>
                     <div class="list-line"><span>Observations: ${esc(item.count || 0)}</span><span>Ports: ${esc((item.ports || []).slice(0, 5).join(", ") || "-")}</span></div>
                 </div>
             `
@@ -608,25 +910,112 @@ function renderServiceInventory(items) {
 }
 
 function applyTheme(theme) {
-    const safeTheme = theme || "ocean";
+    const mode = localStorage.getItem("vscanner.mode") || "dark";
+    const themes = THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark;
+    const safeTheme = themes.includes(theme) ? theme : themes[0];
     document.body.dataset.theme = safeTheme;
     localStorage.setItem("vscanner.theme", safeTheme);
+    themeSelect.value = safeTheme;
 }
 
 function applyLanguage(lang) {
     const safeLang = I18N[lang] ? lang : "de";
-    const text = I18N[safeLang];
+    const text = I18N[safeLang] || I18N.de;
     document.documentElement.lang = safeLang;
     localStorage.setItem("vscanner.language", safeLang);
+    document.title = text.documentTitle || I18N.de.documentTitle;
+
+    const mode = localStorage.getItem("vscanner.mode") || "dark";
+    const currentTheme = localStorage.getItem("vscanner.theme") || (THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark)[0];
+
+    const setText = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = value;
+        }
+    };
+
+    setText("brandSubtitle", text.brandSubtitle || I18N.de.brandSubtitle);
+    setText("workspaceEyebrow", text.workspaceEyebrow || I18N.de.workspaceEyebrow);
+    setText("workspaceTitle", text.workspaceTitle || I18N.de.workspaceTitle);
+    setText("workspaceSubtitle", text.workspaceSubtitle || I18N.de.workspaceSubtitle);
+    setText("riskDistributionTitle", text.riskDistributionTitle || "Risk Distribution");
+    setText("topVulnerabilitiesTitle", text.topVulnerabilitiesTitle || "Top Vulnerabilities");
+    setText("severityTimelineTitle", text.severityTimelineTitle || "Severity Timeline (Executive)");
+    setText("severityHeatmapTitle", text.severityHeatmapTitle || "Severity Heatmap");
+    setText("recentScansTitle", text.recentScansTitle || "Recent Scans");
+    setText("exposureSnapshotTitle", text.exposureSnapshotTitle || "Exposure Snapshot");
+    setText("topAssetsTitle", text.topAssetsTitle || "Top Exposed Assets");
+    setText("serviceInventoryTitle", text.serviceInventoryTitle || "Service Inventory");
+    setText("runNewScanTitle", text.runScan || I18N.de.runScan);
+    setText("modeRiskTitle", text.riskScanner || I18N.de.riskScanner);
+    setText("modeRiskDesc", text.riskScannerDesc || I18N.de.riskScannerDesc);
+    setText("modeNetworkTitle", text.networkScanner || I18N.de.networkScanner);
+    setText("modeNetworkDesc", text.networkScannerDesc || I18N.de.networkScannerDesc);
+    setText("modeStealthTitle", text.stealthScanner || I18N.de.stealthScanner);
+    setText("modeStealthDesc", text.stealthScannerDesc || I18N.de.stealthScannerDesc);
+    setText("suggestedNetworksLabel", text.suggestedNetworks || I18N.de.suggestedNetworks);
+    setText("latestScanFindingsTitle", text.latestFindings || I18N.de.latestFindings);
+    setText("aggregatedFindingsTitle", text.aggregatedFindings || I18N.de.aggregatedFindings);
+    setText("scanHistoryTitle", text.scanHistory || I18N.de.scanHistory);
+    setText("workspacePreferencesTitle", text.workspacePreferences || I18N.de.workspacePreferences);
+    setText("preferencesNote", text.preferencesNote || I18N.de.preferencesNote);
+    setText("operationalNotesTitle", text.operationalNotes || I18N.de.operationalNotes);
+    setText("scannerReferenceTitle", text.scannerReference || I18N.de.scannerReference);
+
+    document.querySelector('label[for="target"]').textContent = text.target || I18N.de.target;
+    document.querySelector('label[for="profile"]').textContent = text.scanProfile || I18N.de.scanProfile;
+    document.querySelector('label[for="portStrategy"]').textContent = text.portStrategy || I18N.de.portStrategy;
+    document.querySelector('label[for="languageSelect"]').textContent = text.language || I18N.de.language;
+    document.querySelector('label[for="modeSelect"]').textContent = text.mode || I18N.de.mode;
+    document.querySelector('label[for="themeSelect"]').textContent = text.theme || I18N.de.theme;
+    document.querySelector('label[for="windowDays"]').textContent = text.window || I18N.de.window;
+    document.querySelector('label[for="severityFilter"]').textContent = text.severity || "Severity";
+    document.querySelector('label[for="sinceDays"]').textContent = text.since || "Since";
+    document.querySelector('label[for="sortBy"]').textContent = text.sortBy || "Sort By";
+    document.querySelector('label[for="sortDir"]').textContent = text.direction || "Direction";
+    document.querySelector('label[for="findingSearch"]').textContent = text.search || "Search";
+
+    const profileOptions = profileSelect?.options;
+    if (profileOptions && profileOptions.length >= 4) {
+        profileOptions[0].textContent = text.profileLight || "Light Scan";
+        profileOptions[1].textContent = text.profileDeep || "Deep Scan";
+        profileOptions[2].textContent = text.profileStealth || "Stealth Scan (Low Noise)";
+        profileOptions[3].textContent = text.profileNetwork || "Network Discovery";
+    }
+
+    const strategyOptions = portStrategySelect?.options;
+    if (strategyOptions && strategyOptions.length >= 2) {
+        strategyOptions[0].textContent = text.strategyStandard || "Standard";
+        strategyOptions[1].textContent = text.strategyAggressive || "Aggressive";
+    }
+
+    const severityOptions = severityFilter?.options;
+    if (severityOptions && severityOptions.length >= 6) {
+        severityOptions[0].textContent = text.severityAll || "All";
+        severityOptions[1].textContent = text.severityCritical || "Critical";
+        severityOptions[2].textContent = text.severityHigh || "High";
+        severityOptions[3].textContent = text.severityMedium || "Medium";
+        severityOptions[4].textContent = text.severityLow || "Low";
+        severityOptions[5].textContent = text.severityInfo || "Info";
+    }
+
+    const dirOptions = sortDir?.options;
+    if (dirOptions && dirOptions.length >= 2) {
+        dirOptions[0].textContent = text.desc || "Desc";
+        dirOptions[1].textContent = text.asc || "Asc";
+    }
+
+    modeSelect.options[0].textContent = text.modeDark || I18N.de.modeDark;
+    modeSelect.options[1].textContent = text.modeBright || I18N.de.modeBright;
+
+    populateThemeOptions(mode, currentTheme);
 
     document.querySelector('.menu-item[data-tab="dashboard"]').textContent = text.dashboard;
     document.querySelector('.menu-item[data-tab="scanner"]').textContent = text.scanner;
     document.querySelector('.menu-item[data-tab="findings"]').textContent = text.findings;
     document.querySelector('.menu-item[data-tab="history"]').textContent = text.history;
     document.querySelector('.menu-item[data-tab="settings"]').textContent = text.settings;
-    document.querySelector('.eyebrow').textContent = text.workspaceEyebrow;
-    document.querySelector('.topbar h1').textContent = text.workspaceTitle;
-    document.querySelector('.topbar p').textContent = text.workspaceSubtitle;
     newProjectButton.textContent = text.newProject;
     projectCsvButton.textContent = text.projectCsv;
     projectPdfButton.textContent = text.projectPdf;
@@ -641,6 +1030,18 @@ function applyLanguage(lang) {
     if (!intelOnlyButton.disabled) {
         intelOnlyButton.textContent = text.intelOnly;
     }
+
+    applyScannerMode(scannerTypeSelect.value || "standard");
+}
+
+function applyMode(mode) {
+    const safeMode = mode === "bright" ? "bright" : "dark";
+    localStorage.setItem("vscanner.mode", safeMode);
+    document.body.dataset.mode = safeMode;
+
+    const previousTheme = localStorage.getItem("vscanner.theme") || "";
+    populateThemeOptions(safeMode, previousTheme);
+    applyTheme(themeSelect.value);
 }
 
 function renderIntelBlock(intelData) {
@@ -671,14 +1072,14 @@ function renderIntelBlock(intelData) {
 
     return `
         <div class="host-card">
-            <div class="host-head"><strong>Passive Intel</strong><span>Target: ${esc(intelData.target || "-")}</span></div>
+            <div class="host-head"><strong>${esc(t("passiveIntel"))}</strong><span>${esc(t("target"))}: ${esc(intelData.target || "-")}</span></div>
             <div class="scan-summary-grid">
                 <div class="scan-summary-item"><span>DNS A</span><strong>${dnsA}</strong></div>
                 <div class="scan-summary-item"><span>DNS MX</span><strong>${dnsMx}</strong></div>
                 <div class="scan-summary-item"><span>SSL Issuer</span><strong>${esc(sslIssuer)}</strong></div>
                 <div class="scan-summary-item"><span>SSL Valid Until</span><strong>${esc(sslValidUntil)}</strong></div>
             </div>
-            <div class="mini-head">Observed Services</div>
+            <div class="mini-head">${esc(t("observedServices"))}</div>
             <table class="table compact-table">
                 <thead><tr><th>Host</th><th>Port</th><th>Service</th><th>Status</th></tr></thead>
                 <tbody>${serviceRows || '<tr><td colspan="4">No passive service observations.</td></tr>'}</tbody>
@@ -735,9 +1136,9 @@ function buildScanResultMarkup(data) {
                             <tr>
                                 <th>Port</th>
                                 <th>Proto</th>
-                                <th>Service</th>
-                                <th>Product</th>
-                                <th>Version</th>
+                                <th>${esc(t("service"))}</th>
+                                <th>${esc(t("product"))}</th>
+                                <th>${esc(t("version"))}</th>
                                 <th>Banner</th>
                             </tr>
                         </thead>
@@ -752,19 +1153,19 @@ function buildScanResultMarkup(data) {
 
     return `
         <div class="scan-summary-grid">
-            <div class="scan-summary-item"><span>Hosts Scanned</span><strong>${esc(metrics.hosts_scanned || 0)}</strong></div>
-            <div class="scan-summary-item"><span>Open Ports</span><strong>${esc(metrics.open_ports || 0)}</strong></div>
-            <div class="scan-summary-item"><span>CVE Candidates</span><strong>${esc(metrics.cve_candidates || 0)}</strong></div>
-            <div class="scan-summary-item"><span>Risk Score</span><strong>${esc(data.true_risk_score || 0)}</strong></div>
+            <div class="scan-summary-item"><span>${esc(t("hostsScanned"))}</span><strong>${esc(metrics.hosts_scanned || 0)}</strong></div>
+            <div class="scan-summary-item"><span>${esc(t("openPorts"))}</span><strong>${esc(metrics.open_ports || 0)}</strong></div>
+            <div class="scan-summary-item"><span>${esc(t("cveCandidates"))}</span><strong>${esc(metrics.cve_candidates || 0)}</strong></div>
+            <div class="scan-summary-item"><span>${esc(t("riskScore"))}</span><strong>${esc(data.true_risk_score || 0)}</strong></div>
         </div>
         <table class="table">
             <thead>
                 <tr>
-                    <th>Severity</th>
-                    <th>Asset</th>
-                    <th>Title</th>
-                    <th>Evidence</th>
-                    <th>Type</th>
+                    <th>${esc(t("severity"))}</th>
+                    <th>${esc(t("asset"))}</th>
+                    <th>${esc(t("title"))}</th>
+                    <th>${esc(t("evidence"))}</th>
+                    <th>${esc(t("type"))}</th>
                 </tr>
             </thead>
             <tbody>${rows || '<tr><td colspan="5">No findings</td></tr>'}</tbody>
@@ -805,15 +1206,15 @@ function renderFindings(items) {
         <table class="table">
             <thead>
                 <tr>
-                    <th>Severity</th>
-                    <th>Vulnerability</th>
-                    <th>Type</th>
+                    <th>${esc(t("severity"))}</th>
+                    <th>${esc(t("vulnerability"))}</th>
+                    <th>${esc(t("type"))}</th>
                     <th>CVE</th>
-                    <th>Affected Assets</th>
-                    <th>Occurrences</th>
-                    <th>Evidence</th>
-                    <th>Assets (sample)</th>
-                    <th>Last Seen</th>
+                    <th>${esc(t("affectedAssets"))}</th>
+                    <th>${esc(t("occurrences"))}</th>
+                    <th>${esc(t("evidence"))}</th>
+                    <th>${esc(t("assetsSample"))}</th>
+                    <th>${esc(t("lastSeen"))}</th>
                 </tr>
             </thead>
             <tbody>${rows || '<tr><td colspan="9">No matching findings.</td></tr>'}</tbody>
@@ -823,7 +1224,7 @@ function renderFindings(items) {
 
 function renderHistory(items) {
     if (!items.length) {
-        historyList.innerHTML = '<div class="list-item"><div class="list-line">No reports yet.</div></div>';
+        historyList.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noReportsYet"))}</div></div>`;
         return;
     }
 
@@ -834,8 +1235,8 @@ function renderHistory(items) {
                 <div class="history-card" data-report-id="${esc(item.id)}">
                     <button class="history-toggle" type="button" data-report-toggle="${esc(item.id)}">
                         <div class="history-meta"><strong>${esc(item.target || "-")}</strong><span>${esc(item.created_at || "-")}</span></div>
-                        <div class="history-meta"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
-                        <div class="history-meta"><span>Risk Score: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
+                        <div class="history-meta"><span>${esc(t("profile"))}: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
+                        <div class="history-meta"><span>${esc(t("riskScore"))}: ${esc(item.true_risk_score || 0)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.total_findings || 0)}</span></div>
                     </button>
                     <div class="history-body">
                         <div class="history-body-inner">
@@ -1052,7 +1453,7 @@ scanForm.addEventListener("submit", async (event) => {
     const targetForIntel = payload.target;
 
     scanButton.disabled = true;
-    scanButton.textContent = "Scanning...";
+    scanButton.textContent = t("scanning");
 
     try {
         const response = await fetch("/api/scan", {
@@ -1189,7 +1590,7 @@ intelOnlyButton.addEventListener("click", async () => {
     }
 
     intelOnlyButton.disabled = true;
-    intelOnlyButton.textContent = "Loading...";
+    intelOnlyButton.textContent = t("loading");
     try {
         const intel = await fetchIntelData(target);
         renderScanResult({
@@ -1217,6 +1618,7 @@ sinceDays.addEventListener("change", loadAggregatedFindings);
 sortBy.addEventListener("change", loadAggregatedFindings);
 sortDir.addEventListener("change", loadAggregatedFindings);
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
+modeSelect.addEventListener("change", () => applyMode(modeSelect.value));
 themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
 findingSearch.addEventListener("input", () => {
     window.clearTimeout(window.__findingSearchTimer);
@@ -1225,10 +1627,13 @@ findingSearch.addEventListener("input", () => {
 
 (async function bootstrap() {
     try {
+        const savedMode = localStorage.getItem("vscanner.mode") || "dark";
         const savedTheme = localStorage.getItem("vscanner.theme") || "ocean";
         const savedLanguage = localStorage.getItem("vscanner.language") || "de";
+        modeSelect.value = savedMode;
         themeSelect.value = savedTheme;
         languageSelect.value = savedLanguage;
+        applyMode(savedMode);
         applyTheme(savedTheme);
         applyLanguage(savedLanguage);
         applyScannerMode(scannerTypeSelect.value || "standard");
