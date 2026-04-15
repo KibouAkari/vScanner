@@ -1699,6 +1699,119 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     return found[:12]
 
 
+def gather_passive_intel(target: str) -> dict[str, Any]:
+    """Gather passive metadata: DNS, WHOIS, SSL, basic service detection."""
+    intel = {
+        "target": target,
+        "dns": {},
+        "ssl": {},
+        "services": [],
+        "errors": [],
+    }
+
+    # Extract host from target (may be domain, IP, or CIDR)
+    host_to_query = target.split("/")[0].strip()
+    if not host_to_query:
+        intel["errors"].append("No valid target")
+        return intel
+
+    # DNS lookup
+    try:
+        a_records = socket.getaddrinfo(host_to_query, None, socket.AF_INET)
+        ips = list(set(ip[4][0] for ip in a_records))
+        intel["dns"]["A"] = ips[:5]
+    except socket.gaierror:
+        pass
+    except Exception as e:
+        intel["errors"].append(f"DNS A lookup: {str(e)[:50]}")
+
+    # MX records
+    try:
+        import dns.resolver
+        mx_records = dns.resolver.resolve(host_to_query, "MX")
+        intel["dns"]["MX"] = [str(mx.exchange).rstrip(".") for mx in mx_records[:5]]
+    except Exception:
+        pass
+
+    # TXT records (SPF, DKIM)
+    try:
+        import dns.resolver
+        txt_records = dns.resolver.resolve(host_to_query, "TXT")
+        intel["dns"]["TXT"] = [str(txt)[1:-1] for txt in txt_records[:3]]  # Remove quotes
+    except Exception:
+        pass
+
+    # SSL certificate info (if accessible)
+    def get_ssl_cert(host: str, port: int = 443) -> dict[str, Any] | None:
+        try:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with socket.create_connection((host, port), timeout=3) as sock:
+                with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                    cert = ssock.getpeercert()
+                    if cert:
+                        return {
+                            "subject": dict(x[0] for x in cert.get("subject", [])),
+                            "issuer": dict(x[0] for x in cert.get("issuer", [])),
+                            "version": cert.get("version"),
+                            "notBefore": cert.get("notBefore"),
+                            "notAfter": cert.get("notAfter"),
+                        }
+        except Exception:
+            pass
+        return None
+
+    if ips := intel["dns"].get("A"):
+        ssl_info = get_ssl_cert(ips[0], 443)
+        if ssl_info:
+            intel["ssl"] = ssl_info
+
+    # Check common service ports
+    common_ports = {22: "SSH", 80: "HTTP", 443: "HTTPS", 3306: "MySQL", 5432: "PostgreSQL", 27017: "MongoDB"}
+    if ips := intel["dns"].get("A"):
+        headers = {"User-Agent": "vScanner/3.0"}
+        for ip in ips[:2]:
+            for port, service_name in common_ports.items():
+                try:
+                    if port in {80, 443}:
+                        scheme = "https" if port == 443 else "http"
+                        resp = requests.head(
+                            f"{scheme}://{ip}:{port}",
+                            headers=headers,
+                            timeout=1,
+                            verify=False,
+                        )
+                        if resp.status_code < 500:
+                            intel["services"].append(
+                                {
+                                    "ip": ip,
+                                    "port": port,
+                                    "service": service_name,
+                                    "status": resp.status_code,
+                                }
+                            )
+                    else:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex((ip, port))
+                        sock.close()
+                        if result == 0:
+                            intel["services"].append(
+                                {
+                                    "ip": ip,
+                                    "port": port,
+                                    "service": service_name,
+                                    "status": "open",
+                                }
+                            )
+                except Exception:
+                    pass
+
+    return intel
+
+
 def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
     schemes = ["https", "http"] if port in {443, 8443, 9443} else ["http", "https"]
     headers = {"User-Agent": "vScanner/3.0"}
@@ -2612,6 +2725,22 @@ def project_pdf_api(project_id: str) -> Any:
         as_attachment=True,
         download_name=f"vscanner-project-{project_id[:8]}-dashboard.pdf",
     )
+
+
+@app.route("/api/intel", methods=["POST"])
+def intel_api() -> Any:
+    """Passive intel endpoint: WHOIS, DNS, SSL, service detection (no evasion)."""
+    payload = request.get_json(silent=True) or {}
+    target = (payload.get("target") or "").strip()
+
+    if not target:
+        return jsonify({"error": "Target required"}), 400
+
+    try:
+        intel = gather_passive_intel(target)
+        return jsonify(intel)
+    except Exception as exc:
+        return jsonify({"error": "Intel gathering failed.", "details": str(exc)}), 500
 
 
 @app.route("/api/scan", methods=["POST"])

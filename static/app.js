@@ -97,9 +97,38 @@ function applyScannerMode(mode) {
     targetInput.placeholder = cfg.placeholder;
     scanModeNote.textContent = cfg.note;
 
+    const profileFieldGroup = document.getElementById("profileFieldGroup");
+    if (profileFieldGroup) {
+        profileFieldGroup.style.display = cfg.disableProfile ? "none" : "block";
+    }
     profileSelect.disabled = cfg.disableProfile;
     profileSelect.value = cfg.profile;
     portStrategySelect.value = cfg.portStrategy;
+
+    // If stealth_intel and no Intel already shown, load intel data
+    if (mode === "stealth_intel" && !window.intelDataLoaded) {
+        loadIntelData();
+    }
+}
+
+async function loadIntelData() {
+    const target = targetInput.value.trim();
+    if (!target) return;
+    try {
+        const resp = await fetch("/api/intel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            window.intelDataLoaded = true;
+            console.log("Intel data loaded:", data);
+            // Could display in UI extension if needed
+        }
+    } catch (err) {
+        console.error("Intel fetch failed:", err);
+    }
 }
 
 function guessLocalNetworkHints() {
