@@ -238,6 +238,24 @@ def db_connection() -> Any:
     return connection
 
 
+def sql_source_connection(source_database_url: str | None = None, sqlite_path: str | None = None) -> Any:
+    source_url = (source_database_url or "").strip()
+    if source_url.startswith("postgres"):
+        if psycopg is None:
+            raise ScanInputError("Postgres source requested but psycopg is not installed.")
+        return psycopg.connect(source_url)
+
+    path = (sqlite_path or "").strip()
+    if not path and source_url.startswith("sqlite:///"):
+        path = source_url.replace("sqlite:///", "", 1)
+    if not path:
+        path = DB_PATH
+
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
 def is_postgres_connection(connection: Any) -> bool:
     return psycopg is not None and isinstance(connection, psycopg.Connection)
 
@@ -308,6 +326,172 @@ def ensure_mongo_indexes() -> None:
     )
     db.findings.create_index([("project_id", ASCENDING), ("last_seen", DESCENDING)])
     db.findings.create_index([("project_id", ASCENDING), ("severity", ASCENDING)])
+
+
+def migrate_sql_reports_to_mongo(
+    source_database_url: str | None = None,
+    source_sqlite_path: str | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    if not use_mongodb():
+        raise ScanInputError("MongoDB is not configured. Set MONGODB_URI first.")
+
+    ensure_mongo_indexes()
+    mongo = get_mongo_db()
+
+    with sql_source_connection(source_database_url=source_database_url, sqlite_path=source_sqlite_path) as connection:
+        projects = fetchall(connection, "SELECT id, name, created_at FROM projects")
+        reports = fetchall(
+            connection,
+            """
+            SELECT id, created_at, project_id, project_name, target, profile, risk_level, true_risk_score,
+                   total_findings, open_ports, exposed_services, cve_count, data_json
+            FROM reports
+            """,
+        )
+        findings = fetchall(
+            connection,
+            """
+            SELECT id, project_id, asset, vuln_key, severity, title, evidence, finding_type, cve,
+                   first_seen, last_seen, occurrence_count
+            FROM findings
+            """,
+        )
+
+    moved_projects = 0
+    for row in projects:
+        result = mongo.projects.update_one(
+            {"id": row.get("id")},
+            {
+                "$set": {
+                    "id": row.get("id"),
+                    "name": row.get("name"),
+                    "created_at": row.get("created_at"),
+                }
+            }
+            if overwrite
+            else {
+                "$setOnInsert": {
+                    "id": row.get("id"),
+                    "name": row.get("name"),
+                    "created_at": row.get("created_at"),
+                }
+            },
+            upsert=True,
+        )
+        if result.upserted_id is not None or result.modified_count > 0:
+            moved_projects += 1
+
+    moved_reports = 0
+    for row in reports:
+        payload: dict[str, Any] = {}
+        raw_data = row.get("data_json")
+        if isinstance(raw_data, str) and raw_data.strip():
+            try:
+                payload = json.loads(raw_data)
+            except Exception:
+                payload = {}
+        elif isinstance(raw_data, dict):
+            payload = raw_data
+
+        report_doc = {
+            "id": row.get("id"),
+            "created_at": row.get("created_at"),
+            "project_id": row.get("project_id"),
+            "project_name": row.get("project_name"),
+            "target": row.get("target"),
+            "profile": row.get("profile"),
+            "risk_level": row.get("risk_level"),
+            "true_risk_score": float(row.get("true_risk_score") or 0),
+            "total_findings": int(row.get("total_findings") or 0),
+            "open_ports": int(row.get("open_ports") or 0),
+            "exposed_services": int(row.get("exposed_services") or 0),
+            "cve_count": int(row.get("cve_count") or 0),
+            "data_json": payload,
+        }
+        result = mongo.reports.update_one(
+            {"id": report_doc["id"]},
+            {"$set": report_doc} if overwrite else {"$setOnInsert": report_doc},
+            upsert=True,
+        )
+        if result.upserted_id is not None or result.modified_count > 0:
+            moved_reports += 1
+
+    moved_findings = 0
+    for row in findings:
+        finding_doc = {
+            "id": row.get("id"),
+            "project_id": row.get("project_id"),
+            "asset": row.get("asset"),
+            "vuln_key": row.get("vuln_key"),
+            "severity": normalize_severity(str(row.get("severity") or "low")),
+            "title": row.get("title") or "Finding",
+            "evidence": row.get("evidence") or "-",
+            "finding_type": row.get("finding_type") or "-",
+            "cve": row.get("cve") or "",
+            "first_seen": row.get("first_seen") or utc_now(),
+            "last_seen": row.get("last_seen") or utc_now(),
+            "occurrence_count": int(row.get("occurrence_count") or 1),
+        }
+        result = mongo.findings.update_one(
+            {
+                "project_id": finding_doc["project_id"],
+                "asset": finding_doc["asset"],
+                "vuln_key": finding_doc["vuln_key"],
+            },
+            {"$set": finding_doc} if overwrite else {"$setOnInsert": finding_doc},
+            upsert=True,
+        )
+        if result.upserted_id is not None or result.modified_count > 0:
+            moved_findings += 1
+
+    return {
+        "source": "postgres" if (source_database_url or "").startswith("postgres") else "sqlite",
+        "projects_scanned": len(projects),
+        "reports_scanned": len(reports),
+        "findings_scanned": len(findings),
+        "projects_migrated": moved_projects,
+        "reports_migrated": moved_reports,
+        "findings_migrated": moved_findings,
+    }
+
+
+def severity_timeline_from_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for row in rows:
+        entry = {
+            "created_at": row.get("created_at"),
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+        }
+
+        parsed: dict[str, Any] = {}
+        raw_data = row.get("data_json")
+        if isinstance(raw_data, str) and raw_data.strip():
+            try:
+                parsed = json.loads(raw_data)
+            except Exception:
+                parsed = {}
+        elif isinstance(raw_data, dict):
+            parsed = raw_data
+
+        risk_summary = parsed.get("risk_summary") if isinstance(parsed, dict) else None
+        if isinstance(risk_summary, dict):
+            for severity in ("critical", "high", "medium", "low"):
+                entry[severity] = int(risk_summary.get(severity, 0) or 0)
+
+        if not any(entry[key] for key in ("critical", "high", "medium", "low")):
+            fallback_count = int(row.get("total_findings", 0) or 0)
+            fallback_level = normalize_severity(str(row.get("risk_level", "low")))
+            if fallback_level == "info":
+                fallback_level = "low"
+            if fallback_level in entry and fallback_count > 0:
+                entry[fallback_level] = fallback_count
+
+        timeline.append(entry)
+    return timeline
 
 
 def init_report_store() -> None:
@@ -788,6 +972,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             },
             "risk_distribution": {"critical": 0, "high": 0, "medium": 0, "low": 0},
             "trend": [],
+            "severity_timeline": [],
             "recent_scans": [],
             "top_vulnerabilities": [],
         }
@@ -800,14 +985,31 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         if not project:
             raise ScanInputError("Project not found.")
 
-        trend_rows = list(
+        trend_source_rows = list(
             db.reports.find(
                 {"project_id": project_id, "created_at": {"$gte": since}},
-                {"_id": 0, "created_at": 1, "true_risk_score": 1, "total_findings": 1},
+                {
+                    "_id": 0,
+                    "created_at": 1,
+                    "true_risk_score": 1,
+                    "total_findings": 1,
+                    "risk_level": 1,
+                    "data_json": 1,
+                },
             )
             .sort("created_at", ASCENDING)
             .limit(240)
         )
+
+        trend_rows = [
+            {
+                "created_at": row.get("created_at"),
+                "true_risk_score": row.get("true_risk_score", 0),
+                "total_findings": row.get("total_findings", 0),
+            }
+            for row in trend_source_rows
+        ]
+        severity_timeline = severity_timeline_from_rows(trend_source_rows)
 
         recent_rows = list(
             db.reports.find(
@@ -898,6 +1100,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             "totals": mongo_totals,
             "risk_distribution": risk_distribution,
             "trend": trend_rows,
+            "severity_timeline": severity_timeline,
             "recent_scans": recent_rows,
             "top_vulnerabilities": top_vulns,
         }
@@ -922,10 +1125,10 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             (project_id, since),
         )
 
-        trend_rows = fetchall(
+        trend_source_rows = fetchall(
             connection,
             """
-            SELECT created_at, true_risk_score, total_findings
+            SELECT created_at, true_risk_score, total_findings, risk_level, data_json
             FROM reports
             WHERE project_id = ? AND created_at >= ?
             ORDER BY created_at ASC
@@ -933,6 +1136,16 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             """,
             (project_id, since),
         )
+
+        trend_rows = [
+            {
+                "created_at": row.get("created_at"),
+                "true_risk_score": row.get("true_risk_score", 0),
+                "total_findings": row.get("total_findings", 0),
+            }
+            for row in trend_source_rows
+        ]
+        severity_timeline = severity_timeline_from_rows(trend_source_rows)
 
         recent_rows = fetchall(
             connection,
@@ -971,6 +1184,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         "totals": totals or {},
         "risk_distribution": risk_distribution,
         "trend": trend_rows,
+        "severity_timeline": severity_timeline,
         "recent_scans": recent_rows,
         "top_vulnerabilities": [
             {
@@ -2147,6 +2361,115 @@ def project_dashboard_api(project_id: str) -> Any:
         return jsonify(data)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 404
+
+
+def dashboard_csv_response(project_id: str, dashboard: dict[str, Any]) -> Any:
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    project = dashboard.get("project", {})
+    totals = dashboard.get("totals", {})
+    distribution = dashboard.get("risk_distribution", {})
+
+    writer.writerow(["project_id", project.get("id", project_id)])
+    writer.writerow(["project_name", project.get("name", "")])
+    writer.writerow(["window_days", dashboard.get("window_days", 30)])
+    writer.writerow(["generated_at", utc_now()])
+    writer.writerow([])
+
+    writer.writerow(["metric", "value"])
+    writer.writerow(["scans", totals.get("scans", 0)])
+    writer.writerow(["avg_risk", totals.get("avg_risk", 0)])
+    writer.writerow(["findings", totals.get("findings", 0)])
+    writer.writerow(["open_ports", totals.get("open_ports", 0)])
+    writer.writerow(["exposed_services", totals.get("exposed_services", 0)])
+    writer.writerow(["cve_count", totals.get("cve_count", 0)])
+    writer.writerow([])
+
+    writer.writerow(["risk_distribution", "count"])
+    for severity in ("critical", "high", "medium", "low"):
+        writer.writerow([severity, distribution.get(severity, 0)])
+    writer.writerow([])
+
+    writer.writerow(["trend_created_at", "true_risk_score", "total_findings"])
+    for row in dashboard.get("trend", []):
+        writer.writerow(
+            [
+                row.get("created_at", ""),
+                row.get("true_risk_score", 0),
+                row.get("total_findings", 0),
+            ]
+        )
+    writer.writerow([])
+
+    writer.writerow(["severity_timeline_created_at", "critical", "high", "medium", "low"])
+    for row in dashboard.get("severity_timeline", []):
+        writer.writerow(
+            [
+                row.get("created_at", ""),
+                row.get("critical", 0),
+                row.get("high", 0),
+                row.get("medium", 0),
+                row.get("low", 0),
+            ]
+        )
+    writer.writerow([])
+
+    writer.writerow(["top_severity", "title", "type", "cve", "affected_assets"])
+    for row in dashboard.get("top_vulnerabilities", []):
+        writer.writerow(
+            [
+                row.get("severity", ""),
+                row.get("title", ""),
+                row.get("type", ""),
+                row.get("cve", ""),
+                row.get("affected_assets", 0),
+            ]
+        )
+
+    csv_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
+    csv_bytes.seek(0)
+    return send_file(
+        csv_bytes,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=f"vscanner-project-{project_id[:8]}-dashboard.csv",
+    )
+
+
+@app.route("/api/projects/<project_id>/dashboard.csv")
+def project_dashboard_csv_api(project_id: str) -> Any:
+    try:
+        window_days = int(request.args.get("window_days", "30"))
+    except ValueError:
+        window_days = 30
+
+    try:
+        dashboard = get_project_dashboard(project_id, window_days=window_days)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    return dashboard_csv_response(project_id, dashboard)
+
+
+@app.route("/api/admin/migrate-sql-to-mongo", methods=["POST"])
+def migrate_sql_to_mongo_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    source_database_url = (payload.get("source_database_url") or "").strip() or None
+    source_sqlite_path = (payload.get("source_sqlite_path") or "").strip() or None
+    overwrite = bool(payload.get("overwrite", False))
+
+    try:
+        result = migrate_sql_reports_to_mongo(
+            source_database_url=source_database_url,
+            source_sqlite_path=source_sqlite_path,
+            overwrite=overwrite,
+        )
+        return jsonify({"ok": True, "result": result})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Migration failed.", "details": str(exc)}), 500
 
 
 @app.route("/api/projects/<project_id>/findings")

@@ -1,5 +1,8 @@
 {
   "version": 2,
+  "env": {
+    "MONGODB_DB_NAME": "vscanner"
+  },
   "builds": [
     {
       "src": "api/index.py",

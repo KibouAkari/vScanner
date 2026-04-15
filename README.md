@@ -21,12 +21,17 @@ vScanner is a modern vulnerability scanning workspace with a professional web UI
   - Same vulnerability across multiple assets is aggregated with affected-assets context
 - Dashboard and analytics:
   - Risk trend by time window
+  - Severity timeline (stacked executive chart)
+  - Severity heatmap snapshot
   - Risk distribution
   - Top vulnerabilities
   - Search, filter, and sort on aggregated findings
 - Reporting:
   - Single scan PDF export
   - Project dashboard PDF export
+  - Single scan CSV export
+  - Project findings CSV export
+  - Project dashboard CSV export
 
 ## Important Legal Notice
 
@@ -41,6 +46,7 @@ Unauthorized scanning may violate law or policy.
 - requests + urllib3
 - reportlab
 - Optional Vercel Postgres support via `DATABASE_URL` and `psycopg`
+- Optional MongoDB Atlas support via `MONGODB_URI` and `pymongo`
 
 ## Vercel Deployment
 
@@ -54,6 +60,8 @@ This project is ready for Vercel deployment:
 - `VSCANNER_PUBLIC_MODE=1`
 - Optional: `VSCANNER_FORCE_LIGHT_SCAN=1`
 - Optional: `DATABASE_URL=<vercel-postgres-url>`
+- Optional: `MONGODB_URI=<mongodb-atlas-uri>`
+- Optional: `MONGODB_DB_NAME=vscanner`
 
 ## Installation
 
@@ -85,12 +93,26 @@ Open browser:
 - `GET /api/projects`
 - `POST /api/projects`
 - `GET /api/projects/<project_id>/dashboard?window_days=30`
+- `GET /api/projects/<project_id>/dashboard.csv?window_days=30`
 - `GET /api/projects/<project_id>/findings?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
+- `GET /api/projects/<project_id>/findings.csv?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
 - `GET /api/projects/<project_id>/pdf?window_days=30`
 - `POST /api/scan`
 - `GET /api/reports`
 - `GET /api/reports/<report_id>`
+- `GET /api/reports/<report_id>/csv`
 - `GET /api/reports/<report_id>/pdf`
+- `POST /api/admin/migrate-sql-to-mongo`
+
+Migration body example (`POST /api/admin/migrate-sql-to-mongo`):
+
+```json
+{
+  "source_database_url": "",
+  "source_sqlite_path": "data/vscanner_reports.db",
+  "overwrite": false
+}
+```
 
 Example `POST /api/scan` body:
 

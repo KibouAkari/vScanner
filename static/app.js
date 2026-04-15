@@ -4,6 +4,7 @@ const engineState = document.getElementById("engineState");
 
 const projectSelect = document.getElementById("projectSelect");
 const newProjectButton = document.getElementById("newProjectButton");
+const projectCsvButton = document.getElementById("projectCsvButton");
 const projectPdfButton = document.getElementById("projectPdfButton");
 
 const menuItems = Array.from(document.querySelectorAll(".menu-item"));
@@ -16,7 +17,9 @@ const kpiAssets = document.getElementById("kpiAssets");
 
 const trendChart = document.getElementById("trendChart");
 const riskChart = document.getElementById("riskChart");
+const severityStackChart = document.getElementById("severityStackChart");
 const riskLegend = document.getElementById("riskLegend");
+const severityHeatmap = document.getElementById("severityHeatmap");
 const topVulns = document.getElementById("topVulns");
 const windowDays = document.getElementById("windowDays");
 
@@ -54,6 +57,7 @@ let activeProjectId = "default";
 let lastReportId = null;
 let trendChartInstance = null;
 let riskChartInstance = null;
+let severityStackChartInstance = null;
 
 function esc(value) {
     return String(value ?? "")
@@ -199,6 +203,86 @@ function drawRiskBars(summary) {
     });
 
     riskLegend.innerHTML = ORDER.map((key) => `<div class="risk-item"><span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong></div>`).join("");
+}
+
+function drawSeverityStack(points) {
+    if (!window.Chart || !severityStackChart) {
+        return;
+    }
+
+    if (severityStackChartInstance) {
+        severityStackChartInstance.destroy();
+    }
+
+    const labels = points.map((item) => String(item.created_at || "").slice(5, 10));
+    const critical = points.map((item) => Number(item.critical || 0));
+    const high = points.map((item) => Number(item.high || 0));
+    const medium = points.map((item) => Number(item.medium || 0));
+    const low = points.map((item) => Number(item.low || 0));
+
+    severityStackChartInstance = new window.Chart(severityStackChart, {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [
+                { label: "Critical", data: critical, backgroundColor: "rgba(255,93,115,0.85)", stack: "sev" },
+                { label: "High", data: high, backgroundColor: "rgba(255,195,92,0.85)", stack: "sev" },
+                { label: "Medium", data: medium, backgroundColor: "rgba(103,185,255,0.85)", stack: "sev" },
+                { label: "Low", data: low, backgroundColor: "rgba(76,221,136,0.82)", stack: "sev" },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: "#dce9f7" } } },
+            scales: {
+                x: {
+                    stacked: true,
+                    ticks: { color: "#9bb4cb", maxTicksLimit: 10 },
+                    grid: { color: "rgba(126,161,198,0.15)" },
+                },
+                y: {
+                    stacked: true,
+                    beginAtZero: true,
+                    ticks: { color: "#9bb4cb" },
+                    grid: { color: "rgba(126,161,198,0.18)" },
+                },
+            },
+        },
+    });
+}
+
+function renderSeverityHeatmap(items) {
+    if (!severityHeatmap) {
+        return;
+    }
+    if (!items.length) {
+        severityHeatmap.innerHTML = '<div class="heat-cell"><strong>No data</strong><small>Run scans to build heatmap.</small></div>';
+        return;
+    }
+
+    const bands = [
+        { key: "critical", label: "Critical", cls: "heat-critical" },
+        { key: "high", label: "High", cls: "heat-high" },
+        { key: "medium", label: "Medium", cls: "heat-medium" },
+        { key: "low", label: "Low", cls: "heat-low" },
+    ];
+
+    const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const item of items) {
+        const sev = String(item.severity || "low").toLowerCase();
+        if (counts[sev] !== undefined) {
+            counts[sev] += Number(item.affected_assets || 0);
+        }
+    }
+
+    severityHeatmap.innerHTML = bands
+        .map((band) => {
+            const val = counts[band.key] || 0;
+            const descriptor = val > 20 ? "Widespread" : val > 8 ? "Elevated" : val > 0 ? "Contained" : "None";
+            return `<div class="heat-cell ${band.cls}"><strong>${band.label}: ${val}</strong><small>${descriptor} exposure</small></div>`;
+        })
+        .join("");
 }
 
 function renderTopVulns(items) {
@@ -370,6 +454,8 @@ async function loadDashboard() {
 
     drawTrend(data.trend || []);
     drawRiskBars(data.risk_distribution || {});
+    drawSeverityStack(data.severity_timeline || []);
+    renderSeverityHeatmap(data.top_vulnerabilities || []);
     renderTopVulns(data.top_vulnerabilities || []);
 }
 
@@ -488,6 +574,15 @@ projectPdfButton.addEventListener("click", () => {
     const days = Number(windowDays.value || 30);
     window.open(
         `/api/projects/${encodeURIComponent(activeProjectId)}/pdf?window_days=${days}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
+});
+
+projectCsvButton.addEventListener("click", () => {
+    const days = Number(windowDays.value || 30);
+    window.open(
+        `/api/projects/${encodeURIComponent(activeProjectId)}/dashboard.csv?window_days=${days}`,
         "_blank",
         "noopener,noreferrer"
     );

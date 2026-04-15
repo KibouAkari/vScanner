@@ -48,6 +48,7 @@
                 <div class="top-actions">
                     <select id="projectSelect" class="input"></select>
                     <button id="newProjectButton" class="btn ghost" type="button">New Project</button>
+                    <button id="projectCsvButton" class="btn ghost" type="button">Project CSV</button>
                     <button id="projectPdfButton" class="btn ghost" type="button">Project PDF</button>
                 </div>
             </header>
@@ -89,19 +90,37 @@
                             </select>
                         </div>
                     </div>
-                    <canvas id="trendChart" width="900" height="260"></canvas>
+                    <div class="chart-wrap">
+                        <canvas id="trendChart"></canvas>
+                    </div>
                 </div>
 
                 <div class="split-grid">
                     <article class="panel">
                         <h3>Risk Distribution</h3>
-                        <canvas id="riskChart" width="500" height="260"></canvas>
+                        <div class="chart-wrap">
+                            <canvas id="riskChart"></canvas>
+                        </div>
                         <div id="riskLegend" class="risk-legend"></div>
                     </article>
 
                     <article class="panel">
                         <h3>Top Vulnerabilities</h3>
                         <div id="topVulns" class="list-scroll"></div>
+                    </article>
+                </div>
+
+                <div class="exec-grid">
+                    <article class="panel stack-panel">
+                        <h3>Severity Timeline (Executive)</h3>
+                        <div class="chart-wrap">
+                            <canvas id="severityStackChart"></canvas>
+                        </div>
+                    </article>
+
+                    <article class="panel heatmap-panel">
+                        <h3>Severity Heatmap</h3>
+                        <div id="severityHeatmap" class="heatmap"></div>
                     </article>
                 </div>
             </section>
