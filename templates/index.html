@@ -123,20 +123,39 @@
                         <div id="severityHeatmap" class="heatmap"></div>
                     </article>
                 </div>
+
+                <div class="split-grid">
+                    <article class="panel">
+                        <h3>Recent Scans</h3>
+                        <div id="recentScans" class="list-scroll"></div>
+                    </article>
+
+                    <article class="panel">
+                        <h3>Exposure Snapshot</h3>
+                        <div id="exposureSummary" class="risk-legend"></div>
+                    </article>
+                </div>
             </section>
 
             <section class="tab" id="tab-scanner">
                 <article class="panel">
                     <h3>Run New Scan</h3>
+                    <div class="scanner-mode-grid" id="scannerModeGrid">
+                        <button type="button" class="scanner-mode-card active" data-mode="standard">
+                            <strong>Risk Scanner</strong>
+                            <span>Normal scanner for host/domain audits with light and deep profiles.</span>
+                        </button>
+                        <button type="button" class="scanner-mode-card" data-mode="network">
+                            <strong>Network Discovery</strong>
+                            <span>Discovery and service mapping for authorized local/lab CIDR ranges.</span>
+                        </button>
+                        <button type="button" class="scanner-mode-card" data-mode="stealth_intel">
+                            <strong>Stealth & Intel</strong>
+                            <span>Low-noise scan plus passive metadata enrichment, no evasion behavior.</span>
+                        </button>
+                    </div>
                     <form id="scanForm" class="form-grid">
-                        <div>
-                            <label for="scannerType">Scanner Type</label>
-                            <select id="scannerType" class="input">
-                                <option value="standard" selected>Standard Scanner</option>
-                                <option value="network">Network Scanner</option>
-                                <option value="stealth_intel">Stealth & Intel</option>
-                            </select>
-                        </div>
+                        <input id="scannerType" type="hidden" value="standard" />
                         <div>
                             <label for="target">Target</label>
                             <input id="target" class="input" type="text" placeholder="example.com, 8.8.8.8, 192.168.1.0/24" required />
@@ -150,15 +169,16 @@
                                 <option value="network">Network Discovery</option>
                             </select>
                         </div>
-                        <div>
+                        <div id="portStrategyGroup">
                             <label for="portStrategy">Port Strategy</label>
                             <select id="portStrategy" class="input">
                                 <option value="standard">Standard</option>
                                 <option value="aggressive">Aggressive</option>
                             </select>
                         </div>
-                        <div class="align-end">
+                        <div class="align-end action-stack">
                             <button id="scanButton" class="btn primary" type="submit">Start Scan</button>
+                            <button id="intelOnlyButton" class="btn ghost hidden" type="button">Intel Only</button>
                         </div>
                     </form>
                     <div class="network-suggestions">

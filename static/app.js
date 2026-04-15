@@ -14,6 +14,8 @@ const kpiAvgRisk = document.getElementById("kpiAvgRisk");
 const kpiScans = document.getElementById("kpiScans");
 const kpiUnique = document.getElementById("kpiUnique");
 const kpiAssets = document.getElementById("kpiAssets");
+const recentScans = document.getElementById("recentScans");
+const exposureSummary = document.getElementById("exposureSummary");
 
 const trendChart = document.getElementById("trendChart");
 const riskChart = document.getElementById("riskChart");
@@ -25,10 +27,13 @@ const windowDays = document.getElementById("windowDays");
 
 const scanForm = document.getElementById("scanForm");
 const scannerTypeSelect = document.getElementById("scannerType");
+const scannerModeCards = Array.from(document.querySelectorAll(".scanner-mode-card"));
 const targetInput = document.getElementById("target");
 const profileSelect = document.getElementById("profile");
 const portStrategySelect = document.getElementById("portStrategy");
+const portStrategyGroup = document.getElementById("portStrategyGroup");
 const scanButton = document.getElementById("scanButton");
+const intelOnlyButton = document.getElementById("intelOnlyButton");
 const scanModeNote = document.getElementById("scanModeNote");
 const networkHints = document.getElementById("networkHints");
 const reportPdfButton = document.getElementById("reportPdfButton");
@@ -70,6 +75,8 @@ function scannerSettings(mode) {
             placeholder: "192.168.1.0/24",
             note: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
             disableProfile: true,
+            hidePortStrategy: true,
+            showIntelOnly: false,
         };
     }
 
@@ -80,6 +87,8 @@ function scannerSettings(mode) {
             placeholder: "example.com, 8.8.8.8",
             note: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
             disableProfile: true,
+            hidePortStrategy: true,
+            showIntelOnly: true,
         };
     }
 
@@ -89,11 +98,14 @@ function scannerSettings(mode) {
         placeholder: "example.com, 8.8.8.8, 192.168.1.0/24",
         note: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
         disableProfile: false,
+        hidePortStrategy: false,
+        showIntelOnly: false,
     };
 }
 
 function applyScannerMode(mode) {
     const cfg = scannerSettings(mode);
+    scannerTypeSelect.value = mode;
     targetInput.placeholder = cfg.placeholder;
     scanModeNote.textContent = cfg.note;
 
@@ -101,37 +113,44 @@ function applyScannerMode(mode) {
     if (profileFieldGroup) {
         profileFieldGroup.style.display = cfg.disableProfile ? "none" : "block";
     }
+    if (portStrategyGroup) {
+        portStrategyGroup.style.display = cfg.hidePortStrategy ? "none" : "block";
+    }
+    if (intelOnlyButton) {
+        intelOnlyButton.classList.toggle("hidden", !cfg.showIntelOnly);
+    }
+
+    scannerModeCards.forEach((card) => {
+        card.classList.toggle("active", card.dataset.mode === mode);
+    });
+
     profileSelect.disabled = cfg.disableProfile;
     profileSelect.value = cfg.profile;
     portStrategySelect.value = cfg.portStrategy;
-
-    // If stealth_intel and no Intel already shown, load intel data
-    if (mode === "stealth_intel" && !window.intelDataLoaded) {
-        loadIntelData();
-    }
 }
 
-async function loadIntelData() {
-    const target = targetInput.value.trim();
-    if (!target) return;
+async function fetchIntelData(target) {
+    if (!target) {
+        throw new Error("Target is required for intel lookup");
+    }
+
     try {
         const resp = await fetch("/api/intel", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ target }),
         });
+        const data = await resp.json();
         if (resp.ok) {
-            const data = await resp.json();
-            window.intelDataLoaded = true;
-            console.log("Intel data loaded:", data);
-            // Could display in UI extension if needed
+            return data;
         }
+        throw new Error(data.error || "Intel request failed");
     } catch (err) {
-        console.error("Intel fetch failed:", err);
+        throw err;
     }
 }
 
-function guessLocalNetworkHints() {
+async function guessLocalNetworkHints() {
     const hints = ["192.168.0.0/24", "192.168.1.0/24", "10.0.0.0/24", "172.16.0.0/24"];
     const local = ["127.0.0.1", "localhost", "::1"];
     const host = (window.location.hostname || "").trim();
@@ -149,14 +168,24 @@ function guessLocalNetworkHints() {
         }
     }
 
-    return [...new Set(hints)].slice(0, 6);
+    try {
+        const response = await fetch("/api/network-hints");
+        const data = await response.json();
+        if (response.ok && Array.isArray(data.hints)) {
+            hints.unshift(...data.hints.map((item) => String(item || "").trim()).filter(Boolean));
+        }
+    } catch (_error) {
+        // Keep static fallback when client IP hints are unavailable.
+    }
+
+    return [...new Set(hints)].slice(0, 8);
 }
 
-function renderNetworkHints() {
+async function renderNetworkHints() {
     if (!networkHints) {
         return;
     }
-    const hints = guessLocalNetworkHints();
+    const hints = await guessLocalNetworkHints();
     networkHints.innerHTML = hints
         .map((cidr) => `<button type="button" class="hint-chip" data-cidr="${esc(cidr)}">${esc(cidr)}</button>`)
         .join("");
@@ -443,7 +472,92 @@ function renderTopVulns(items) {
         .join("");
 }
 
+function renderRecentScans(items) {
+    if (!recentScans) {
+        return;
+    }
+    if (!items.length) {
+        recentScans.innerHTML = '<div class="list-item"><div class="list-line">No scans in this window.</div></div>';
+        return;
+    }
+
+    recentScans.innerHTML = items
+        .slice(0, 10)
+        .map((item) => {
+            const sev = String(item.risk_level || "low").toLowerCase();
+            return `
+                <div class="list-item">
+                    <div class="list-line"><strong>${esc(item.target || "-")}</strong><span>${esc(String(item.created_at || "").slice(0, 16).replace("T", " "))}</span></div>
+                    <div class="list-line"><span>Profile: ${esc(item.profile || "-")}</span><span class="badge badge-${esc(sev)}">${esc(sev)}</span></div>
+                    <div class="list-line"><span>Risk: ${esc(item.true_risk_score || 0)}</span><span>Findings: ${esc(item.total_findings || 0)}</span></div>
+                </div>
+            `;
+        })
+        .join("");
+}
+
+function renderExposureSummary(totals) {
+    if (!exposureSummary) {
+        return;
+    }
+
+    const cards = [
+        { label: "Open Ports", value: totals.open_ports || 0 },
+        { label: "Exposed Services", value: totals.exposed_services || 0 },
+        { label: "CVE Candidates", value: totals.cve_count || 0 },
+        { label: "Total Findings", value: totals.findings || 0 },
+    ];
+    exposureSummary.innerHTML = cards
+        .map((item) => `<div class="risk-item"><span>${esc(item.label)}</span><strong>${esc(item.value)}</strong></div>`)
+        .join("");
+}
+
+function renderIntelBlock(intelData) {
+    if (!intelData || typeof intelData !== "object") {
+        return "";
+    }
+
+    const dnsA = (intelData.dns?.A || [])
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+        .map((v) => esc(v))
+        .join(", ") || "-";
+    const dnsMx = (intelData.dns?.MX || [])
+        .map((v) => String(v || "").trim())
+        .filter(Boolean)
+        .map((v) => esc(v))
+        .join(", ") || "-";
+    const sslIssuer = intelData.ssl?.issuer?.commonName || intelData.ssl?.issuer?.organizationName || "-";
+    const sslValidUntil = intelData.ssl?.notAfter || "-";
+    const services = Array.isArray(intelData.services) ? intelData.services : [];
+
+    const serviceRows = services
+        .slice(0, 12)
+        .map(
+            (svc) => `<tr><td class="mono">${esc(svc.ip || "-")}</td><td>${esc(svc.port || "-")}</td><td>${esc(svc.service || "-")}</td><td>${esc(svc.status || "-")}</td></tr>`
+        )
+        .join("");
+
+    return `
+        <div class="host-card">
+            <div class="host-head"><strong>Passive Intel</strong><span>Target: ${esc(intelData.target || "-")}</span></div>
+            <div class="scan-summary-grid">
+                <div class="scan-summary-item"><span>DNS A</span><strong>${dnsA}</strong></div>
+                <div class="scan-summary-item"><span>DNS MX</span><strong>${dnsMx}</strong></div>
+                <div class="scan-summary-item"><span>SSL Issuer</span><strong>${esc(sslIssuer)}</strong></div>
+                <div class="scan-summary-item"><span>SSL Valid Until</span><strong>${esc(sslValidUntil)}</strong></div>
+            </div>
+            <div class="mini-head">Observed Services</div>
+            <table class="table compact-table">
+                <thead><tr><th>Host</th><th>Port</th><th>Service</th><th>Status</th></tr></thead>
+                <tbody>${serviceRows || '<tr><td colspan="4">No passive service observations.</td></tr>'}</tbody>
+            </table>
+        </div>
+    `;
+}
+
 function renderScanResult(data) {
+    const metrics = data.metrics || {};
     const rows = (data.finding_items || [])
         .map((item) => {
             const sev = String(item.severity || "low").toLowerCase();
@@ -459,7 +573,59 @@ function renderScanResult(data) {
         })
         .join("");
 
+    const hostRows = (data.hosts || [])
+        .map((host) => {
+            const openPorts = (host.ports || []).filter((entry) => String(entry.state || "").toLowerCase() === "open");
+            const portRows = openPorts
+                .map(
+                    (entry) => `
+                        <tr>
+                            <td>${esc(entry.port)}</td>
+                            <td>${esc(entry.protocol || "-")}</td>
+                            <td>${esc(entry.name || "-")}</td>
+                            <td>${esc(entry.product || "-")}</td>
+                            <td>${esc(entry.version || "-")}</td>
+                            <td>${esc(entry.banner || "-")}</td>
+                        </tr>
+                    `
+                )
+                .join("");
+
+            const hostnames = Array.isArray(host.hostnames) ? host.hostnames.filter(Boolean).join(", ") : "";
+            return `
+                <div class="host-card">
+                    <div class="host-head">
+                        <strong>${esc(host.host || "-")}</strong>
+                        <span>${esc(host.state || "unknown")} | Open ports: ${openPorts.length}</span>
+                    </div>
+                    <div class="list-line"><span>Hostnames: ${esc(hostnames || "-")}</span><span>Reverse DNS: ${esc(host.reverse_dns || "-")}</span></div>
+                    <table class="table compact-table">
+                        <thead>
+                            <tr>
+                                <th>Port</th>
+                                <th>Proto</th>
+                                <th>Service</th>
+                                <th>Product</th>
+                                <th>Version</th>
+                                <th>Banner</th>
+                            </tr>
+                        </thead>
+                        <tbody>${portRows || '<tr><td colspan="6">No open ports on this host.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            `;
+        })
+        .join("");
+
+    const intelBlock = renderIntelBlock(data.intel || null);
+
     scanResult.innerHTML = `
+        <div class="scan-summary-grid">
+            <div class="scan-summary-item"><span>Hosts Scanned</span><strong>${esc(metrics.hosts_scanned || 0)}</strong></div>
+            <div class="scan-summary-item"><span>Open Ports</span><strong>${esc(metrics.open_ports || 0)}</strong></div>
+            <div class="scan-summary-item"><span>CVE Candidates</span><strong>${esc(metrics.cve_candidates || 0)}</strong></div>
+            <div class="scan-summary-item"><span>Risk Score</span><strong>${esc(data.true_risk_score || 0)}</strong></div>
+        </div>
         <table class="table">
             <thead>
                 <tr>
@@ -472,6 +638,10 @@ function renderScanResult(data) {
             </thead>
             <tbody>${rows || '<tr><td colspan="5">No findings</td></tr>'}</tbody>
         </table>
+        <div class="host-results-grid">
+            ${intelBlock}
+            ${hostRows || '<div class="list-item"><div class="list-line">No host details captured.</div></div>'}
+        </div>
     `;
 }
 
@@ -484,9 +654,11 @@ function renderFindings(items) {
                 <tr>
                     <td><span class="badge badge-${esc(sev)}">${esc(sev)}</span></td>
                     <td>${esc(item.title || "-")}</td>
+                    <td>${esc(item.type || "-")}</td>
                     <td>${esc(item.cve || "-")}</td>
                     <td>${esc(item.asset_count || 0)}</td>
                     <td>${esc(item.occurrence_count || 0)}</td>
+                    <td>${esc(item.evidence || "-")}</td>
                     <td>${assets || "-"}</td>
                     <td>${esc(item.last_seen || "-")}</td>
                 </tr>
@@ -500,14 +672,16 @@ function renderFindings(items) {
                 <tr>
                     <th>Severity</th>
                     <th>Vulnerability</th>
+                    <th>Type</th>
                     <th>CVE</th>
                     <th>Affected Assets</th>
                     <th>Occurrences</th>
+                    <th>Evidence</th>
                     <th>Assets (sample)</th>
                     <th>Last Seen</th>
                 </tr>
             </thead>
-            <tbody>${rows || '<tr><td colspan="7">No matching findings.</td></tr>'}</tbody>
+            <tbody>${rows || '<tr><td colspan="9">No matching findings.</td></tr>'}</tbody>
         </table>
     `;
 }
@@ -600,6 +774,8 @@ async function loadDashboard() {
     drawSeverityStack(data.severity_timeline || []);
     renderSeverityHeatmap(data.top_vulnerabilities || []);
     renderTopVulns(data.top_vulnerabilities || []);
+    renderRecentScans(data.recent_scans || []);
+    renderExposureSummary(data.totals || {});
 }
 
 async function loadAggregatedFindings() {
@@ -669,6 +845,7 @@ scanForm.addEventListener("submit", async (event) => {
         port_strategy: portStrategySelect.value,
         project_id: activeProjectId,
     };
+    const targetForIntel = payload.target;
 
     scanButton.disabled = true;
     scanButton.textContent = "Scanning...";
@@ -683,6 +860,14 @@ scanForm.addEventListener("submit", async (event) => {
         const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || "Scan failed");
+        }
+
+        if (scannerMode === "stealth_intel" && !data.intel) {
+            try {
+                data.intel = await fetchIntelData(targetForIntel);
+            } catch (_intelError) {
+                // Keep scan results even if passive intel is unavailable.
+            }
         }
 
         lastReportId = data.report_id;
@@ -784,6 +969,40 @@ scannerTypeSelect.addEventListener("change", () => {
     applyScannerMode(scannerTypeSelect.value || "standard");
 });
 
+scannerModeCards.forEach((card) => {
+    card.addEventListener("click", () => {
+        applyScannerMode(card.dataset.mode || "standard");
+    });
+});
+
+intelOnlyButton.addEventListener("click", async () => {
+    clearError();
+    const target = targetInput.value.trim();
+    if (!target) {
+        showError("Please provide a target before running intel-only mode.");
+        return;
+    }
+
+    intelOnlyButton.disabled = true;
+    intelOnlyButton.textContent = "Loading...";
+    try {
+        const intel = await fetchIntelData(target);
+        renderScanResult({
+            metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 },
+            true_risk_score: 0,
+            finding_items: [],
+            hosts: [],
+            intel,
+        });
+        activateTab("scanner");
+    } catch (error) {
+        showError(error.message || "Intel-only request failed");
+    } finally {
+        intelOnlyButton.disabled = false;
+        intelOnlyButton.textContent = "Intel Only";
+    }
+});
+
 windowDays.addEventListener("change", loadDashboard);
 refreshFindingsButton.addEventListener("click", loadAggregatedFindings);
 refreshHistoryButton.addEventListener("click", loadHistory);
@@ -799,7 +1018,7 @@ findingSearch.addEventListener("input", () => {
 (async function bootstrap() {
     try {
         applyScannerMode(scannerTypeSelect.value || "standard");
-        renderNetworkHints();
+        await renderNetworkHints();
         await loadHealth();
         await loadProjects();
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);

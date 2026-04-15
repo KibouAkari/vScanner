@@ -1524,6 +1524,34 @@ def resolve_target_ips(target: str, target_type: str) -> list[str]:
     return []
 
 
+def suggest_network_hints(client_ip: str | None) -> list[str]:
+    hints: list[str] = []
+    raw_ip = (client_ip or "").strip()
+
+    try:
+        ip_obj = ipaddress.ip_address(raw_ip)
+        if (
+            isinstance(ip_obj, ipaddress.IPv4Address)
+            and ip_obj.is_private
+            and not ip_obj.is_loopback
+            and not ip_obj.is_link_local
+        ):
+            octets = raw_ip.split(".")
+            if len(octets) == 4:
+                hints.append(f"{octets[0]}.{octets[1]}.{octets[2]}.0/24")
+                hints.append(f"{octets[0]}.{octets[1]}.0.0/16")
+    except Exception:
+        pass
+
+    hints.extend(["192.168.1.0/24", "192.168.0.0/24", "10.0.0.0/24", "172.16.0.0/24"])
+
+    deduped: list[str] = []
+    for hint in hints:
+        if hint not in deduped:
+            deduped.append(hint)
+    return deduped[:8]
+
+
 def enforce_public_safety(target: str, target_type: str) -> None:
     if not is_public_mode():
         return
@@ -1606,6 +1634,18 @@ def evaluate_version_findings(
 ) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
 
+    normalized_product = (product or "").strip()
+    service_hint = COMMON_SERVICE_NAMES.get(port, "unknown")
+
+    findings.append(
+        {
+            "type": "open_port",
+            "severity": "info",
+            "title": f"Open port {port} ({service_hint})",
+            "evidence": f"Observed service: {normalized_product or service_hint} {version or ''}".strip(),
+        }
+    )
+
     if port in RISKY_PORTS:
         msg, severity = RISKY_PORTS[port]
         findings.append(
@@ -1619,6 +1659,26 @@ def evaluate_version_findings(
 
     product_l = (product or "").lower()
     version_tuple = parse_version_tuple(version)
+
+    if port >= 49152 and port not in COMMON_SERVICE_NAMES:
+        findings.append(
+            {
+                "type": "high_port_exposure",
+                "severity": "medium",
+                "title": "High ephemeral port externally reachable",
+                "evidence": f"Port {port} is open and should be verified as intended.",
+            }
+        )
+
+    if port in {21, 23, 110, 143}:
+        findings.append(
+            {
+                "type": "plaintext_protocol",
+                "severity": "high" if port in {21, 23} else "medium",
+                "title": "Potential plaintext protocol exposure",
+                "evidence": f"Port {port} may expose credentials without transport encryption.",
+            }
+        )
 
     if "openssh" in product_l and version_tuple and version_tuple < (8, 8, 0):
         findings.append(
@@ -1743,6 +1803,18 @@ def gather_passive_intel(target: str) -> dict[str, Any]:
 
     # SSL certificate info (if accessible)
     def get_ssl_cert(host: str, port: int = 443) -> dict[str, Any] | None:
+        def flatten_name(entries: Any) -> dict[str, str]:
+            parsed: dict[str, str] = {}
+            if not isinstance(entries, (list, tuple)):
+                return parsed
+            for group in entries:
+                if not isinstance(group, (list, tuple)):
+                    continue
+                for pair in group:
+                    if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                        parsed[str(pair[0])] = str(pair[1])
+            return parsed
+
         try:
             import ssl
             ctx = ssl.create_default_context()
@@ -1753,8 +1825,8 @@ def gather_passive_intel(target: str) -> dict[str, Any]:
                     cert = ssock.getpeercert()
                     if cert:
                         return {
-                            "subject": dict(x[0] for x in cert.get("subject", [])),
-                            "issuer": dict(x[0] for x in cert.get("issuer", [])),
+                            "subject": flatten_name(cert.get("subject", [])),
+                            "issuer": flatten_name(cert.get("issuer", [])),
                             "version": cert.get("version"),
                             "notBefore": cert.get("notBefore"),
                             "notAfter": cert.get("notAfter"),
@@ -2059,11 +2131,11 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
         timeout_s = 0.9
         max_workers = 32
     elif profile == "deep":
-        timeout_s = 0.42 if port_strategy == "standard" else 0.5
-        max_workers = 120
+        timeout_s = 0.45 if port_strategy == "standard" else 0.62
+        max_workers = 150
     else:
-        timeout_s = 0.35 if port_strategy == "standard" else 0.45
-        max_workers = 180
+        timeout_s = 0.36 if port_strategy == "standard" else 0.5
+        max_workers = 220
 
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
@@ -2104,25 +2176,25 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
-        return "-sn"
+        return "-Pn -n -T4 --open -sS -sV --reason --top-ports 1600 --script=default,safe,banner"
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS --top-ports 400"
+        return "-Pn -T2 --open -sS -sV --top-ports 500 --script=default,safe,banner"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --top-ports 3000 --script=default,safe,banner"
-        return "-Pn -T4 --open -sS -sV --top-ports 1200 --script=default,safe,banner"
+            return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 4000 --script=default,safe,banner"
+        return "-Pn -T4 --open -sS -sV --reason --top-ports 2000 --script=default,safe,banner"
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all -p- --script=default,safe,banner,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --reason -p- --script=default,safe,banner,vuln"
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --top-ports 5000 --script=default,safe,banner,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 6500 --script=default,safe,banner,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --top-ports 3500 --script=default,safe,banner,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 4000 --script=default,safe,banner,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -2134,6 +2206,7 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
     for host in scanner.all_hosts():
         host_state = scanner[host].state()
         hostnames = [item.get("name") for item in scanner[host].get("hostnames", []) if item.get("name")]
+        os_matches = [item.get("name") for item in scanner[host].get("osmatch", []) if item.get("name")][:3]
 
         port_entries: list[dict[str, Any]] = []
         host_findings: list[dict[str, Any]] = []
@@ -2145,6 +2218,9 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                 service_product = data.get("product") or ""
                 service_version = data.get("version") or ""
                 service_name = data.get("name") or "unknown"
+                script_data = data.get("script") or {}
+                banner_parts = [f"{k}: {v}" for k, v in script_data.items() if isinstance(v, str) and v.strip()]
+                banner_text = " | ".join(banner_parts)[:600]
 
                 entry = {
                     "protocol": proto,
@@ -2155,7 +2231,7 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                     "version": service_version,
                     "extra_info": data.get("extrainfo") or "",
                     "cpe": data.get("cpe") or "",
-                    "banner": "",
+                    "banner": banner_text,
                 }
                 port_entries.append(entry)
 
@@ -2165,8 +2241,19 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                             product=service_product or service_name,
                             version=service_version,
                             port=port,
+                            banner=banner_text,
                         )
                     )
+
+        if os_matches:
+            host_findings.append(
+                {
+                    "type": "host_fingerprint",
+                    "severity": "info",
+                    "title": "Host OS fingerprint detected",
+                    "evidence": ", ".join(os_matches),
+                }
+            )
 
         hosts.append(
             {
@@ -2174,6 +2261,7 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                 "state": host_state,
                 "hostnames": hostnames,
                 "reverse_dns": safe_reverse_dns(host),
+                "os_matches": os_matches,
                 "ports": port_entries,
                 "findings": host_findings,
             }
@@ -2302,6 +2390,13 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     cve_items: list[dict[str, Any]] = []
     total_open_ports = 0
     exposed_services = 0
+    intel_data: dict[str, Any] | None = None
+
+    if canonical == "stealth":
+        try:
+            intel_data = gather_passive_intel(target)
+        except Exception as exc:
+            intel_data = {"target": target, "errors": [f"Passive intel failed: {str(exc)[:120]}"]}
 
     for host in nmap_data["hosts"]:
         host_findings = list(host.get("findings", []))
@@ -2414,6 +2509,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
             "cve_candidates": len(dedup_cves),
             "hosts_scanned": len(host_results),
         },
+        "intel": intel_data,
         "total_findings": len(dedup_findings),
     }
 
@@ -2476,6 +2572,13 @@ def client_ip() -> Any:
     forwarded = request.headers.get("X-Forwarded-For", "")
     candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
     return jsonify({"ip": candidate})
+
+
+@app.route("/api/network-hints")
+def network_hints_api() -> Any:
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
+    return jsonify({"hints": suggest_network_hints(candidate), "client_ip": candidate})
 
 
 @app.route("/api/projects", methods=["GET", "POST"])
