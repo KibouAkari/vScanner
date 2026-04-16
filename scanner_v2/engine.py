@@ -131,6 +131,12 @@ class AsyncScannerV2:
                     if not product and protocol_hint:
                         protocol_map = {
                             "ssh": ("OpenSSH", ""),
+                            "smtp": ("SMTP", ""),
+                            "imap": ("IMAP", ""),
+                            "pop3": ("POP3", ""),
+                            "rdp": ("Microsoft RDP", ""),
+                            "smb": ("Samba", ""),
+                            "mqtt": ("MQTT", ""),
                             "postgresql": ("PostgreSQL", str((probe.metadata or {}).get("postgres_version") or "")),
                             "mysql": ("MySQL", str((probe.metadata or {}).get("mysql_version") or "")),
                             "redis": ("Redis", str((probe.metadata or {}).get("redis_version") or "")),

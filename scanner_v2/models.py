@@ -56,6 +56,8 @@ class VulnerabilityFinding:
     cvss: float = 0.0
     host: str = ""
     port: int = 0
+    confidence: str = "medium"
+    asset_criticality: str = "normal"
 
 
 @dataclass(slots=True)

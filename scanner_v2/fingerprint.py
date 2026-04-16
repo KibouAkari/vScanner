@@ -25,6 +25,12 @@ def infer_product_version(text: str) -> tuple[str, str]:
         ("Gunicorn", r"gunicorn[/ ]([\w\.-]+)"),
         ("uvicorn", r"uvicorn[/ ]([\w\.-]+)"),
         ("Node.js", r"node\.js[/ ]([\w\.-]+)"),
+        ("Postfix SMTP", r"postfix(?:\s|/)?([\w\.-]+)?"),
+        ("Exim SMTP", r"exim(?:\s|/)?([\w\.-]+)?"),
+        ("Dovecot", r"dovecot(?:\s|/)?([\w\.-]+)?"),
+        ("Mosquitto MQTT", r"mosquitto(?:\s|/)?([\w\.-]+)?"),
+        ("Samba", r"samba(?:\s|/)?([\w\.-]+)?"),
+        ("Microsoft RDP", r"rdp|terminal services|mstshash"),
         ("PostgreSQL", r"postgres(?:ql)?(?:\s|/)?([\w\.-]+)?"),
         ("MySQL", r"mysql(?:\s|/)?([\w\.-]+)?"),
         ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
@@ -98,6 +104,9 @@ async def probe_tcp_banner(host: str, port: int, timeout_s: float) -> dict[str, 
             587: b"EHLO vscanner.local\r\n",
             6379: b"*1\r\n$4\r\nPING\r\n",
             11211: b"stats\r\n",
+            1883: b"\x10\x16\x00\x04MQTT\x04\x02\x00\x0a\x00\x0avscanner01",
+            3389: b"\x03\x00\x00\x0b\x06\xe0\x00\x00\x00\x00\x00",
+            445: b"\x00\x00\x00\x54\xffSMB\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x26\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x62\x00\x02PC NETWORK PROGRAM 1.0\x00\x02MICROSOFT NETWORKS 1.03\x00\x02NT LM 0.12\x00",
         }
         payload = probes.get(port)
         if payload:
@@ -143,7 +152,23 @@ async def probe_tcp_banner(host: str, port: int, timeout_s: float) -> dict[str, 
         if banner.startswith("SSH-"):
             metadata["protocol"] = "ssh"
 
-        if "+PONG" in banner.upper() or "-ERR" in banner.upper() and port == 6379:
+        if port == 25 and banner:
+            metadata["protocol"] = "smtp"
+        if port in {110, 995} and banner:
+            metadata["protocol"] = "pop3"
+        if port in {143, 993} and banner:
+            metadata["protocol"] = "imap"
+        if port == 3389 and data.startswith(b"\x03\x00"):
+            metadata["protocol"] = "rdp"
+            banner = banner or "RDP protocol handshake observed"
+        if port == 445 and b"SMB" in data:
+            metadata["protocol"] = "smb"
+            banner = banner or "SMB negotiation response observed"
+        if port == 1883 and data[:1] == b"\x20":
+            metadata["protocol"] = "mqtt"
+            banner = banner or "MQTT CONNACK received"
+
+        if ("+PONG" in banner.upper() or "-ERR" in banner.upper()) and port == 6379:
             metadata["protocol"] = "redis"
 
         if port in {80, 8080, 8081, 8443, 8888, 5000, 3000, 8000, 9000, 9090, 50000}:

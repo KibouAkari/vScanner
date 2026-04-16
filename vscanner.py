@@ -40,6 +40,7 @@ from reportlab.graphics.shapes import String as _GStr
 from urllib3.exceptions import InsecureRequestWarning
 
 from scanner_v2 import run_scan_sync as run_scan_v2_sync
+from scanner_v2.enrichment import enrich_findings_with_external_cve
 from scanner_v2.models import ScanRequest as ScanRequestV2
 from scanner_v2.profiles import DEFAULT_PORTS as V2_DEFAULT_PORTS, get_profile as get_profile_v2
 
@@ -325,6 +326,64 @@ def severity_rank(raw: str) -> int:
 
 def best_severity(a: str, b: str) -> str:
     return a if severity_rank(a) >= severity_rank(b) else b
+
+
+def normalize_confidence(raw: str) -> str:
+    value = (raw or "").strip().lower()
+    if value in {"low", "medium", "high", "verified"}:
+        return value
+    return "medium"
+
+
+def confidence_rank(raw: str) -> int:
+    return {"low": 1, "medium": 2, "high": 3, "verified": 4}.get(normalize_confidence(raw), 2)
+
+
+def normalize_asset_criticality(raw: str) -> str:
+    value = (raw or "").strip().lower()
+    if value in {"low", "normal", "high", "critical"}:
+        return value
+    return "normal"
+
+
+def asset_criticality_rank(raw: str) -> int:
+    return {"low": 1, "normal": 2, "high": 3, "critical": 4}.get(normalize_asset_criticality(raw), 2)
+
+
+def infer_asset_criticality(host: str, port: int, finding_type: str, title: str) -> str:
+    host_l = (host or "").lower()
+    title_l = (title or "").lower()
+    finding_type_l = (finding_type or "").lower()
+
+    if any(x in host_l for x in ["prod", "payment", "auth", "identity", "db", "vault"]):
+        return "critical"
+
+    if port in {22, 3389, 5432, 3306, 6379, 27017, 9200, 11211, 2375, 445}:
+        return "high"
+
+    if "cve" in finding_type_l or "exposed" in title_l or "outdated" in title_l:
+        return "high"
+
+    if port in {80, 443, 8080, 8443, 9090}:
+        return "normal"
+
+    return "low"
+
+
+def infer_finding_confidence(evidence: str, cve: str, banner: str = "") -> str:
+    ev = (evidence or "").lower()
+    bn = (banner or "").lower()
+    cve_id = (cve or "").strip().upper()
+
+    if cve_id.startswith("CVE-"):
+        return "high"
+    if any(token in ev for token in ["version", "banner", "server:", "x-powered-by", "tls", "http/"]):
+        return "high"
+    if any(token in bn for token in ["ssh-", "http/", "nginx", "apache", "redis", "mysql", "postgres"]):
+        return "high"
+    if ev and ev != "-":
+        return "medium"
+    return "low"
 
 
 def finding_vuln_key(finding: dict[str, Any]) -> str:
@@ -3011,6 +3070,9 @@ def _probe_port_banner(sock: socket.socket, host_or_ip: str, port: int) -> str:
         587: b"EHLO vscanner.local\r\n",
         6379: b"*1\r\n$4\r\nPING\r\n",
         11211: b"stats\r\n",
+        1883: b"\x10\x16\x00\x04MQTT\x04\x02\x00\x0a\x00\x0avscanner01",
+        3389: b"\x03\x00\x00\x0b\x06\xe0\x00\x00\x00\x00\x00",
+        445: b"\x00\x00\x00\x54\xffSMB\x72\x00\x00\x00\x00\x18\x53\xc8\x00\x26\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x62\x00\x02PC NETWORK PROGRAM 1.0\x00\x02MICROSOFT NETWORKS 1.03\x00\x02NT LM 0.12\x00",
     }
 
     try:
@@ -3041,6 +3103,12 @@ def _probe_port_banner(sock: socket.socket, host_or_ip: str, port: int) -> str:
                 text = data.decode(errors="ignore").strip()
                 if port == 6379 and text and ("PONG" in text.upper() or "ERR" in text.upper()):
                     return f"Redis {text}"
+                if port == 1883 and data[:1] == b"\x20":
+                    return "MQTT CONNACK received"
+                if port == 3389 and data.startswith(b"\x03\x00"):
+                    return "RDP protocol handshake observed"
+                if port == 445 and b"SMB" in data:
+                    return "SMB negotiation response observed"
                 return text
         data = sock.recv(256)
         if data:
@@ -3088,12 +3156,22 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
                 service_name = "ssh"
             elif "smtp" in banner_l:
                 service_name = "smtp"
+            elif "imap" in banner_l:
+                service_name = "imap"
+            elif "pop3" in banner_l:
+                service_name = "pop3"
             elif "redis" in banner_l:
                 service_name = "redis"
             elif "mysql" in banner_l:
                 service_name = "mysql"
             elif "postgres" in banner_l:
                 service_name = "postgresql"
+            elif "mqtt" in banner_l:
+                service_name = "mqtt"
+            elif "smb" in banner_l:
+                service_name = "smb"
+            elif "rdp" in banner_l or "terminal" in banner_l:
+                service_name = "rdp"
             elif "tls" in banner_l:
                 service_name = "tls-service"
 
@@ -3351,7 +3429,12 @@ def compute_risk_level(summary: dict[str, int]) -> str:
     return "low"
 
 
-def compute_true_risk_score(summary: dict[str, int], open_ports: int, cve_candidates: int) -> float:
+def compute_true_risk_score(
+    summary: dict[str, int],
+    open_ports: int,
+    cve_candidates: int,
+    findings: list[dict[str, Any]] | None = None,
+) -> float:
     weighted = (
         summary.get("critical", 0) * 22
         + summary.get("high", 0) * 12
@@ -3360,7 +3443,20 @@ def compute_true_risk_score(summary: dict[str, int], open_ports: int, cve_candid
     )
     attack_surface = min(open_ports, 80) * 0.35
     cve_pressure = cve_candidates * 4.5
-    score = min(100.0, weighted + attack_surface + cve_pressure)
+    contextual_risk = 0.0
+
+    if findings:
+        sev_weight = {"critical": 12.0, "high": 7.0, "medium": 3.5, "low": 1.4, "info": 0.4}
+        crit_factor = {"low": 0.85, "normal": 1.0, "high": 1.22, "critical": 1.45}
+        conf_factor = {"low": 0.78, "medium": 1.0, "high": 1.16, "verified": 1.28}
+
+        for item in findings:
+            sev = normalize_severity(str(item.get("severity", "low")))
+            crit = normalize_asset_criticality(str(item.get("asset_criticality", "normal")))
+            conf = normalize_confidence(str(item.get("confidence", "medium")))
+            contextual_risk += sev_weight[sev] * crit_factor[crit] * conf_factor[conf]
+
+    score = min(100.0, weighted + attack_surface + cve_pressure + contextual_risk * 0.45)
     return round(score, 1)
 
 
@@ -3399,6 +3495,12 @@ def deduplicate_finding_items(items: list[dict[str, Any]]) -> list[dict[str, Any
             dedup[key] = item
         else:
             current["severity"] = best_severity(str(current.get("severity", "low")), str(item.get("severity", "low")))
+            if confidence_rank(str(item.get("confidence", "medium"))) > confidence_rank(str(current.get("confidence", "medium"))):
+                current["confidence"] = normalize_confidence(str(item.get("confidence", "medium")))
+            if asset_criticality_rank(str(item.get("asset_criticality", "normal"))) > asset_criticality_rank(
+                str(current.get("asset_criticality", "normal"))
+            ):
+                current["asset_criticality"] = normalize_asset_criticality(str(item.get("asset_criticality", "normal")))
     return sorted(dedup.values(), key=lambda x: severity_rank(str(x.get("severity", "low"))), reverse=True)
 
 
@@ -3501,6 +3603,18 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         for finding in host_findings:
             if finding.get("type") == "exposed_port":
                 exposed_services += 1
+
+            finding_confidence = infer_finding_confidence(
+                evidence=str(finding.get("evidence", "")),
+                cve=str(finding.get("cve", "")),
+            )
+            finding_criticality = infer_asset_criticality(
+                host=str(host.get("host", "-")),
+                port=int(finding.get("port") or 0),
+                finding_type=str(finding.get("type", "-")),
+                title=str(finding.get("title", "")),
+            )
+
             if finding.get("type") == "cve_candidate":
                 cve_items.append(
                     {
@@ -3509,6 +3623,8 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                         "title": finding.get("title", "Potential CVE"),
                         "evidence": finding.get("evidence", "-"),
                         "severity": normalize_severity(str(finding.get("severity", "medium"))),
+                        "confidence": finding_confidence,
+                        "asset_criticality": finding_criticality,
                     }
                 )
             finding_items.append(
@@ -3519,6 +3635,8 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                     "evidence": finding.get("evidence", "-"),
                     "type": finding.get("type", "-"),
                     "cve": finding.get("cve", ""),
+                    "confidence": finding_confidence,
+                    "asset_criticality": finding_criticality,
                 }
             )
         host_results.append(
@@ -3535,8 +3653,11 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(finding_items)
+    dedup_findings, external_cves = enrich_findings_with_external_cve(dedup_findings, max_queries=8, timeout_s=2.4)
+    if external_cves:
+        cve_items.extend(external_cves)
     dedup_cves = deduplicate_cves(cve_items)
-    true_risk_score = compute_true_risk_score(risk_summary, total_open_ports, len(dedup_cves))
+    true_risk_score = compute_true_risk_score(risk_summary, total_open_ports, len(dedup_cves), findings=dedup_findings)
 
     return {
         "meta": {
@@ -3629,6 +3750,19 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     host_findings: list[dict[str, Any]] = []
     cve_items: list[dict[str, Any]] = []
     for finding in findings:
+        confidence = normalize_confidence(str(finding.get("confidence") or infer_finding_confidence(str(finding.get("evidence", "")), str(finding.get("cve", "")))))
+        asset_criticality = normalize_asset_criticality(
+            str(
+                finding.get("asset_criticality")
+                or infer_asset_criticality(
+                    host=target,
+                    port=int(finding.get("port") or 0),
+                    finding_type=str(finding.get("plugin_id", "plugin_check")),
+                    title=str(finding.get("title", "")),
+                )
+            )
+        )
+
         item = {
             "host": target,
             "severity": normalize_severity(str(finding.get("severity", "low"))),
@@ -3636,6 +3770,8 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             "evidence": str(finding.get("evidence", "-")),
             "type": str(finding.get("plugin_id", "plugin_check")),
             "cve": str(finding.get("cve", "")),
+            "confidence": confidence,
+            "asset_criticality": asset_criticality,
         }
         host_findings.append(item)
         if item["cve"]:
@@ -3643,7 +3779,12 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
 
     risk_summary = build_risk_summary(host_findings)
     risk_level = compute_risk_level(risk_summary)
-    risk_score = compute_true_risk_score(risk_summary, len(open_ports), len(cve_items))
+    dedup_findings = deduplicate_finding_items(host_findings)
+    dedup_findings, external_cves = enrich_findings_with_external_cve(dedup_findings, max_queries=8, timeout_s=2.4)
+    if external_cves:
+        cve_items.extend(external_cves)
+    dedup_cves = deduplicate_cves(cve_items)
+    risk_score = compute_true_risk_score(risk_summary, len(open_ports), len(dedup_cves), findings=dedup_findings)
 
     host_entry = {
         "host": target,
@@ -3691,18 +3832,18 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             "summary": result_json.get("stats", {}),
         },
         "hosts": [host_entry],
-        "finding_items": deduplicate_finding_items(host_findings),
-        "cve_items": deduplicate_cves(cve_items),
+        "finding_items": dedup_findings,
+        "cve_items": dedup_cves,
         "risk_summary": risk_summary,
         "true_risk_score": risk_score,
         "metrics": {
             "open_ports": len(open_ports),
             "exposed_services": sum(1 for f in host_findings if "exposed" in str(f.get("title", "")).lower()),
-            "cve_candidates": len(deduplicate_cves(cve_items)),
+            "cve_candidates": len(dedup_cves),
             "hosts_scanned": 1,
         },
         "intel": None,
-        "total_findings": len(deduplicate_finding_items(host_findings)),
+        "total_findings": len(dedup_findings),
     }
 
 
