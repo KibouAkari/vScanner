@@ -2738,10 +2738,44 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if response.headers.get("Strict-Transport-Security") is None and scheme == "https":
             findings.append(
                 {
-                    "type": "hardening_gap",
+                    "type": "core.http_hardening",
                     "severity": "low",
-                    "title": "HSTS header missing",
+                    "title": "Missing HSTS on HTTPS endpoint",
                     "evidence": "HTTPS endpoint does not set Strict-Transport-Security.",
+                }
+            )
+
+        csp_header = response.headers.get("Content-Security-Policy") or ""
+        if not csp_header:
+            findings.append(
+                {
+                    "type": "core.http_hardening",
+                    "severity": "medium",
+                    "title": "Missing Content-Security-Policy header",
+                    "evidence": "HTTP response did not include a CSP header.",
+                }
+            )
+
+        xcto = (response.headers.get("X-Content-Type-Options") or "").lower()
+        if xcto != "nosniff":
+            findings.append(
+                {
+                    "type": "core.http_hardening",
+                    "severity": "low",
+                    "title": "Missing X-Content-Type-Options header",
+                    "evidence": "HTTP response did not include X-Content-Type-Options: nosniff.",
+                }
+            )
+
+        xfo_header = response.headers.get("X-Frame-Options")
+        has_frame_ancestors = "frame-ancestors" in csp_header.lower()
+        if not xfo_header and not has_frame_ancestors:
+            findings.append(
+                {
+                    "type": "core.http_hardening",
+                    "severity": "low",
+                    "title": "Missing anti-clickjacking header",
+                    "evidence": "Neither X-Frame-Options nor frame-ancestors CSP directive was observed.",
                 }
             )
 
@@ -2900,6 +2934,7 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
 
         ranges = set(base_common)
         ranges.update(range(1, range_cap + 1))
+        ranges.update(range(6900, 6912))
         if port_strategy == "aggressive":
             ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565, 25655, 32400, 50000])
         return sorted(ranges)
@@ -3956,6 +3991,7 @@ def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
 
         ranges = set(base)
         ranges.update(range(1, range_cap + 1))
+        ranges.update(range(6900, 6912))
         if port_strategy == "aggressive":
             ranges.update([2222, 12222, 18080, 2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
         return sorted(set(p for p in ranges if 1 <= int(p) <= 65535))
@@ -3991,7 +4027,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         target=target,
         ports=ports,
         profile=get_profile_v2(profile_v2),
-        enable_service_fingerprinting=not IS_SERVERLESS,
+        enable_service_fingerprinting=True,
         enable_vuln_plugins=not IS_SERVERLESS,
     )
     result_v2 = run_scan_v2_sync(req)
@@ -4002,6 +4038,54 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
 
     host_findings: list[dict[str, Any]] = []
     cve_items: list[dict[str, Any]] = []
+
+    for port_entry in open_ports:
+        port_num = int(port_entry.get("port") or 0)
+        product = str(port_entry.get("product") or port_entry.get("service") or "")
+        version = str(port_entry.get("version") or "")
+        banner = str(port_entry.get("banner") or "")
+        host_findings.extend(
+            evaluate_version_findings(
+                product=product,
+                version=version,
+                port=port_num,
+                banner=banner,
+            )
+        )
+
+    web_evidence: list[dict[str, Any]] = []
+    web_ports = [
+        {
+            "port": int(p.get("port") or 0),
+            "name": str(p.get("service") or "unknown"),
+            "product": str(p.get("product") or ""),
+            "banner": str(p.get("banner") or ""),
+        }
+        for p in open_ports
+    ]
+    web_port_entries = [entry for entry in web_ports if is_likely_web_port(entry)]
+    if web_port_entries:
+        probe_limit = 3 if IS_SERVERLESS else len(web_port_entries)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as probe_pool:
+            probe_futures = {
+                probe_pool.submit(probe_http_service, target, entry["port"]): entry["port"]
+                for entry in web_port_entries[:probe_limit]
+            }
+            done, pending = concurrent.futures.wait(
+                list(probe_futures.keys()),
+                timeout=6 if IS_SERVERLESS else 12,
+            )
+            for future in done:
+                try:
+                    web_result = future.result()
+                    if web_result:
+                        web_evidence.append({"port": probe_futures[future], **web_result})
+                        host_findings.extend(web_result.get("findings", []))
+                except Exception:
+                    pass
+            for future in pending:
+                future.cancel()
+
     for finding in findings:
         confidence = normalize_confidence(str(finding.get("confidence") or infer_finding_confidence(str(finding.get("evidence", "")), str(finding.get("cve", "")))))
         asset_criticality = normalize_asset_criticality(
@@ -4065,7 +4149,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             for p in open_ports
         ],
         "findings": host_findings,
-        "web_evidence": [],
+        "web_evidence": web_evidence,
         "finding_count": len(host_findings),
         "open_port_count": len(open_ports),
     }
