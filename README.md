@@ -34,6 +34,25 @@ vScanner provides a full reporting flow from first scan to executive dashboard v
 - Aggregated findings view with filtering, sorting, and asset impact context
 - One-click report exports in PDF and CSV for audits and stakeholder communication
 
+### Live Report Preview
+
+These are live snapshots of the deployed application for a professional project showcase.
+
+<p>
+  <strong>Dashboard Overview</strong><br/>
+  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app" alt="vScanner live dashboard overview" />
+</p>
+
+<p>
+  <strong>Project Risk Dashboard (API-backed view)</strong><br/>
+  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app/api/projects/default/dashboard?window_days=30" alt="vScanner live project dashboard response" />
+</p>
+
+<p>
+  <strong>Reports Index (Live Data)</strong><br/>
+  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app/api/reports" alt="vScanner live reports endpoint preview" />
+</p>
+
 Production links:
 
 - Live UI: `https://vscanner.vercel.app`
