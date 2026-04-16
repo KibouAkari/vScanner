@@ -1401,12 +1401,12 @@ function renderServiceInventory(items) {
         .join("");
 }
 
-function renderPortIntelligence(serviceInventory) {
+function renderPortIntelligence(inventoryItems) {
     const el = document.getElementById("portIntelList");
     if (!el) return;
     // Build a flat port→service→count mapping from service_inventory
     const portMap = new Map();
-    (serviceInventory || []).forEach((item) => {
+    (inventoryItems || []).forEach((item) => {
         (item.ports || []).forEach((p) => {
             const key = String(p);
             if (!portMap.has(key)) portMap.set(key, { service: item.service || "unknown", count: 0 });
@@ -1592,9 +1592,6 @@ function applyLanguage(lang) {
     projectPdfButton.textContent = text.projectPdf;
     reportCsvButton.textContent = text.reportCsv;
     reportPdfButton.textContent = text.reportPdf;
-    if (sidebarToggle) {
-        sidebarToggle.textContent = text.toggleMenu || I18N.en.toggleMenu || "Menu";
-    }
     if (resetProjectButton) {
         resetProjectButton.textContent = text.resetProject || I18N.en.resetProject || "Reset Current Project";
     }
