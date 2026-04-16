@@ -234,6 +234,15 @@ else:
 
 IS_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("VSCANNER_SERVERLESS"))
 
+SERVERLESS_LIGHT_PORT_CAP = 1200
+SERVERLESS_LIGHT_AGGRESSIVE_CAP = 2200
+SERVERLESS_DEEP_PORT_CAP = 2200
+SERVERLESS_DEEP_AGGRESSIVE_CAP = 3200
+SERVERLESS_V2_LIGHT_PORT_CAP = 700
+SERVERLESS_V2_LIGHT_AGGRESSIVE_CAP = 1300
+SERVERLESS_V2_DEEP_PORT_CAP = 1200
+SERVERLESS_V2_DEEP_AGGRESSIVE_CAP = 2200
+
 MONGO_CLIENT: Any = None
 
 DB_READY = False
@@ -2883,6 +2892,18 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         ]
         return sorted(set(stealth_ports))
 
+    if IS_SERVERLESS:
+        if profile == "deep":
+            range_cap = SERVERLESS_DEEP_AGGRESSIVE_CAP if port_strategy == "aggressive" else SERVERLESS_DEEP_PORT_CAP
+        else:
+            range_cap = SERVERLESS_LIGHT_AGGRESSIVE_CAP if port_strategy == "aggressive" else SERVERLESS_LIGHT_PORT_CAP
+
+        ranges = set(base_common)
+        ranges.update(range(1, range_cap + 1))
+        if port_strategy == "aggressive":
+            ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565, 25655, 32400, 50000])
+        return sorted(ranges)
+
     ranges = set(base_common)
     if profile == "deep":
         ranges.update(range(1, 8193))
@@ -3406,12 +3427,21 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
         timeout_s = 1.15 if port_strategy == "standard" else 1.35
         max_workers = 48
     elif profile == "deep":
-        timeout_s = 0.95 if port_strategy == "standard" else 1.15
-        max_workers = 180
+        if IS_SERVERLESS:
+            timeout_s = 0.78 if port_strategy == "standard" else 0.92
+            max_workers = 84
+        else:
+            timeout_s = 0.95 if port_strategy == "standard" else 1.15
+            max_workers = 180
     else:
-        timeout_s = 0.85 if port_strategy == "standard" else 1.05
-        max_workers = 180
-    for ip_s in ips[:4]:
+        if IS_SERVERLESS:
+            timeout_s = 0.72 if port_strategy == "standard" else 0.86
+            max_workers = 72
+        else:
+            timeout_s = 0.85 if port_strategy == "standard" else 1.05
+            max_workers = 180
+    ip_limit = 2 if IS_SERVERLESS else 4
+    for ip_s in ips[:ip_limit]:
         host_findings: list[dict[str, Any]] = []
         port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
 
@@ -3918,6 +3948,18 @@ def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
             )
         )
 
+    if IS_SERVERLESS:
+        if canonical == "deep":
+            range_cap = SERVERLESS_V2_DEEP_AGGRESSIVE_CAP if port_strategy == "aggressive" else SERVERLESS_V2_DEEP_PORT_CAP
+        else:
+            range_cap = SERVERLESS_V2_LIGHT_AGGRESSIVE_CAP if port_strategy == "aggressive" else SERVERLESS_V2_LIGHT_PORT_CAP
+
+        ranges = set(base)
+        ranges.update(range(1, range_cap + 1))
+        if port_strategy == "aggressive":
+            ranges.update([2222, 12222, 18080, 2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
+        return sorted(set(p for p in ranges if 1 <= int(p) <= 65535))
+
     if canonical == "light":
         cap = 8192 if port_strategy == "aggressive" else 4096
         base.extend(range(1, cap + 1))
@@ -3949,8 +3991,8 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         target=target,
         ports=ports,
         profile=get_profile_v2(profile_v2),
-        enable_service_fingerprinting=True,
-        enable_vuln_plugins=True,
+        enable_service_fingerprinting=not IS_SERVERLESS,
+        enable_vuln_plugins=not IS_SERVERLESS,
     )
     result_v2 = run_scan_v2_sync(req)
     result_json = result_v2.to_dict()
@@ -3991,7 +4033,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     risk_summary = build_risk_summary(host_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(host_findings)
-    cve_query_budget = 12 if port_strategy == "standard" else 20
+    cve_query_budget = 6 if IS_SERVERLESS else (12 if port_strategy == "standard" else 20)
     dedup_findings, external_cves = enrich_findings_with_external_cve(
         dedup_findings,
         max_queries=cve_query_budget,

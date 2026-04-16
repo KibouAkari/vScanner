@@ -586,6 +586,8 @@ function openConfirmDialog({ title, message, phrase }) {
             return;
         }
 
+        const lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
         const safePhrase = String(phrase || "").trim();
         confirmModalTitle.textContent = title || t("confirmAction");
         confirmModalMessage.textContent = message || "";
@@ -596,11 +598,18 @@ function openConfirmDialog({ title, message, phrase }) {
         confirmModalOk.textContent = t("confirmProceed");
 
         const close = (accepted) => {
+            const focusedInsideModal = confirmModal.contains(document.activeElement);
+            if (focusedInsideModal && document.activeElement instanceof HTMLElement) {
+                document.activeElement.blur();
+            }
             confirmModal.classList.add("hidden");
             confirmModal.setAttribute("aria-hidden", "true");
             confirmPhraseInput.removeEventListener("input", onInput);
             confirmModalCancel.removeEventListener("click", onCancel);
             confirmModalOk.removeEventListener("click", onOk);
+            if (lastFocused && document.contains(lastFocused)) {
+                window.setTimeout(() => lastFocused.focus(), 0);
+            }
             resolve(accepted);
         };
 
@@ -1415,17 +1424,16 @@ function renderPortIntelligence(inventoryItems) {
     });
     const sorted = [...portMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
     if (!sorted.length) {
-        el.innerHTML = `<div class="port-intel-item"><span class="port-intel-service" style="color:var(--muted)">No port data yet — run a scan to populate.</span></div>`;
+        el.innerHTML = `<div class="port-intel-item port-intel-empty"><span class="port-intel-service">No port data yet - run a scan to populate.</span></div>`;
         return;
     }
     const maxCount = sorted[0][1].count || 1;
     el.innerHTML = sorted.map(([port, info]) => {
-        const pct = Math.round((info.count / maxCount) * 100);
         const svc = info.service.length > 22 ? info.service.slice(0, 20) + "…" : info.service;
         return `<div class="port-intel-item">
             <span class="port-intel-port">${esc(port)}</span>
             <span class="port-intel-service">${esc(svc)}</span>
-            <div class="port-intel-bar-wrap"><div class="port-intel-bar" style="width:${pct}%"></div></div>
+            <div class="port-intel-bar-wrap"><progress class="port-intel-bar" max="${maxCount}" value="${Math.max(0, Number(info.count) || 0)}"></progress></div>
             <span class="port-intel-count">${esc(info.count)}</span>
         </div>`;
     }).join("");

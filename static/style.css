@@ -357,10 +357,27 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 .port-intel-list { display: grid; gap: 0.35rem; max-height: clamp(200px, 30vh, 320px); overflow: auto; }
 .port-intel-item { display: flex; align-items: center; gap: 0.55rem; padding: 0.4rem 0.5rem; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); background: rgba(8,16,28,0.7); transition: all 0.18s ease; }
 .port-intel-item:hover { border-color: rgba(90,168,255,0.35); background: rgba(90,168,255,0.04); }
+.port-intel-item.port-intel-empty .port-intel-service { color: var(--muted); }
 .port-intel-port { font-family: ui-monospace, monospace; font-size: 0.77rem; font-weight: 700; color: var(--secondary); min-width: 44px; }
 .port-intel-service { font-size: 0.78rem; color: var(--text); flex: 1; }
 .port-intel-bar-wrap { width: 72px; height: 5px; background: rgba(130,165,210,0.15); border-radius: 999px; overflow: hidden; flex-shrink: 0; }
-.port-intel-bar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--secondary), var(--primary)); transition: width 0.5s ease; }
+.port-intel-bar {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  appearance: none;
+}
+.port-intel-bar::-webkit-progress-bar { background: transparent; }
+.port-intel-bar::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--secondary), var(--primary));
+}
+.port-intel-bar::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--secondary), var(--primary));
+}
 .port-intel-count { font-size: 0.7rem; color: var(--muted); min-width: 22px; text-align: right; }
 
 /* Heatmap */
