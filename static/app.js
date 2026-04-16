@@ -22,6 +22,10 @@ const serviceInventory = document.getElementById("serviceInventory");
 const trendChart = document.getElementById("trendChart");
 const riskChart = document.getElementById("riskChart");
 const severityStackChart = document.getElementById("severityStackChart");
+const severityMiniChart = document.getElementById("severityMiniChart");
+const severityMiniWrap = document.getElementById("severityMiniWrap");
+const severityTimelinePanel = document.getElementById("severityTimelinePanel");
+const severityTimelineMode = document.getElementById("severityTimelineMode");
 const riskLegend = document.getElementById("riskLegend");
 const severityHeatmap = document.getElementById("severityHeatmap");
 const topVulns = document.getElementById("topVulns");
@@ -71,6 +75,8 @@ let lastReportId = null;
 let trendChartInstance = null;
 let riskChartInstance = null;
 let severityStackChartInstance = null;
+let severityMiniChartInstance = null;
+let severityTimelinePoints = [];
 const historyCache = new Map();
 
 const I18N = {
@@ -177,6 +183,9 @@ const I18N = {
         riskDistributionTitle: "Risikoverteilung",
         topVulnerabilitiesTitle: "Top-Schwachstellen",
         severityTimelineTitle: "Schweregrad-Zeitlinie (Executive)",
+        severityTimelineModeLabel: "Ansicht",
+        severityTimelineModePercent: "100% gestapelt",
+        severityTimelineModeAbsoluteMini: "Absolut + Minimap",
         severityHeatmapTitle: "Schweregrad-Heatmap",
         recentScansTitle: "Letzte Scans",
         exposureSnapshotTitle: "Exposure-Snapshot",
@@ -294,6 +303,9 @@ const I18N = {
         riskDistributionTitle: "Risk Distribution",
         topVulnerabilitiesTitle: "Top Vulnerabilities",
         severityTimelineTitle: "Severity Timeline (Executive)",
+        severityTimelineModeLabel: "View",
+        severityTimelineModePercent: "100% Stacked",
+        severityTimelineModeAbsoluteMini: "Absolute + Minimap",
         severityHeatmapTitle: "Severity Heatmap",
         recentScansTitle: "Recent Scans",
         exposureSnapshotTitle: "Exposure Snapshot",
@@ -792,15 +804,173 @@ function drawSeverityStack(points) {
         return;
     }
 
+    const mode = severityTimelineMode?.value === "absolute_minimap" ? "absolute_minimap" : "percent_stacked";
+    localStorage.setItem("vscanner.severityTimelineMode", mode);
+
     if (severityStackChartInstance) {
         severityStackChartInstance.destroy();
     }
+    if (severityMiniChartInstance) {
+        severityMiniChartInstance.destroy();
+    }
 
-    const labels = points.map((item) => String(item.created_at || "").slice(5, 10));
-    const critical = points.map((item) => Number(item.critical || 0));
-    const high = points.map((item) => Number(item.high || 0));
-    const medium = points.map((item) => Number(item.medium || 0));
-    const low = points.map((item) => Number(item.low || 0));
+    const safePoints = Array.isArray(points) && points.length
+        ? points
+        : [{ created_at: "", critical: 0, high: 0, medium: 0, low: 0 }];
+
+    const labels = safePoints.map((item) => String(item.created_at || "").slice(5, 10) || "-");
+    const criticalAbs = safePoints.map((item) => Number(item.critical || 0));
+    const highAbs = safePoints.map((item) => Number(item.high || 0));
+    const mediumAbs = safePoints.map((item) => Number(item.medium || 0));
+    const lowAbs = safePoints.map((item) => Number(item.low || 0));
+    const totals = safePoints.map((_, idx) => criticalAbs[idx] + highAbs[idx] + mediumAbs[idx] + lowAbs[idx]);
+
+    if (mode === "absolute_minimap") {
+        severityTimelinePanel?.classList.add("minimap-enabled");
+        if (severityMiniWrap) {
+            severityMiniWrap.style.display = "block";
+        }
+
+        severityStackChartInstance = new window.Chart(severityStackChart, {
+            type: "line",
+            data: {
+                labels,
+                datasets: [
+                    {
+                        label: "Critical",
+                        data: criticalAbs,
+                        borderColor: "rgba(255,93,115,0.95)",
+                        backgroundColor: "rgba(255,93,115,0.16)",
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                    },
+                    {
+                        label: "High",
+                        data: highAbs,
+                        borderColor: "rgba(255,195,92,0.95)",
+                        backgroundColor: "rgba(255,195,92,0.16)",
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                    },
+                    {
+                        label: "Medium",
+                        data: mediumAbs,
+                        borderColor: "rgba(103,185,255,0.95)",
+                        backgroundColor: "rgba(103,185,255,0.16)",
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                    },
+                    {
+                        label: "Low",
+                        data: lowAbs,
+                        borderColor: "rgba(76,221,136,0.95)",
+                        backgroundColor: "rgba(76,221,136,0.16)",
+                        fill: false,
+                        tension: 0.3,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                    },
+                ],
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: {
+                    duration: 950,
+                    easing: "easeOutQuart",
+                },
+                interaction: {
+                    mode: "index",
+                    intersect: false,
+                },
+                plugins: {
+                    legend: {
+                        position: "bottom",
+                        labels: {
+                            color: "#dce9f7",
+                            usePointStyle: true,
+                            boxWidth: 10,
+                            boxHeight: 10,
+                            padding: 14,
+                        },
+                    },
+                },
+                scales: {
+                    x: {
+                        ticks: { color: "#9bb4cb", maxTicksLimit: 10 },
+                        grid: { color: "rgba(126,161,198,0.1)" },
+                    },
+                    y: {
+                        beginAtZero: true,
+                        ticks: { color: "#9bb4cb" },
+                        grid: { color: "rgba(126,161,198,0.14)" },
+                    },
+                },
+            },
+        });
+
+        if (severityMiniChart) {
+            severityMiniChartInstance = new window.Chart(severityMiniChart, {
+                type: "line",
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: "Total",
+                            data: totals,
+                            borderColor: "rgba(103,185,255,0.95)",
+                            backgroundColor: "rgba(103,185,255,0.22)",
+                            fill: true,
+                            tension: 0.35,
+                            pointRadius: 0,
+                            borderWidth: 1.6,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: {
+                        duration: 750,
+                        easing: "easeOutQuad",
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { enabled: false },
+                    },
+                    scales: {
+                        x: { display: false, grid: { display: false } },
+                        y: { display: false, grid: { display: false }, beginAtZero: true },
+                    },
+                },
+            });
+        }
+        return;
+    }
+
+    severityTimelinePanel?.classList.remove("minimap-enabled");
+    if (severityMiniWrap) {
+        severityMiniWrap.style.display = "none";
+    }
+
+    const pct = safePoints.map((_, idx) => {
+        const total = totals[idx] || 0;
+        if (!total) {
+            return { critical: 0, high: 0, medium: 0, low: 0 };
+        }
+        return {
+            critical: (criticalAbs[idx] / total) * 100,
+            high: (highAbs[idx] / total) * 100,
+            medium: (mediumAbs[idx] / total) * 100,
+            low: (lowAbs[idx] / total) * 100,
+        };
+    });
 
     severityStackChartInstance = new window.Chart(severityStackChart, {
         type: "line",
@@ -809,7 +979,8 @@ function drawSeverityStack(points) {
             datasets: [
                 {
                     label: "Critical",
-                    data: critical,
+                    data: pct.map((item) => Number(item.critical.toFixed(2))),
+                    absoluteData: criticalAbs,
                     borderColor: "rgba(255,93,115,0.95)",
                     backgroundColor: "rgba(255,93,115,0.28)",
                     fill: true,
@@ -820,7 +991,8 @@ function drawSeverityStack(points) {
                 },
                 {
                     label: "High",
-                    data: high,
+                    data: pct.map((item) => Number(item.high.toFixed(2))),
+                    absoluteData: highAbs,
                     borderColor: "rgba(255,195,92,0.95)",
                     backgroundColor: "rgba(255,195,92,0.28)",
                     fill: true,
@@ -831,7 +1003,8 @@ function drawSeverityStack(points) {
                 },
                 {
                     label: "Medium",
-                    data: medium,
+                    data: pct.map((item) => Number(item.medium.toFixed(2))),
+                    absoluteData: mediumAbs,
                     borderColor: "rgba(103,185,255,0.95)",
                     backgroundColor: "rgba(103,185,255,0.25)",
                     fill: true,
@@ -842,7 +1015,8 @@ function drawSeverityStack(points) {
                 },
                 {
                     label: "Low",
-                    data: low,
+                    data: pct.map((item) => Number(item.low.toFixed(2))),
+                    absoluteData: lowAbs,
                     borderColor: "rgba(76,221,136,0.95)",
                     backgroundColor: "rgba(76,221,136,0.25)",
                     fill: true,
@@ -881,6 +1055,13 @@ function drawSeverityStack(points) {
                     borderWidth: 1,
                     titleColor: "#e7f2ff",
                     bodyColor: "#d3e5f8",
+                    callbacks: {
+                        label(context) {
+                            const pctValue = Number(context.parsed.y || 0).toFixed(1);
+                            const absValue = context.dataset.absoluteData?.[context.dataIndex] || 0;
+                            return `${context.dataset.label}: ${pctValue}% (${absValue})`;
+                        },
+                    },
                 },
             },
             scales: {
@@ -892,6 +1073,7 @@ function drawSeverityStack(points) {
                 y: {
                     stacked: true,
                     beginAtZero: true,
+                    max: 100,
                     ticks: { color: "#9bb4cb" },
                     grid: { color: "rgba(126,161,198,0.14)" },
                 },
@@ -1075,6 +1257,7 @@ function applyLanguage(lang) {
     setText("riskDistributionTitle", t("riskDistributionTitle"));
     setText("topVulnerabilitiesTitle", t("topVulnerabilitiesTitle"));
     setText("severityTimelineTitle", t("severityTimelineTitle"));
+    setText("severityTimelineModeLabel", text.severityTimelineModeLabel || I18N.en.severityTimelineModeLabel || "View");
     setText("severityHeatmapTitle", t("severityHeatmapTitle"));
     setText("recentScansTitle", t("recentScansTitle"));
     setText("exposureSnapshotTitle", t("exposureSnapshotTitle"));
@@ -1139,6 +1322,12 @@ function applyLanguage(lang) {
     if (dirOptions && dirOptions.length >= 2) {
         dirOptions[0].textContent = text.desc || I18N.en.desc;
         dirOptions[1].textContent = text.asc || I18N.en.asc;
+    }
+
+    const severityTimelineModeOptions = severityTimelineMode?.options;
+    if (severityTimelineModeOptions && severityTimelineModeOptions.length >= 2) {
+        severityTimelineModeOptions[0].textContent = text.severityTimelineModePercent || I18N.en.severityTimelineModePercent || "100% Stacked";
+        severityTimelineModeOptions[1].textContent = text.severityTimelineModeAbsoluteMini || I18N.en.severityTimelineModeAbsoluteMini || "Absolute + Minimap";
     }
 
     modeSelect.options[0].textContent = text.modeDark || I18N.en.modeDark;
@@ -1484,7 +1673,8 @@ async function loadDashboard() {
 
     drawTrend(data.trend || []);
     drawRiskBars(data.risk_distribution || {});
-    drawSeverityStack(data.severity_timeline || []);
+    severityTimelinePoints = data.severity_timeline || [];
+    drawSeverityStack(severityTimelinePoints);
     renderSeverityHeatmap(data.top_vulnerabilities || []);
     renderTopVulns(data.top_vulnerabilities || []);
     renderRecentScans(data.recent_scans || []);
@@ -1757,6 +1947,7 @@ sortDir.addEventListener("change", loadAggregatedFindings);
 languageSelect.addEventListener("change", () => applyLanguage(languageSelect.value));
 modeSelect.addEventListener("change", () => applyMode(modeSelect.value));
 themeSelect.addEventListener("change", () => applyTheme(themeSelect.value));
+severityTimelineMode?.addEventListener("change", () => drawSeverityStack(severityTimelinePoints));
 findingSearch.addEventListener("input", () => {
     window.clearTimeout(window.__findingSearchTimer);
     window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
@@ -1767,9 +1958,13 @@ findingSearch.addEventListener("input", () => {
         const savedMode = localStorage.getItem("vscanner.mode") || "dark";
         const savedTheme = localStorage.getItem("vscanner.theme") || "ocean";
         const savedLanguage = localStorage.getItem("vscanner.language") || "en";
+        const savedTimelineMode = localStorage.getItem("vscanner.severityTimelineMode") || "percent_stacked";
         modeSelect.value = savedMode;
         themeSelect.value = savedTheme;
         languageSelect.value = savedLanguage;
+        if (severityTimelineMode) {
+            severityTimelineMode.value = savedTimelineMode === "absolute_minimap" ? "absolute_minimap" : "percent_stacked";
+        }
         applyMode(savedMode);
         applyTheme(savedTheme);
         applyLanguage(savedLanguage);

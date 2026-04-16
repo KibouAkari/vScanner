@@ -556,6 +556,24 @@ canvas {
     gap: 0.6rem;
 }
 
+.severity-minimap-wrap {
+    position: relative;
+    width: 100%;
+    height: 70px;
+    display: none;
+}
+
+.severity-minimap-wrap canvas {
+    position: absolute !important;
+    inset: 0;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+.stack-panel.minimap-enabled .severity-minimap-wrap {
+    display: block;
+}
+
 .heatmap {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));

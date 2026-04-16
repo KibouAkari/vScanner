@@ -112,10 +112,22 @@
                 </div>
 
                 <div class="exec-grid">
-                    <article class="panel stack-panel">
-                        <h3 id="severityTimelineTitle">Severity Timeline (Executive)</h3>
+                    <article class="panel stack-panel" id="severityTimelinePanel">
+                        <div class="panel-head">
+                            <h3 id="severityTimelineTitle">Severity Timeline (Executive)</h3>
+                            <div class="control-inline">
+                                <label for="severityTimelineMode" id="severityTimelineModeLabel">View</label>
+                                <select id="severityTimelineMode" class="input compact">
+                                    <option value="percent_stacked">100% Stacked</option>
+                                    <option value="absolute_minimap">Absolute + Minimap</option>
+                                </select>
+                            </div>
+                        </div>
                         <div class="chart-wrap">
                             <canvas id="severityStackChart"></canvas>
+                        </div>
+                        <div class="severity-minimap-wrap" id="severityMiniWrap">
+                            <canvas id="severityMiniChart"></canvas>
                         </div>
                     </article>
 
