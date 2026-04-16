@@ -1340,6 +1340,10 @@ function applyLanguage(lang) {
     document.querySelector('.menu-item[data-tab="findings"]').textContent = text.findings;
     document.querySelector('.menu-item[data-tab="history"]').textContent = text.history;
     document.querySelector('.menu-item[data-tab="settings"]').textContent = text.settings;
+        const navNet = document.querySelector('.menu-item[data-tab="network"]');
+        if (navNet) navNet.textContent = text.networkTab || "Network";
+        const navStealth = document.querySelector('.menu-item[data-tab="stealth"]');
+        if (navStealth) navStealth.textContent = text.stealthTab || "Stealth";
     newProjectButton.textContent = text.newProject;
     projectCsvButton.textContent = text.projectCsv;
     projectPdfButton.textContent = text.projectPdf;
@@ -1510,6 +1514,8 @@ function renderFindings(items) {
         .map((item) => {
             const sev = String(item.severity || "low").toLowerCase();
             const assets = (item.assets || []).slice(0, 6).map((asset) => `<span>${esc(asset)}</span>`).join(", ");
+            const conf = String(item.confidence || "medium").toLowerCase();
+            const crit = String(item.asset_criticality || "normal").toLowerCase();
             return `
                 <tr>
                     <td><span class="badge badge-${esc(sev)}">${esc(sev)}</span></td>
@@ -1518,6 +1524,8 @@ function renderFindings(items) {
                     <td>${esc(item.cve || "-")}</td>
                     <td>${esc(item.asset_count || 0)}</td>
                     <td>${esc(item.occurrence_count || 0)}</td>
+                    <td><span class="conf-badge conf-${esc(conf)}">${esc(conf)}</span></td>
+                    <td><span class="crit-badge crit-${esc(crit)}">${esc(crit)}</span></td>
                     <td>${esc(item.evidence || "-")}</td>
                     <td>${assets || "-"}</td>
                     <td>${esc(item.last_seen || "-")}</td>
@@ -1536,6 +1544,8 @@ function renderFindings(items) {
                     <th>CVE</th>
                     <th>${esc(t("affectedAssets"))}</th>
                     <th>${esc(t("occurrences"))}</th>
+                    <th>Confidence</th>
+                    <th>Criticality</th>
                     <th>${esc(t("evidence"))}</th>
                     <th>${esc(t("assetsSample"))}</th>
                     <th>${esc(t("lastSeen"))}</th>
@@ -1794,19 +1804,12 @@ scanForm.addEventListener("submit", async (event) => {
             throw new Error(data.error || "Scan failed");
         }
 
-        if (scannerMode === "stealth_intel" && !data.intel) {
-            try {
-                data.intel = await fetchIntelData(targetForIntel);
-            } catch (_intelError) {
-                // Keep scan results even if passive intel is unavailable.
-            }
-        }
-
         lastReportId = data.report_id;
         reportPdfButton.disabled = false;
         reportCsvButton.disabled = false;
 
-        renderScanResult(data);
+    renderScanResult(data);
+    saveLastScan("standard", data);
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
         activateTab("dashboard");
     } catch (error) {
@@ -1953,6 +1956,188 @@ findingSearch.addEventListener("input", () => {
     window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
 });
 
+// ─── Network Scanner ───────────────────────────────────────────────────────
+const netScanForm = document.getElementById("netScanForm");
+const netScanButton = document.getElementById("netScanButton");
+const netScanError = document.getElementById("netScanError");
+const netScanResult = document.getElementById("netScanResult");
+const netReportPdfButton = document.getElementById("netReportPdfButton");
+const netReportCsvButton = document.getElementById("netReportCsvButton");
+const netHints = document.getElementById("netHints");
+let lastNetReportId = null;
+
+async function renderNetworkPageHints() {
+    if (!netHints) return;
+    const hints = await guessLocalNetworkHints();
+    netHints.innerHTML = hints
+        .map((cidr) => `<button type="button" class="hint-chip hint-chip-net" data-cidr="${esc(cidr)}">${esc(cidr)}</button>`)
+        .join("");
+    netHints.querySelectorAll(".hint-chip-net").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const netTarget = document.getElementById("netTarget");
+            if (netTarget) netTarget.value = btn.dataset.cidr || "";
+        });
+    });
+}
+
+function updateNetStats(data) {
+    const hosts = data.metrics?.hosts_scanned ?? (data.hosts?.length ?? "—");
+    const ports = data.metrics?.open_ports ?? "—";
+    const services = data.hosts ? data.hosts.reduce((a, h) => a + (h.services?.length || 0), 0) : "—";
+    const risk = data.true_risk_score ?? "—";
+    const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+    el("netStatHosts", hosts);
+    el("netStatPorts", ports);
+    el("netStatServices", services);
+    el("netStatRisk", typeof risk === "number" ? risk.toFixed(1) : risk);
+}
+
+netScanForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    netScanError?.classList.add("hidden");
+    const cidr = document.getElementById("netTarget")?.value?.trim() || "";
+    const depth = document.getElementById("netPortStrategy")?.value || "standard";
+    if (!cidr) { netScanError.textContent = "CIDR target required."; netScanError.classList.remove("hidden"); return; }
+
+    netScanButton.disabled = true;
+    netScanButton.textContent = "Scanning…";
+    if (netScanResult) netScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Mapping network…</span></div>';
+
+    try {
+        const resp = await fetch("/api/scan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId }),
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || "Network scan failed");
+        lastNetReportId = data.report_id;
+        if (netReportPdfButton) netReportPdfButton.disabled = false;
+        if (netReportCsvButton) netReportCsvButton.disabled = false;
+        if (netScanResult) netScanResult.innerHTML = buildScanResultMarkup(data);
+        updateNetStats(data);
+        saveLastScan("network", data);
+        await Promise.all([loadDashboard(), loadHistory()]);
+    } catch (err) {
+        if (netScanError) { netScanError.textContent = err.message || "Network scan failed"; netScanError.classList.remove("hidden"); }
+        if (netScanResult) netScanResult.innerHTML = "";
+    } finally {
+        netScanButton.disabled = false;
+        netScanButton.textContent = "Scan Network";
+    }
+});
+
+netReportPdfButton?.addEventListener("click", () => {
+    if (lastNetReportId) window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/pdf`, "_blank", "noopener,noreferrer");
+});
+netReportCsvButton?.addEventListener("click", () => {
+    if (lastNetReportId) window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/csv`, "_blank", "noopener,noreferrer");
+});
+
+// ─── Stealth Scanner ───────────────────────────────────────────────────────
+const stealthScanForm = document.getElementById("stealthScanForm");
+const stealthScanButton = document.getElementById("stealthScanButton");
+const stealthIntelButton = document.getElementById("stealthIntelButton");
+const stealthScanError = document.getElementById("stealthScanError");
+const stealthScanResult = document.getElementById("stealthScanResult");
+const stealthReportPdfButton = document.getElementById("stealthReportPdfButton");
+const stealthReportCsvButton = document.getElementById("stealthReportCsvButton");
+let lastStealthReportId = null;
+
+document.querySelectorAll(".ss-pill").forEach((pill) => {
+    pill.addEventListener("click", () => {
+        document.querySelectorAll(".ss-pill").forEach((p) => p.classList.remove("active"));
+        pill.classList.add("active");
+        const modeInput = document.getElementById("stealthModeInput");
+        if (modeInput) modeInput.value = pill.dataset.stealthMode || "stealth";
+    });
+});
+
+async function runStealthScan(intelOnly = false) {
+    stealthScanError?.classList.add("hidden");
+    const tgt = document.getElementById("stealthTarget")?.value?.trim() || "";
+    const mode = document.getElementById("stealthModeInput")?.value || "stealth";
+    const port_strategy = document.getElementById("stealthPortStrategy")?.value || "standard";
+    if (!tgt) { stealthScanError.textContent = "Target required."; stealthScanError.classList.remove("hidden"); return; }
+
+    stealthScanButton.disabled = true;
+    stealthIntelButton.disabled = true;
+    stealthScanButton.textContent = "Probing…";
+    if (stealthScanResult) stealthScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner stealth-spinner"></div><span>Low-noise probing…</span></div>';
+
+    try {
+        if (intelOnly) {
+            const intel = await fetchIntelData(tgt);
+            const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
+            if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
+        } else {
+            const resp = await fetch("/api/scan", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ target: tgt, profile: mode, port_strategy, project_id: activeProjectId }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || "Stealth scan failed");
+            lastStealthReportId = data.report_id;
+            if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
+            if (stealthReportCsvButton) stealthReportCsvButton.disabled = false;
+            if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(data);
+            saveLastScan("stealth", data);
+            await Promise.all([loadDashboard(), loadHistory()]);
+        }
+    } catch (err) {
+        if (stealthScanError) { stealthScanError.textContent = err.message || "Stealth scan failed"; stealthScanError.classList.remove("hidden"); }
+        if (stealthScanResult) stealthScanResult.innerHTML = "";
+    } finally {
+        stealthScanButton.disabled = false;
+        stealthIntelButton.disabled = false;
+        stealthScanButton.textContent = "Run Stealth Scan";
+    }
+}
+
+stealthScanForm?.addEventListener("submit", (e) => { e.preventDefault(); runStealthScan(false); });
+stealthIntelButton?.addEventListener("click", () => runStealthScan(true));
+stealthReportPdfButton?.addEventListener("click", () => {
+    if (lastStealthReportId) window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/pdf`, "_blank", "noopener,noreferrer");
+});
+stealthReportCsvButton?.addEventListener("click", () => {
+    if (lastStealthReportId) window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/csv`, "_blank", "noopener,noreferrer");
+});
+
+// ─── 24h Last Scan Persistence ─────────────────────────────────────────────
+const _LAST_SCAN_KEY = "vscanner.lastScan";
+const _24H = 86_400_000;
+
+function saveLastScan(scope, data) {
+    try {
+        const payload = { scope, data, ts: Date.now() };
+        localStorage.setItem(_LAST_SCAN_KEY, JSON.stringify(payload));
+    } catch (_) {}
+}
+
+function restoreLastScan() {
+    try {
+        const raw = localStorage.getItem(_LAST_SCAN_KEY);
+        if (!raw) return;
+        const { scope, data, ts } = JSON.parse(raw);
+        if (!data || Date.now() - ts > _24H) return;
+        if (scope === "network" && netScanResult) {
+            netScanResult.innerHTML = buildScanResultMarkup(data);
+            updateNetStats(data);
+            if (netReportPdfButton && data.report_id) { netReportPdfButton.disabled = false; lastNetReportId = data.report_id; }
+            if (netReportCsvButton && data.report_id) { netReportCsvButton.disabled = false; }
+        } else if (scope === "stealth" && stealthScanResult) {
+            stealthScanResult.innerHTML = buildScanResultMarkup(data);
+            if (stealthReportPdfButton && data.report_id) { stealthReportPdfButton.disabled = false; lastStealthReportId = data.report_id; }
+            if (stealthReportCsvButton && data.report_id) { stealthReportCsvButton.disabled = false; }
+        } else if (scope === "standard" && scanResult) {
+            renderScanResult(data);
+            if (reportPdfButton && data.report_id) { reportPdfButton.disabled = false; lastReportId = data.report_id; }
+            if (reportCsvButton && data.report_id) { reportCsvButton.disabled = false; }
+        }
+    } catch (_) {}
+}
+
 (async function bootstrap() {
     try {
         const savedMode = localStorage.getItem("vscanner.mode") || "dark";
@@ -1970,6 +2155,8 @@ findingSearch.addEventListener("input", () => {
         applyLanguage(savedLanguage);
         applyScannerMode(scannerTypeSelect.value || "standard");
         await renderNetworkHints();
+        await renderNetworkPageHints();
+        restoreLastScan();
         await loadHealth();
         await loadProjects();
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);

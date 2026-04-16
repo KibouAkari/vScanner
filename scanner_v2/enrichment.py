@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 
+from scanner_v2.cve_cache import check_cache, store_cache, cpe_match
 
 _NVD_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _OSV_QUERY_API = "https://api.osv.dev/v1/query"
@@ -230,13 +231,37 @@ def enrich_findings_with_external_cve(
         cache_key = (product, version)
         enrichment = _CVE_LOOKUP_CACHE.get(cache_key)
 
+        # 1. check persistent SQLite cache first (fast, offline)
+        if enrichment is None:
+            cached = check_cache(product, version)
+            if cached and cached.get("cve_id"):
+                enrichment = {
+                    "cve": cached["cve_id"],
+                    "cvss": float(cached.get("cvss") or 0.0),
+                    "source": cached.get("source") or "cache",
+                    "confidence": "high" if float(cached.get("cvss") or 0.0) >= 0.1 else "medium",
+                }
+                _CVE_LOOKUP_CACHE[cache_key] = enrichment
+
+        # 2. fall back to external APIs if cache miss and requests remaining
         if enrichment is None and remaining > 0:
+            _, _, cpe_uri = cpe_match(product, version)
             enrichment = _lookup_nvd(product, version, timeout_s=timeout_s)
             remaining -= 1
             if enrichment is None and remaining > 0:
                 enrichment = _lookup_osv(product, version, timeout_s=timeout_s)
                 remaining -= 1
             _CVE_LOOKUP_CACHE[cache_key] = enrichment or {}
+            # persist to local SQLite cache for future runs
+            if enrichment and enrichment.get("cve"):
+                store_cache(
+                    product, version,
+                    cve_id=enrichment["cve"],
+                    cvss=float(enrichment.get("cvss") or 0.0),
+                    summary=enrichment.get("summary", ""),
+                    cpe_uri=cpe_uri,
+                    source=enrichment.get("source", "external"),
+                )
 
         if enrichment:
             cve_id = str(enrichment.get("cve") or "").strip()

@@ -27,6 +27,8 @@
             <nav class="menu-list">
                 <button class="menu-item active" data-tab="dashboard">Dashboard</button>
                 <button class="menu-item" data-tab="scanner">Scanner</button>
+                <button class="menu-item nav-item-network" data-tab="network">Network</button>
+                <button class="menu-item nav-item-stealth" data-tab="stealth">Stealth</button>
                 <button class="menu-item" data-tab="findings">Findings</button>
                 <button class="menu-item" data-tab="history">History</button>
                 <button class="menu-item" data-tab="settings">Settings</button>
@@ -230,6 +232,106 @@
                 </article>
             </section>
 
+            <!-- ═══ NETWORK SCANNER TAB ═══ -->
+            <section class="tab" id="tab-network">
+                <article class="panel network-scanner-panel">
+                    <div class="ns-header">
+                        <div class="ns-hero-icon">🌐</div>
+                        <div>
+                            <h3 id="netScanTitle">Network Discovery Scanner</h3>
+                            <p class="ns-hero-sub">CIDR subnet enumeration &bull; Host discovery &bull; Service mapping &bull; Authorized networks only</p>
+                        </div>
+                    </div>
+                    <div class="ns-stats-row" id="netScanStatsRow">
+                        <div class="ns-stat-chip"><span class="ns-stat-label">Hosts Alive</span><strong id="netStatHosts">—</strong></div>
+                        <div class="ns-stat-chip"><span class="ns-stat-label">Ports Open</span><strong id="netStatPorts">—</strong></div>
+                        <div class="ns-stat-chip"><span class="ns-stat-label">Services</span><strong id="netStatServices">—</strong></div>
+                        <div class="ns-stat-chip"><span class="ns-stat-label">Risk Score</span><strong id="netStatRisk">—</strong></div>
+                    </div>
+                    <form id="netScanForm" class="form-grid ns-form">
+                        <div class="span-2">
+                            <label for="netTarget">CIDR Range</label>
+                            <input id="netTarget" class="input ns-input" type="text" placeholder="192.168.1.0/24 or 10.0.0.0/16" required />
+                        </div>
+                        <div>
+                            <label for="netPortStrategy">Depth</label>
+                            <select id="netPortStrategy" class="input">
+                                <option value="standard">Standard — Common ports</option>
+                                <option value="aggressive">Deep — All ports</option>
+                            </select>
+                        </div>
+                        <div class="align-end">
+                            <button id="netScanButton" class="btn btn-network" type="submit">Scan Network</button>
+                        </div>
+                    </form>
+                    <div class="network-suggestions">
+                        <span id="netSuggestedLabel">Suggested ranges:</span>
+                        <div id="netHints" class="hint-row"></div>
+                    </div>
+                    <p class="note">Network scanner requires nmap and is intended exclusively for authorized lab or private networks.</p>
+                    <div id="netScanError" class="error hidden"></div>
+                </article>
+                <article class="panel">
+                    <div class="panel-head">
+                        <h3 id="netResultTitle">Network Scan Results</h3>
+                        <div class="control-inline">
+                            <button id="netReportCsvButton" class="btn ghost" type="button" disabled>CSV</button>
+                            <button id="netReportPdfButton" class="btn ghost" type="button" disabled>PDF</button>
+                        </div>
+                    </div>
+                    <div id="netScanResult" class="table-host"></div>
+                </article>
+            </section>
+
+            <!-- ═══ STEALTH SCANNER TAB ═══ -->
+            <section class="tab" id="tab-stealth">
+                <article class="panel stealth-scanner-panel">
+                    <div class="ss-header">
+                        <div class="ss-hero-icon">👁️</div>
+                        <div>
+                            <h3 id="stealthScanTitle">Stealth &amp; Intel Scanner</h3>
+                            <p class="ss-hero-sub">Low-noise probing &bull; Passive metadata enrichment &bull; No evasion — not a bypass tool</p>
+                        </div>
+                    </div>
+                    <div class="ss-mode-pills">
+                        <button class="ss-pill active" data-stealth-mode="stealth">Ghost Mode</button>
+                        <button class="ss-pill" data-stealth-mode="light">Silent Light</button>
+                    </div>
+                    <form id="stealthScanForm" class="form-grid ss-form">
+                        <input id="stealthModeInput" type="hidden" value="stealth" />
+                        <div class="span-2">
+                            <label for="stealthTarget">Target</label>
+                            <input id="stealthTarget" class="input ss-input" type="text" placeholder="example.com or 8.8.8.8" required />
+                        </div>
+                        <div>
+                            <label for="stealthPortStrategy">Port breadth</label>
+                            <select id="stealthPortStrategy" class="input">
+                                <option value="standard">Minimal footprint</option>
+                                <option value="aggressive">Extended</option>
+                            </select>
+                        </div>
+                        <div class="align-end action-stack">
+                            <button id="stealthScanButton" class="btn btn-stealth" type="submit">Run Stealth Scan</button>
+                            <button id="stealthIntelButton" class="btn ghost-stealth" type="button">Intel Only</button>
+                        </div>
+                    </form>
+                    <div class="ss-warning">
+                        ⚠️ Stealth mode is low-noise only. It does NOT bypass SIEM, IDS, or security monitoring systems.
+                    </div>
+                    <div id="stealthScanError" class="error hidden"></div>
+                </article>
+                <article class="panel">
+                    <div class="panel-head">
+                        <h3 id="stealthResultTitle">Stealth Scan Results</h3>
+                        <div class="control-inline">
+                            <button id="stealthReportCsvButton" class="btn ghost" type="button" disabled>CSV</button>
+                            <button id="stealthReportPdfButton" class="btn ghost" type="button" disabled>PDF</button>
+                        </div>
+                    </div>
+                    <div id="stealthScanResult" class="table-host"></div>
+                </article>
+            </section>
+
             <section class="tab" id="tab-findings">
                 <article class="panel">
                     <div class="panel-head">
@@ -283,7 +385,7 @@
                         </div>
                     </div>
 
-                    <div id="findingsTable" class="table-host"></div>
+                    <div id="findingsTable" class="table-host findings-with-confidence"></div>
                 </article>
             </section>
 
@@ -350,11 +452,11 @@
                         </div>
                         <div class="scanner-mode-card active">
                             <strong>Network Discovery</strong>
-                            <span>Use on authorized private networks to enumerate hosts, services and exposed surface by subnet.</span>
+                            <span>Use on authorized private networks to enumerate hosts, services and exposed surface by subnet. Access via the Network tab.</span>
                         </div>
                         <div class="scanner-mode-card active">
-                            <strong>Stealth & Intel</strong>
-                            <span>Use for quieter probing and passive metadata collection when you want context before a fuller scan.</span>
+                            <strong>Stealth &amp; Intel</strong>
+                            <span>Low-noise profiling and passive metadata collection. Access via the Stealth tab.</span>
                         </div>
                     </div>
                 </article>
