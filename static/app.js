@@ -1693,7 +1693,16 @@ function renderIntelBlock(intelData) {
 
 function buildScanResultMarkup(data) {
     const metrics = data.metrics || {};
-    const rows = (data.finding_items || [])
+    const severityRank = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+    const rows = [...(data.finding_items || [])]
+        .sort((a, b) => {
+            const aRank = severityRank[String(a?.severity || "low").toLowerCase()] || 0;
+            const bRank = severityRank[String(b?.severity || "low").toLowerCase()] || 0;
+            if (aRank !== bRank) {
+                return bRank - aRank;
+            }
+            return String(a?.title || "").localeCompare(String(b?.title || ""));
+        })
         .map((item) => {
             const sev = String(item.severity || "low").toLowerCase();
             return `
@@ -1710,19 +1719,34 @@ function buildScanResultMarkup(data) {
 
     const hostRows = (data.hosts || [])
         .map((host) => {
-            const openPorts = (host.ports || []).filter((entry) => String(entry.state || "").toLowerCase() === "open");
+            const openPorts = [...(host.ports || [])]
+                .filter((entry) => String(entry.state || "").toLowerCase() === "open")
+                .sort((a, b) => Number(a.port || 0) - Number(b.port || 0));
             const portRows = openPorts
                 .map(
-                    (entry) => `
+                    (entry) => {
+                        const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : {};
+                        const detailParts = [
+                            metadata.http_app || "",
+                            metadata.title ? `title: ${metadata.title}` : "",
+                            metadata.http_status || "",
+                            metadata.http_server || "",
+                            metadata.http_powered_by || "",
+                        ].filter(Boolean);
+                        const detail = detailParts.join(" | ") || "-";
+                        const banner = String(entry.banner || "-").replace(/\s+/g, " ").slice(0, 220);
+                        return `
                         <tr>
                             <td>${esc(entry.port)}</td>
                             <td>${esc(entry.protocol || "-")}</td>
                             <td>${esc(entry.name || "-")}</td>
                             <td>${esc(entry.product || "-")}</td>
                             <td>${esc(entry.version || "-")}</td>
-                            <td>${esc(entry.banner || "-")}</td>
+                            <td>${esc(detail)}</td>
+                            <td>${esc(banner || "-")}</td>
                         </tr>
-                    `
+                    `;
+                    }
                 )
                 .join("");
 
@@ -1745,10 +1769,11 @@ function buildScanResultMarkup(data) {
                                 <th>${esc(t("service"))}</th>
                                 <th>${esc(t("product"))}</th>
                                 <th>${esc(t("version"))}</th>
+                                <th>Details</th>
                                 <th>Banner</th>
                             </tr>
                         </thead>
-                        <tbody>${portRows || '<tr><td colspan="6">No open ports on this host.</td></tr>'}</tbody>
+                        <tbody>${portRows || '<tr><td colspan="7">No open ports on this host.</td></tr>'}</tbody>
                     </table>
                 </div>
             `;

@@ -15,6 +15,29 @@ class ScannerV2UnitTests(unittest.TestCase):
         self.assertEqual(product, "nginx")
         self.assertEqual(version, "1.24.0")
 
+    def test_fingerprint_infers_kasm_from_metadata(self) -> None:
+        product, version = infer_product_version(
+            "HTTP/1.1 200 OK",
+            {
+                "title": "Kasm Workspaces",
+                "http_app": "Kasm Workspaces",
+                "http_app_version": "1.15.0",
+            },
+        )
+        self.assertEqual(product, "Kasm Workspaces")
+        self.assertEqual(version, "1.15.0")
+
+    def test_fingerprint_infers_grafana_from_header(self) -> None:
+        product, version = infer_product_version(
+            "HTTP/1.1 200 OK",
+            {
+                "http_headers": {"Server": "grafana/10.2.3"},
+                "http_server": "grafana/10.2.3",
+            },
+        )
+        self.assertEqual(product, "Grafana")
+        self.assertEqual(version, "10.2.3")
+
     def test_profile_resolution(self) -> None:
         self.assertEqual(get_profile("stealth").name, "stealth")
         self.assertEqual(get_profile("unknown").name, "balanced")

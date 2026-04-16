@@ -2527,6 +2527,39 @@ def evaluate_version_findings(
     return findings
 
 
+def build_service_version_observations(host: str, port_entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for entry in port_entries:
+        if str(entry.get("state", "open")).lower() != "open":
+            continue
+
+        port = int(entry.get("port") or 0)
+        service_name = str(entry.get("name") or COMMON_SERVICE_NAMES.get(port, "unknown"))
+        product = str(entry.get("product") or service_name or "").strip()
+        version = str(entry.get("version") or "").strip()
+        if not product or product == "unknown":
+            continue
+
+        evidence = f"Fingerprint detected on port {port}: {product} {version}".strip()
+        severity = "medium" if version else "low"
+        confidence = "high" if version else "medium"
+        out.append(
+            {
+                "host": host,
+                "severity": severity,
+                "title": f"Service fingerprint identified: {product}",
+                "evidence": evidence,
+                "type": "service_fingerprint",
+                "cve": "",
+                "confidence": confidence,
+                "asset_criticality": normalize_asset_criticality(
+                    infer_asset_criticality(host=host, port=port, finding_type="service_fingerprint", title=product)
+                ),
+            }
+        )
+    return out
+
+
 def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     headers = {"User-Agent": "vScanner/3.0"}
@@ -3805,6 +3838,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         host_findings = list(host.get("findings", []))
 
         open_ports = [entry for entry in host.get("ports", []) if entry.get("state") == "open"]
+        host_findings.extend(build_service_version_observations(str(host.get("host", "-")), open_ports))
         total_open_ports += len(open_ports)
 
         web_evidence: list[dict[str, Any]] = []
@@ -3837,7 +3871,10 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                     _future.cancel()
 
         host_findings.sort(
-            key=lambda item: SEVERITY_ORDER.get(item.get("severity", "info"), 0),
+            key=lambda item: (
+                SEVERITY_ORDER.get(str(item.get("severity", "info")).lower(), 0),
+                str(item.get("title") or ""),
+            ),
             reverse=True,
         )
 
@@ -3903,14 +3940,14 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(finding_items)
-    cve_query_budget = 10
+    cve_query_budget = 12
     cve_timeout = 1.8
     if canonical == "deep":
-        cve_query_budget = 22 if port_strategy == "aggressive" else 16
+        cve_query_budget = 34 if port_strategy == "aggressive" else 24
     elif canonical in {"light", "network"}:
-        cve_query_budget = 14 if port_strategy == "aggressive" else 12
+        cve_query_budget = 22 if port_strategy == "aggressive" else 16
     elif canonical == "stealth":
-        cve_query_budget = 12
+        cve_query_budget = 18
     dedup_findings, external_cves = enrich_findings_with_external_cve(
         dedup_findings,
         max_queries=cve_query_budget,
@@ -4053,6 +4090,22 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             )
         )
 
+    host_findings.extend(
+        build_service_version_observations(
+            target,
+            [
+                {
+                    "state": "open",
+                    "port": int(p.get("port") or 0),
+                    "name": str(p.get("service") or "unknown"),
+                    "product": str(p.get("product") or ""),
+                    "version": str(p.get("version") or ""),
+                }
+                for p in open_ports
+            ],
+        )
+    )
+
     web_evidence: list[dict[str, Any]] = []
     web_ports = [
         {
@@ -4114,10 +4167,18 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         if item["cve"]:
             cve_items.append(item)
 
+    host_findings.sort(
+        key=lambda item: (
+            SEVERITY_ORDER.get(str(item.get("severity", "info")).lower(), 0),
+            str(item.get("title") or ""),
+        ),
+        reverse=True,
+    )
+
     risk_summary = build_risk_summary(host_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(host_findings)
-    cve_query_budget = 6 if IS_SERVERLESS else (12 if port_strategy == "standard" else 20)
+    cve_query_budget = 10 if IS_SERVERLESS else (24 if port_strategy == "standard" else 40)
     dedup_findings, external_cves = enrich_findings_with_external_cve(
         dedup_findings,
         max_queries=cve_query_budget,
@@ -4134,7 +4195,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         "hostnames": [target] if target_type == "domain" else [],
         "reverse_dns": safe_reverse_dns(target) if target_type == "host" else None,
         "os_matches": [],
-        "ports": [
+        "ports": sorted([
             {
                 "protocol": p.get("protocol", "tcp"),
                 "port": p.get("port", 0),
@@ -4145,10 +4206,18 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
                 "extra_info": "",
                 "cpe": "",
                 "banner": p.get("banner", ""),
+                "metadata": p.get("metadata", {}),
             }
             for p in open_ports
-        ],
-        "findings": host_findings,
+        ], key=lambda item: int(item.get("port") or 0)),
+        "findings": sorted(
+            host_findings,
+            key=lambda item: (
+                SEVERITY_ORDER.get(str(item.get("severity", "info")).lower(), 0),
+                str(item.get("title") or ""),
+            ),
+            reverse=True,
+        ),
         "web_evidence": web_evidence,
         "finding_count": len(host_findings),
         "open_port_count": len(open_ports),

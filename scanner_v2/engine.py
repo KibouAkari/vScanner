@@ -45,6 +45,50 @@ _COMMON_SERVICE_NAMES = {
 }
 
 
+def _infer_service_identity(probe: ProbeResult) -> tuple[str, str, str]:
+    metadata = probe.metadata if isinstance(probe.metadata, dict) else {}
+    product, version = infer_product_version(probe.banner, metadata)
+
+    protocol_hint = str(metadata.get("protocol") or "").strip().lower()
+    if not product and protocol_hint:
+        protocol_map = {
+            "ssh": ("OpenSSH", ""),
+            "smtp": ("SMTP", ""),
+            "imap": ("IMAP", ""),
+            "pop3": ("POP3", ""),
+            "rdp": ("Microsoft RDP", ""),
+            "smb": ("Samba", ""),
+            "mqtt": ("MQTT", ""),
+            "postgresql": ("PostgreSQL", str(metadata.get("postgres_version") or "")),
+            "mysql": ("MySQL", str(metadata.get("mysql_version") or "")),
+            "redis": ("Redis", str(metadata.get("redis_version") or "")),
+        }
+        mapped = protocol_map.get(protocol_hint)
+        if mapped:
+            product, version = mapped
+
+    http_app = str(metadata.get("http_app") or "").strip()
+    http_app_ver = str(metadata.get("http_app_version") or "").strip()
+    if http_app:
+        if not product:
+            product = http_app
+        if not version and http_app_ver:
+            version = http_app_ver
+
+    if not product:
+        http_server = str(metadata.get("http_server") or "")
+        if http_server:
+            product, version = infer_product_version(http_server, metadata)
+
+    service_name = probe.service or "unknown"
+    if product and service_name == "unknown":
+        service_name = product.lower().replace(" ", "-")
+    if service_name == "unknown" and protocol_hint:
+        service_name = protocol_hint.replace("_", "-")
+
+    return service_name, product, version
+
+
 class AsyncScannerV2:
     def __init__(self, vuln_engine: VulnerabilityEngine | None = None) -> None:
         self.vuln_engine = vuln_engine or VulnerabilityEngine()
@@ -124,40 +168,10 @@ class AsyncScannerV2:
                     probe.banner = str(banner_data.get("banner") or "")
                     probe.metadata.update(banner_data.get("metadata") or {})
 
-                    product, version = infer_product_version(probe.banner)
-
-                    # Enrich from protocol metadata when banner regex is inconclusive.
-                    protocol_hint = str((probe.metadata or {}).get("protocol") or "").strip().lower()
-                    if not product and protocol_hint:
-                        protocol_map = {
-                            "ssh": ("OpenSSH", ""),
-                            "smtp": ("SMTP", ""),
-                            "imap": ("IMAP", ""),
-                            "pop3": ("POP3", ""),
-                            "rdp": ("Microsoft RDP", ""),
-                            "smb": ("Samba", ""),
-                            "mqtt": ("MQTT", ""),
-                            "postgresql": ("PostgreSQL", str((probe.metadata or {}).get("postgres_version") or "")),
-                            "mysql": ("MySQL", str((probe.metadata or {}).get("mysql_version") or "")),
-                            "redis": ("Redis", str((probe.metadata or {}).get("redis_version") or "")),
-                        }
-                        mapped = protocol_map.get(protocol_hint)
-                        if mapped:
-                            product, version = mapped
-
-                    if not product:
-                        http_server = str((probe.metadata or {}).get("http_server") or "")
-                        if http_server:
-                            product, version = infer_product_version(http_server)
-
-                    if product:
-                        probe.product = product
-                        probe.version = version
-                        if probe.service == "unknown":
-                            probe.service = product.lower().replace(" ", "-")
-
-                    if probe.service == "unknown" and protocol_hint:
-                        probe.service = protocol_hint.replace("_", "-")
+                    service_name, product, version = _infer_service_identity(probe)
+                    probe.service = service_name
+                    probe.product = product
+                    probe.version = version
 
                     if int(port) in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
                         probe.metadata.update(await probe_tls_metadata(request.target, int(port), timeout_s=timeout_s))
@@ -220,39 +234,10 @@ class AsyncScannerV2:
                     probe.banner = str(banner_data.get("banner") or "")
                     probe.metadata.update(banner_data.get("metadata") or {})
 
-                    product, version = infer_product_version(probe.banner)
-
-                    protocol_hint = str((probe.metadata or {}).get("protocol") or "").strip().lower()
-                    if not product and protocol_hint:
-                        protocol_map = {
-                            "ssh": ("OpenSSH", ""),
-                            "smtp": ("SMTP", ""),
-                            "imap": ("IMAP", ""),
-                            "pop3": ("POP3", ""),
-                            "rdp": ("Microsoft RDP", ""),
-                            "smb": ("Samba", ""),
-                            "mqtt": ("MQTT", ""),
-                            "postgresql": ("PostgreSQL", str((probe.metadata or {}).get("postgres_version") or "")),
-                            "mysql": ("MySQL", str((probe.metadata or {}).get("mysql_version") or "")),
-                            "redis": ("Redis", str((probe.metadata or {}).get("redis_version") or "")),
-                        }
-                        mapped = protocol_map.get(protocol_hint)
-                        if mapped:
-                            product, version = mapped
-
-                    if not product:
-                        http_server = str((probe.metadata or {}).get("http_server") or "")
-                        if http_server:
-                            product, version = infer_product_version(http_server)
-
-                    if product:
-                        probe.product = product
-                        probe.version = version
-                        if probe.service == "unknown":
-                            probe.service = product.lower().replace(" ", "-")
-
-                    if probe.service == "unknown" and protocol_hint:
-                        probe.service = protocol_hint.replace("_", "-")
+                    service_name, product, version = _infer_service_identity(probe)
+                    probe.service = service_name
+                    probe.product = product
+                    probe.version = version
 
                     if port in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
                         probe.metadata.update(await probe_tls_metadata(request.target, port, timeout_s=timeout_s))
