@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from typing import Any
 from .fingerprint import infer_product_version, probe_tcp_banner, probe_tls_metadata
 from .models import ProbeResult, ScanRequest, ScanResult, prioritize_findings, utc_now
 from .timing import AdaptiveRateController
+from .rust_bridge import run_rust_worker_scan, rust_worker_available
 from .vuln_engine import VulnerabilityEngine
 
 
@@ -59,13 +61,18 @@ class AsyncScannerV2:
             burst_limit=request.profile.ids_aware_burst_limit,
         )
 
-        async def scan_one(index: int, port: int) -> ProbeResult:
-            await rate.pace(index)
-            async with sem:
-                return await self._scan_port(request, rate, port)
+        use_rust_worker = os.getenv("VSCANNER_USE_RUST_WORKER", "0") == "1" and rust_worker_available()
 
-        tasks = [scan_one(i, p) for i, p in enumerate(sorted(set(request.ports)))]
-        results = await asyncio.gather(*tasks)
+        if use_rust_worker:
+            results = await self._scan_with_rust_worker(request, rate, sem)
+        else:
+            async def scan_one(index: int, port: int) -> ProbeResult:
+                await rate.pace(index)
+                async with sem:
+                    return await self._scan_port(request, rate, port)
+
+            tasks = [scan_one(i, p) for i, p in enumerate(sorted(set(request.ports)))]
+            results = await asyncio.gather(*tasks)
         open_ports = [r for r in results if r.state == "open"]
 
         findings = self.vuln_engine.run(request.target, open_ports) if request.enable_vuln_plugins else []
@@ -85,6 +92,76 @@ class AsyncScannerV2:
             findings=findings,
             stats=stats,
         )
+
+    async def _scan_with_rust_worker(
+        self,
+        request: ScanRequest,
+        rate: AdaptiveRateController,
+        sem: asyncio.Semaphore,
+    ) -> list[ProbeResult]:
+        raw = await asyncio.to_thread(
+            run_rust_worker_scan,
+            request.target,
+            sorted(set(request.ports)),
+            int(max(request.profile.timeout_s, 0.1) * 1000),
+            request.profile.max_concurrency,
+        )
+
+        out: list[ProbeResult] = []
+
+        async def enrich_open(port: int, latency_ms: float) -> ProbeResult:
+            # Reuse existing protocol-aware enrichment pipeline for consistency.
+            async with sem:
+                probe = ProbeResult(
+                    port=int(port),
+                    state="open",
+                    latency_ms=round(float(latency_ms), 2),
+                    service=_COMMON_SERVICE_NAMES.get(int(port), "unknown"),
+                )
+                timeout_s = max(0.15, request.profile.timeout_s)
+                if request.enable_service_fingerprinting:
+                    banner_data = await probe_tcp_banner(request.target, int(port), timeout_s=timeout_s)
+                    probe.banner = str(banner_data.get("banner") or "")
+                    probe.metadata.update(banner_data.get("metadata") or {})
+
+                    product, version = infer_product_version(probe.banner)
+                    if product:
+                        probe.product = product
+                        probe.version = version
+                        if probe.service == "unknown":
+                            probe.service = product.lower().replace(" ", "-")
+
+                    if int(port) in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
+                        probe.metadata.update(await probe_tls_metadata(request.target, int(port), timeout_s=timeout_s))
+
+                return probe
+
+        enrich_tasks: list[asyncio.Task[ProbeResult]] = []
+        for item in raw:
+            port = int(item.get("port", 0) or 0)
+            is_open = bool(item.get("open", False))
+            latency_ms = float(item.get("latency_ms", 0.0) or 0.0)
+            if not (1 <= port <= 65535):
+                continue
+
+            if is_open:
+                rate.observe(True)
+                enrich_tasks.append(asyncio.create_task(enrich_open(port, latency_ms)))
+            else:
+                rate.observe(False)
+                out.append(
+                    ProbeResult(
+                        port=port,
+                        state="closed",
+                        latency_ms=round(latency_ms, 2),
+                        service=_COMMON_SERVICE_NAMES.get(port, "unknown"),
+                    )
+                )
+
+        if enrich_tasks:
+            out.extend(await asyncio.gather(*enrich_tasks))
+
+        return sorted(out, key=lambda x: int(x.port))
 
     async def _scan_port(self, request: ScanRequest, rate: AdaptiveRateController, port: int) -> ProbeResult:
         attempts = max(1, request.profile.retries + 1)

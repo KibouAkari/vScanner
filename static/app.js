@@ -107,9 +107,12 @@ const I18N = {
         networkScannerDesc: "Erkennung und Service-Mapping für autorisierte lokale/Lab-CIDR-Bereiche.",
         stealthScanner: "Stealth & Intel",
         stealthScannerDesc: "Rauscharmer Scan mit passiver Metadaten-Anreicherung, kein Ausweichverhalten.",
+        v2Scanner: "Adaptiver V2-Scanner",
+        v2ScannerDesc: "Asynchrone Scan-Engine mit Plugin-Checks und tieferem Protokoll-Fingerprinting.",
         standardModeNote: "Standardscanner unterstützt Domain/IP-Ziele mit leichten oder tiefen Scan-Profilen.",
         networkModeNote: "Netzwerkscanner erwartet ein CIDR-Ziel für autorisierte lokale/Lab-Netzwerke.",
         stealthModeNote: "Stealth & Intel verwendet rauscharmes Profiling und passive Metadatensammlung. Es umgeht keine Überwachung oder SIEM.",
+        v2ModeNote: "Der Adaptive V2 Scanner nutzt asynchrone Probes und Plugin-Checks für tiefere Service-Intelligenz.",
         operationalNotes: "Betriebshinweise",
         scannerReference: "Scanner-Referenz",
         refresh: "Aktualisieren",
@@ -221,9 +224,12 @@ const I18N = {
         networkScannerDesc: "Discovery and service mapping for authorized local/lab CIDR ranges.",
         stealthScanner: "Stealth & Intel",
         stealthScannerDesc: "Low-noise scan plus passive metadata enrichment, no evasion behavior.",
+        v2Scanner: "Adaptive V2 Scanner",
+        v2ScannerDesc: "Async scanner engine with plugin-based checks and deeper protocol fingerprinting.",
         standardModeNote: "Standard scanner supports domain/IP targets with light or deep scan profiles.",
         networkModeNote: "Network scanner expects a CIDR target and is intended for authorized local/lab networks.",
         stealthModeNote: "Stealth & intel uses low-noise profiling and passive metadata collection. It does not bypass monitoring or SIEM.",
+        v2ModeNote: "Adaptive V2 scanner uses async probing and plugin checks. Use for deeper service intelligence.",
         operationalNotes: "Operational Notes",
         scannerReference: "Scanner Reference",
         refresh: "Refresh",
@@ -464,6 +470,20 @@ function populateThemeOptions(mode, selectedTheme) {
 }
 
 function scannerSettings(mode) {
+    if (mode === "advanced_v2") {
+        return {
+            profile: "light",
+            portStrategy: "standard",
+            placeholder: "example.com, 8.8.8.8",
+            note: t("v2ModeNote") || "Adaptive V2 scanner uses async probing and plugin checks.",
+            disableProfile: false,
+            hidePortStrategy: false,
+            showIntelOnly: false,
+            showNetworkHints: false,
+            endpoint: "/api/scan/v2",
+        };
+    }
+
     if (mode === "network") {
         return {
             profile: "network",
@@ -474,6 +494,7 @@ function scannerSettings(mode) {
             hidePortStrategy: true,
             showIntelOnly: false,
             showNetworkHints: true,
+            endpoint: "/api/scan",
         };
     }
 
@@ -487,6 +508,7 @@ function scannerSettings(mode) {
             hidePortStrategy: true,
             showIntelOnly: true,
             showNetworkHints: false,
+            endpoint: "/api/scan",
         };
     }
 
@@ -499,6 +521,7 @@ function scannerSettings(mode) {
         hidePortStrategy: false,
         showIntelOnly: false,
         showNetworkHints: false,
+        endpoint: "/api/scan",
     };
 }
 
@@ -1002,6 +1025,8 @@ function applyLanguage(lang) {
     setText("modeNetworkDesc", text.networkScannerDesc || I18N.en.networkScannerDesc);
     setText("modeStealthTitle", text.stealthScanner || I18N.en.stealthScanner);
     setText("modeStealthDesc", text.stealthScannerDesc || I18N.en.stealthScannerDesc);
+    setText("modeV2Title", text.v2Scanner || I18N.en.v2Scanner || "Adaptive V2 Scanner");
+    setText("modeV2Desc", text.v2ScannerDesc || I18N.en.v2ScannerDesc || "Async scanner engine with plugin-based checks and deeper protocol fingerprinting.");
     setText("suggestedNetworksLabel", text.suggestedNetworks || I18N.en.suggestedNetworks);
     setText("latestScanFindingsTitle", text.latestFindings || I18N.en.latestFindings);
     setText("aggregatedFindingsTitle", text.aggregatedFindings || I18N.en.aggregatedFindings);
@@ -1490,7 +1515,9 @@ scanForm.addEventListener("submit", async (event) => {
     clearError();
 
     const scannerMode = scannerTypeSelect.value || "standard";
-    const selectedProfile = scannerMode === "standard" ? profileSelect.value : scannerSettings(scannerMode).profile;
+    const modeCfg = scannerSettings(scannerMode);
+    const selectedProfile = modeCfg.disableProfile ? modeCfg.profile : profileSelect.value;
+    const endpoint = modeCfg.endpoint || "/api/scan";
 
     const payload = {
         target: targetInput.value.trim(),
@@ -1504,7 +1531,7 @@ scanForm.addEventListener("submit", async (event) => {
     scanButton.textContent = t("scanning");
 
     try {
-        const response = await fetch("/api/scan", {
+        const response = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),

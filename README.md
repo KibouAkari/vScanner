@@ -99,6 +99,7 @@ Open browser:
 - `GET /api/projects/<project_id>/pdf?window_days=30`
 - `POST /api/scan`
 - `POST /api/scan/v2`
+- `POST /api/admin/reset-data`
 - `GET /api/reports`
 - `GET /api/reports/<report_id>`
 - `GET /api/reports/<report_id>/csv`
@@ -150,8 +151,29 @@ Example `POST /api/scan` or `POST /api/scan/v2` body:
 `stealth` means low-noise defensive scanning behavior.
 It does not provide SIEM evasion, IDS bypass, or hidden offensive capabilities.
 
+## Optional Rust Data Plane (V2)
+
+You can keep Python as control plane and use an optional Rust TCP worker for faster connect probing.
+
+Build:
+
+```bash
+cd rust_worker
+cargo build --release
+```
+
+Enable for V2 scans:
+
+```bash
+export VSCANNER_USE_RUST_WORKER=1
+export VSCANNER_RUST_WORKER_BIN="$(pwd)/rust_worker/target/release/vscanner-rust-worker"
+```
+
+Then use `POST /api/scan/v2` from UI or API.
+
 ## Engineering Validation
 
 - Unit tests: `python -m unittest tests/test_scanner_v2.py`
 - Benchmark: `python scripts/benchmark_v2.py --host 127.0.0.1 --runs 3 --ports 400`
+- Integration tests (container stack): `python -m unittest tests/integration/test_container_stack.py`
 - Architecture/design notes: `docs/scanner_v2_architecture.md`

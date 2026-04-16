@@ -2677,6 +2677,8 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
     service_map: dict[str, dict[str, Any]] = {}
     vulnerability_map: dict[tuple[str, str, str], dict[str, Any]] = {}
     risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    counted_risk_keys: set[tuple[str, str, str, str]] = set()
+    ignored_risk_types = {"open_port", "host_fingerprint"}
 
     for row in report_rows:
         payload = parse_report_payload(row)
@@ -2749,15 +2751,23 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                 service_bucket["count"] = len(service_bucket["sightings"])
 
         for finding in payload.get("finding_items", []):
+            host_id = str(finding.get("host") or "-")
+            finding_type = str(finding.get("type") or "-").strip().lower()
             severity = normalize_severity(str(finding.get("severity") or "low"))
-            if severity in risk_distribution:
-                risk_distribution[severity] += 1
 
             vuln_key = (
                 str(finding.get("title") or "Finding").strip().lower(),
                 str(finding.get("type") or "-").strip().lower(),
                 str(finding.get("cve") or "").strip().upper(),
             )
+
+            # Risk distribution should represent unique actionable weaknesses, not raw scan repetitions.
+            if severity in risk_distribution and severity != "info" and finding_type not in ignored_risk_types:
+                risk_key = (host_id, vuln_key[0], vuln_key[1], vuln_key[2])
+                if risk_key not in counted_risk_keys:
+                    counted_risk_keys.add(risk_key)
+                    risk_distribution[severity] += 1
+
             vuln_bucket = vulnerability_map.setdefault(
                 vuln_key,
                 {
@@ -2775,7 +2785,6 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
             vuln_bucket["severity"] = best_severity(vuln_bucket["severity"], severity)
             vuln_bucket["scan_hits"] += 1
             vuln_bucket["last_seen"] = max(str(vuln_bucket["last_seen"]), report_created_at)
-            host_id = str(finding.get("host") or "-")
             vuln_bucket["affected_assets"].add(host_id)
             if host_id not in vuln_bucket["seen_asset_keys"]:
                 vuln_bucket["seen_asset_keys"].add(host_id)
@@ -2852,6 +2861,81 @@ def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
     )
     sock.sendall(request_data.encode())
     return sock.recv(320).decode(errors="ignore").strip()
+
+
+def _mc_varint_encode(value: int) -> bytes:
+    out = bytearray()
+    v = int(value)
+    while True:
+        temp = v & 0x7F
+        v >>= 7
+        if v:
+            temp |= 0x80
+        out.append(temp)
+        if not v:
+            break
+    return bytes(out)
+
+
+def _mc_pack_packet(packet_id: int, payload: bytes = b"") -> bytes:
+    body = _mc_varint_encode(packet_id) + payload
+    return _mc_varint_encode(len(body)) + body
+
+
+def _mc_read_varint(sock: socket.socket) -> int:
+    result = 0
+    shift = 0
+    for _ in range(5):
+        b = sock.recv(1)
+        if not b:
+            raise ValueError("minecraft varint eof")
+        val = b[0]
+        result |= (val & 0x7F) << shift
+        if not (val & 0x80):
+            return result
+        shift += 7
+    raise ValueError("minecraft varint too big")
+
+
+def _probe_minecraft_status(host_or_ip: str, port: int, timeout_s: float) -> tuple[str, str, str]:
+    try:
+        with socket.create_connection((host_or_ip, port), timeout=timeout_s) as sock:
+            sock.settimeout(timeout_s)
+
+            host_b = host_or_ip.encode("utf-8", errors="ignore")[:255]
+            handshake_payload = (
+                _mc_varint_encode(760)
+                + _mc_varint_encode(len(host_b))
+                + host_b
+                + int(port).to_bytes(2, "big", signed=False)
+                + _mc_varint_encode(1)
+            )
+            sock.sendall(_mc_pack_packet(0x00, handshake_payload))
+            sock.sendall(_mc_pack_packet(0x00, b""))
+
+            _ = _mc_read_varint(sock)
+            packet_id = _mc_read_varint(sock)
+            if packet_id != 0x00:
+                return "", "", ""
+
+            json_len = _mc_read_varint(sock)
+            raw = b""
+            while len(raw) < json_len:
+                chunk = sock.recv(json_len - len(raw))
+                if not chunk:
+                    break
+                raw += chunk
+            if len(raw) != json_len:
+                return "", "", ""
+
+            payload = json.loads(raw.decode("utf-8", errors="ignore"))
+            version_name = str((payload.get("version") or {}).get("name") or "").strip()
+            banner = json.dumps(payload, ensure_ascii=True)[:240]
+            if version_name:
+                return "Minecraft", version_name, banner
+            return "Minecraft", "", banner
+    except Exception:
+        return "", "", ""
 
 
 def _probe_port_banner(sock: socket.socket, host_or_ip: str, port: int) -> str:
@@ -2964,6 +3048,16 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
             elif "tls" in banner_l:
                 service_name = "tls-service"
 
+    if state == "open" and (service_name == "unknown" or service_name.startswith("minecraft") or port in {25565, 25575}):
+        mc_product, mc_version, mc_banner = _probe_minecraft_status(host_or_ip, port, min(max(timeout_s, 0.4), 1.6))
+        if mc_product:
+            service_name = "minecraft"
+            product = mc_product
+            if mc_version:
+                version = mc_version
+            if mc_banner and not banner:
+                banner = mc_banner
+
     return {
         "protocol": "tcp",
         "port": port,
@@ -3052,25 +3146,25 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
-        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title"
+        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title"
+        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title"
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title"
+            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -3109,6 +3203,16 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                     service_name = COMMON_SERVICE_NAMES.get(port, "unknown")
                 if service_name == "unknown" and service_product:
                     service_name = service_product.lower().replace(" ", "-")
+
+                if data.get("state") == "open" and (service_name == "unknown" or service_name.startswith("minecraft") or port in {25565, 25575}):
+                    mc_product, mc_version, mc_banner = _probe_minecraft_status(host, int(port), 1.2)
+                    if mc_product:
+                        service_name = "minecraft"
+                        service_product = mc_product
+                        if mc_version:
+                            service_version = mc_version
+                        if mc_banner and not banner_text:
+                            banner_text = mc_banner
 
                 entry = {
                     "protocol": proto,
@@ -3737,6 +3841,44 @@ def migrate_sql_to_mongo_api() -> Any:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": "Migration failed.", "details": str(exc)}), 500
+
+
+@app.route("/api/admin/reset-data", methods=["POST"])
+def reset_data_api() -> Any:
+    if not DB_READY:
+        return jsonify({"error": "Storage is unavailable."}), 503
+
+    try:
+        if use_mongodb():
+            db = get_mongo_db()
+            deleted_reports = db.reports.delete_many({}).deleted_count
+            deleted_findings = db.findings.delete_many({}).deleted_count
+            return jsonify(
+                {
+                    "ok": True,
+                    "engine": "mongodb",
+                    "deleted_reports": int(deleted_reports),
+                    "deleted_findings": int(deleted_findings),
+                }
+            )
+
+        with db_connection() as connection:
+            finding_row = fetchone(connection, "SELECT COUNT(*) AS c FROM findings") or {"c": 0}
+            report_row = fetchone(connection, "SELECT COUNT(*) AS c FROM reports") or {"c": 0}
+            execute(connection, "DELETE FROM findings")
+            execute(connection, "DELETE FROM reports")
+            connection.commit()
+
+        return jsonify(
+            {
+                "ok": True,
+                "engine": "sql",
+                "deleted_reports": int(report_row.get("c", 0)),
+                "deleted_findings": int(finding_row.get("c", 0)),
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": "Reset failed.", "details": str(exc)}), 500
 
 
 @app.route("/api/projects/<project_id>/findings")

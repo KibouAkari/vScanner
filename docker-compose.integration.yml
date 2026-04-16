@@ -1,0 +1,33 @@
+version: "3.9"
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "18080:80"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "15432:5432"
+
+  ssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      PUID: 1000
+      PGID: 1000
+      TZ: UTC
+      PUBLIC_KEY: ""
+      PASSWORD_ACCESS: "true"
+      USER_PASSWORD: "scanner"
+      USER_NAME: "scanner"
+    ports:
+      - "12222:2222"
