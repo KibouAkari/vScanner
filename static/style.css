@@ -540,12 +540,14 @@ canvas {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 0.7rem;
+    align-items: start;
 }
 
 .exec-grid {
     display: grid;
     grid-template-columns: 1.25fr 1fr;
     gap: 0.7rem;
+    align-items: start;
 }
 
 .stack-panel,
@@ -882,7 +884,7 @@ canvas {
 .list-scroll {
     display: grid;
     gap: 0.5rem;
-    max-height: 48vh;
+    max-height: clamp(220px, 36vh, 420px);
     overflow: auto;
 }
 

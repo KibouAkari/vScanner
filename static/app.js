@@ -803,14 +803,54 @@ function drawSeverityStack(points) {
     const low = points.map((item) => Number(item.low || 0));
 
     severityStackChartInstance = new window.Chart(severityStackChart, {
-        type: "bar",
+        type: "line",
         data: {
             labels,
             datasets: [
-                { label: "Critical", data: critical, backgroundColor: "rgba(255,93,115,0.85)", stack: "sev" },
-                { label: "High", data: high, backgroundColor: "rgba(255,195,92,0.85)", stack: "sev" },
-                { label: "Medium", data: medium, backgroundColor: "rgba(103,185,255,0.85)", stack: "sev" },
-                { label: "Low", data: low, backgroundColor: "rgba(76,221,136,0.82)", stack: "sev" },
+                {
+                    label: "Critical",
+                    data: critical,
+                    borderColor: "rgba(255,93,115,0.95)",
+                    backgroundColor: "rgba(255,93,115,0.28)",
+                    fill: true,
+                    stack: "sev",
+                    tension: 0.35,
+                    pointRadius: 0,
+                    borderWidth: 1.8,
+                },
+                {
+                    label: "High",
+                    data: high,
+                    borderColor: "rgba(255,195,92,0.95)",
+                    backgroundColor: "rgba(255,195,92,0.28)",
+                    fill: true,
+                    stack: "sev",
+                    tension: 0.35,
+                    pointRadius: 0,
+                    borderWidth: 1.8,
+                },
+                {
+                    label: "Medium",
+                    data: medium,
+                    borderColor: "rgba(103,185,255,0.95)",
+                    backgroundColor: "rgba(103,185,255,0.25)",
+                    fill: true,
+                    stack: "sev",
+                    tension: 0.35,
+                    pointRadius: 0,
+                    borderWidth: 1.8,
+                },
+                {
+                    label: "Low",
+                    data: low,
+                    borderColor: "rgba(76,221,136,0.95)",
+                    backgroundColor: "rgba(76,221,136,0.25)",
+                    fill: true,
+                    stack: "sev",
+                    tension: 0.35,
+                    pointRadius: 0,
+                    borderWidth: 1.8,
+                },
             ],
         },
         options: {
@@ -820,18 +860,40 @@ function drawSeverityStack(points) {
                 duration: 1100,
                 easing: "easeOutQuart",
             },
-            plugins: { legend: { labels: { color: "#dce9f7" } } },
+            interaction: {
+                mode: "index",
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    position: "bottom",
+                    labels: {
+                        color: "#dce9f7",
+                        usePointStyle: true,
+                        boxWidth: 10,
+                        boxHeight: 10,
+                        padding: 14,
+                    },
+                },
+                tooltip: {
+                    backgroundColor: "rgba(8, 16, 27, 0.95)",
+                    borderColor: "rgba(133, 173, 210, 0.3)",
+                    borderWidth: 1,
+                    titleColor: "#e7f2ff",
+                    bodyColor: "#d3e5f8",
+                },
+            },
             scales: {
                 x: {
                     stacked: true,
                     ticks: { color: "#9bb4cb", maxTicksLimit: 10 },
-                    grid: { color: "rgba(126,161,198,0.15)" },
+                    grid: { color: "rgba(126,161,198,0.1)" },
                 },
                 y: {
                     stacked: true,
                     beginAtZero: true,
                     ticks: { color: "#9bb4cb" },
-                    grid: { color: "rgba(126,161,198,0.18)" },
+                    grid: { color: "rgba(126,161,198,0.14)" },
                 },
             },
         },
