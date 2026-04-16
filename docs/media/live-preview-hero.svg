@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="520" viewBox="0 0 1400 520" role="img" aria-label="vScanner live report preview hero">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220" />
+      <stop offset="100%" stop-color="#111827" />
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.2" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1400" height="520" fill="url(#bg)" rx="22" />
+  <rect x="40" y="40" width="1320" height="440" fill="#0f172a" stroke="#334155" rx="16" />
+
+  <text x="90" y="95" fill="#e2e8f0" font-size="30" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">vScanner Live Report Review</text>
+  <circle cx="1280" cy="88" r="8" fill="#22c55e">
+    <animate attributeName="opacity" values="0.35;1;0.35" dur="1.6s" repeatCount="indefinite" />
+  </circle>
+  <text x="1298" y="94" fill="#86efac" font-size="18" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">LIVE</text>
+
+  <rect x="90" y="130" width="520" height="150" fill="#111827" stroke="#475569" rx="12" />
+  <text x="115" y="165" fill="#cbd5e1" font-size="20" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">Risk Distribution</text>
+  <rect x="115" y="185" width="120" height="64" fill="#7f1d1d" rx="8" />
+  <rect x="245" y="185" width="120" height="64" fill="#7c2d12" rx="8" />
+  <rect x="375" y="185" width="120" height="64" fill="#78350f" rx="8" />
+  <rect x="505" y="185" width="80" height="64" fill="#14532d" rx="8" />
+
+  <rect x="640" y="130" width="670" height="150" fill="#111827" stroke="#475569" rx="12" />
+  <text x="665" y="165" fill="#cbd5e1" font-size="20" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">Top Findings</text>
+  <rect x="665" y="186" width="610" height="20" fill="#1e293b" rx="6" />
+  <rect x="665" y="216" width="560" height="20" fill="#1e293b" rx="6" />
+  <rect x="665" y="246" width="520" height="20" fill="#1e293b" rx="6" />
+
+  <rect x="90" y="300" width="1220" height="140" fill="#111827" stroke="#475569" rx="12" />
+  <text x="115" y="335" fill="#cbd5e1" font-size="20" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">Scan Timeline</text>
+  <polyline points="120,405 260,380 420,392 560,350 720,360 860,320 1020,335 1180,300" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" />
+
+  <rect x="-260" y="40" width="220" height="440" fill="url(#shine)">
+    <animate attributeName="x" values="-260;1360" dur="3.4s" repeatCount="indefinite" />
+  </rect>
+</svg>

@@ -36,19 +36,19 @@ vScanner provides a full reporting flow from first scan to executive dashboard v
 
 ### Live Report Preview
 
-These are live snapshots of the deployed application for a professional project showcase.
+Fast-loading preview cards for an instant professional first impression.
 
-**Dashboard Overview**
+<p>
+  <img src="docs/media/live-preview-hero.svg" alt="vScanner animated live report preview" />
+</p>
 
-![vScanner live dashboard overview](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app?w=1400)
+<p>
+  <img src="docs/media/report-overview-card.svg" alt="vScanner dashboard overview card" />
+</p>
 
-**Project Risk Dashboard**
-
-![vScanner live project risk dashboard](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app%2Fapi%2Fprojects%2Fdefault%2Fdashboard%3Fwindow_days%3D30?w=1400)
-
-**Reports Endpoint Preview**
-
-![vScanner live reports endpoint preview](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app%2Fapi%2Freports?w=1400)
+<p>
+  <img src="docs/media/report-findings-card.svg" alt="vScanner findings review card" />
+</p>
 
 Production links:
 

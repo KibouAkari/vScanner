@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="420" viewBox="0 0 1400 420" role="img" aria-label="vScanner dashboard preview">
+  <rect width="1400" height="420" fill="#0f172a" rx="18" />
+  <rect x="30" y="30" width="1340" height="360" fill="#111827" stroke="#334155" rx="12" />
+  <text x="70" y="82" fill="#e2e8f0" font-size="28" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">Dashboard Overview</text>
+  <rect x="70" y="110" width="260" height="120" fill="#1e293b" rx="10" />
+  <rect x="350" y="110" width="260" height="120" fill="#1e293b" rx="10" />
+  <rect x="630" y="110" width="260" height="120" fill="#1e293b" rx="10" />
+  <rect x="910" y="110" width="260" height="120" fill="#1e293b" rx="10" />
+  <rect x="70" y="255" width="1100" height="90" fill="#1e293b" rx="10" />
+  <polyline points="90,320 220,300 360,308 500,286 650,295 800,270 950,280 1120,250" fill="none" stroke="#22d3ee" stroke-width="4" stroke-linecap="round" />
+</svg>
