@@ -1694,9 +1694,33 @@ body[data-mode="bright"] .error {
     }
     .mode-card-risk {
         background: linear-gradient(135deg, color-mix(in srgb, var(--panel-bg) 92%, #f59e0b 8%), var(--panel-bg));
+        border-color: rgba(245, 158, 11, 0.26);
+        position: relative;
+        overflow: hidden;
     }
     .mode-card-v2 {
         background: linear-gradient(135deg, color-mix(in srgb, var(--panel-bg) 90%, #22d3ee 10%), var(--panel-bg));
+        border-color: rgba(34, 211, 238, 0.26);
+        position: relative;
+        overflow: hidden;
+    }
+    .mode-card-risk::before,
+    .mode-card-v2::before {
+        position: absolute;
+        right: 10px;
+        top: 6px;
+        font-size: 0.62rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.45;
+    }
+    .mode-card-risk::before {
+        content: "risk";
+        color: #f59e0b;
+    }
+    .mode-card-v2::before {
+        content: "v2";
+        color: #22d3ee;
     }
     .mode-card-risk .mode-card-rails {
         margin-top: 0.6rem;
@@ -1729,6 +1753,139 @@ body[data-mode="bright"] .error {
         width: 30%;
         background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.42), transparent);
         animation: pulseSweep 2.5s linear infinite;
+    }
+
+    .scanner-hero-panel,
+    .network-scanner-panel,
+    .stealth-scanner-panel {
+        position: relative;
+        overflow: hidden;
+    }
+
+    .scanner-header-pattern {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 0;
+        opacity: 0.5;
+        background-repeat: no-repeat;
+        background-size: cover;
+        background-position: center;
+        mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.18));
+    }
+    .scanner-header-pattern::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(120deg, transparent 0%, rgba(255, 255, 255, 0.05) 45%, transparent 100%);
+        transform: translateX(-100%);
+        animation: headerSweep 6s ease-in-out infinite;
+    }
+    .scanner-header-pattern-risk {
+        background-image: url("icons/pattern-risk.svg");
+    }
+    .scanner-header-pattern-network {
+        background-image: url("icons/pattern-network.svg");
+    }
+    .scanner-header-pattern-stealth {
+        background-image: url("icons/pattern-stealth.svg");
+    }
+    @keyframes headerSweep {
+        0%, 68% { transform: translateX(-100%); opacity: 0; }
+        74% { opacity: 1; }
+        100% { transform: translateX(120%); opacity: 0; }
+    }
+
+    .scanner-hero-head,
+    .ns-header,
+    .ss-header,
+    .ns-stats-row,
+    .scanner-mode-grid,
+    .form-grid,
+    .network-suggestions,
+    .ss-mode-pills,
+    .ss-warning,
+    #scanModeNote {
+        position: relative;
+        z-index: 1;
+    }
+
+    .scanner-mark-frame {
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: rgba(12, 17, 28, 0.36);
+        backdrop-filter: blur(2px);
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025), 0 10px 28px rgba(0, 0, 0, 0.22);
+    }
+    .scanner-mark-frame-risk {
+        width: 82px;
+        height: 82px;
+        border-color: rgba(245, 158, 11, 0.32);
+    }
+    .scanner-mark-frame-network {
+        width: 86px;
+        height: 86px;
+        border-color: rgba(0, 212, 170, 0.34);
+    }
+    .scanner-mark-frame-stealth {
+        width: 96px;
+        height: 74px;
+        border-color: rgba(167, 139, 250, 0.36);
+    }
+    .scanner-mark {
+        width: 70px;
+        height: 70px;
+        object-fit: contain;
+    }
+    .scanner-mark-stealth {
+        width: 86px;
+        height: 58px;
+    }
+
+    .scanner-title-wrap {
+        display: grid;
+        gap: 0.3rem;
+    }
+    .scanner-title-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+        margin-bottom: 0.15rem;
+    }
+    .scanner-type-tag {
+        font-size: 0.66rem;
+        line-height: 1;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        border-radius: 999px;
+        padding: 0.22rem 0.48rem;
+        border: 1px solid transparent;
+        background: rgba(255, 255, 255, 0.03);
+        color: var(--muted);
+        font-weight: 700;
+    }
+    .scanner-type-tag.tag-risk {
+        color: #f59e0b;
+        border-color: rgba(245, 158, 11, 0.32);
+        background: rgba(245, 158, 11, 0.1);
+    }
+    .scanner-type-tag.tag-v2 {
+        color: #22d3ee;
+        border-color: rgba(34, 211, 238, 0.35);
+        background: rgba(34, 211, 238, 0.1);
+    }
+    .scanner-type-tag.tag-network {
+        color: #00d4aa;
+        border-color: rgba(0, 212, 170, 0.35);
+        background: rgba(0, 212, 170, 0.1);
+    }
+    .scanner-type-tag.tag-stealth {
+        color: #a78bfa;
+        border-color: rgba(167, 139, 250, 0.35);
+        background: rgba(167, 139, 250, 0.1);
     }
     @keyframes pulseSweep {
         to { left: 110%; }

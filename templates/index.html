@@ -166,13 +166,16 @@
 
             <section class="tab" id="tab-scanner">
                 <article class="panel scanner-hero-panel">
+                    <div class="scanner-header-pattern scanner-header-pattern-risk" aria-hidden="true"></div>
                     <div class="scanner-hero-head">
-                        <div class="scanner-hero-graphic" aria-hidden="true">
-                            <span class="scanner-orbit scanner-orbit-a"></span>
-                            <span class="scanner-orbit scanner-orbit-b"></span>
-                            <span class="scanner-core"></span>
+                        <div class="scanner-mark-frame scanner-mark-frame-risk" aria-hidden="true">
+                            <img class="scanner-mark" src="{{ url_for('static', filename='icons/mark-risk.svg') }}" alt="" />
                         </div>
-                        <div>
+                        <div class="scanner-title-wrap">
+                            <div class="scanner-title-badges" aria-hidden="true">
+                                <span class="scanner-type-tag tag-risk">Risk Scanner</span>
+                                <span class="scanner-type-tag tag-v2">Adaptive Ready</span>
+                            </div>
                             <h3 id="runNewScanTitle">Vulnerability Scanner</h3>
                             <p class="scanner-hero-sub">Focused host and domain assessments with deep fingerprinting, CVE enrichment and role-based scoring.</p>
                         </div>
@@ -240,17 +243,15 @@
             <!-- ═══ NETWORK SCANNER TAB ═══ -->
             <section class="tab" id="tab-network">
                 <article class="panel network-scanner-panel">
+                    <div class="scanner-header-pattern scanner-header-pattern-network" aria-hidden="true"></div>
                     <div class="ns-header">
-                        <div class="ns-hero-graphic" aria-hidden="true">
-                            <span class="ns-ring ns-ring-a"></span>
-                            <span class="ns-ring ns-ring-b"></span>
-                            <span class="ns-node ns-node-a"></span>
-                            <span class="ns-node ns-node-b"></span>
-                            <span class="ns-node ns-node-c"></span>
-                            <span class="ns-link ns-link-a"></span>
-                            <span class="ns-link ns-link-b"></span>
+                        <div class="scanner-mark-frame scanner-mark-frame-network" aria-hidden="true">
+                            <img class="scanner-mark" src="{{ url_for('static', filename='icons/mark-network.svg') }}" alt="" />
                         </div>
-                        <div>
+                        <div class="scanner-title-wrap">
+                            <div class="scanner-title-badges" aria-hidden="true">
+                                <span class="scanner-type-tag tag-network">Network Discovery</span>
+                            </div>
                             <h3 id="netScanTitle">Network Discovery Scanner</h3>
                             <p class="ns-hero-sub">CIDR subnet enumeration &bull; Host discovery &bull; Service mapping &bull; Authorized networks only</p>
                         </div>
@@ -299,16 +300,15 @@
             <!-- ═══ STEALTH SCANNER TAB ═══ -->
             <section class="tab" id="tab-stealth">
                 <article class="panel stealth-scanner-panel">
+                    <div class="scanner-header-pattern scanner-header-pattern-stealth" aria-hidden="true"></div>
                     <div class="ss-header">
-                        <div class="ss-hero-graphic" aria-hidden="true">
-                            <span class="ss-eye-shell"></span>
-                            <span class="ss-eye-iris"></span>
-                            <span class="ss-eye-pupil"></span>
-                            <span class="ss-eye-glint"></span>
-                            <span class="ss-signal ss-signal-a"></span>
-                            <span class="ss-signal ss-signal-b"></span>
+                        <div class="scanner-mark-frame scanner-mark-frame-stealth" aria-hidden="true">
+                            <img class="scanner-mark scanner-mark-stealth" src="{{ url_for('static', filename='icons/mark-stealth.svg') }}" alt="" />
                         </div>
-                        <div>
+                        <div class="scanner-title-wrap">
+                            <div class="scanner-title-badges" aria-hidden="true">
+                                <span class="scanner-type-tag tag-stealth">Stealth Intel</span>
+                            </div>
                             <h3 id="stealthScanTitle">Stealth &amp; Intel Scanner</h3>
                             <p class="ss-hero-sub">Low-noise probing &bull; Passive metadata enrichment &bull; No evasion — not a bypass tool</p>
                         </div>
