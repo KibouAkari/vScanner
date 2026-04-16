@@ -13,7 +13,11 @@ class OutdatedSshPlugin:
     plugin_id = "core.outdated_ssh"
 
     def applies(self, ctx: PluginContext) -> bool:
-        return ctx.probe.state == "open" and ctx.probe.port == 22
+        if ctx.probe.state != "open":
+            return False
+        service_name = (ctx.probe.service or "").lower()
+        banner = (ctx.probe.banner or "").lower()
+        return ctx.probe.port == 22 or "ssh" in service_name or banner.startswith("ssh-")
 
     def check(self, ctx: PluginContext) -> list[VulnerabilityFinding]:
         banner = (ctx.probe.banner or "").strip()

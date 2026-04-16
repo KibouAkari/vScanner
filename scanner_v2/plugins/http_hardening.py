@@ -19,7 +19,9 @@ class HttpHardeningPlugin:
         if not isinstance(headers, dict):
             headers = {}
 
-        if ctx.probe.port in {443, 8443, 9443} and "strict-transport-security" not in {k.lower() for k in headers.keys()}:
+        lower_header_names = {str(k).lower() for k in headers.keys()}
+
+        if ctx.probe.port in {443, 8443, 9443} and "strict-transport-security" not in lower_header_names:
             findings.append(
                 VulnerabilityFinding(
                     plugin_id=self.plugin_id,
@@ -30,6 +32,48 @@ class HttpHardeningPlugin:
                     host=ctx.target,
                     port=ctx.probe.port,
                     cvss=3.1,
+                )
+            )
+
+        if headers and "content-security-policy" not in lower_header_names:
+            findings.append(
+                VulnerabilityFinding(
+                    plugin_id=self.plugin_id,
+                    severity="medium",
+                    title="Missing Content-Security-Policy header",
+                    evidence="HTTP response did not include a CSP header.",
+                    recommendation="Define a restrictive Content-Security-Policy and tighten allowed sources.",
+                    host=ctx.target,
+                    port=ctx.probe.port,
+                    cvss=4.2,
+                )
+            )
+
+        if headers and "x-content-type-options" not in lower_header_names:
+            findings.append(
+                VulnerabilityFinding(
+                    plugin_id=self.plugin_id,
+                    severity="low",
+                    title="Missing X-Content-Type-Options header",
+                    evidence="HTTP response did not include X-Content-Type-Options: nosniff.",
+                    recommendation="Set X-Content-Type-Options to nosniff to reduce MIME confusion risks.",
+                    host=ctx.target,
+                    port=ctx.probe.port,
+                    cvss=3.1,
+                )
+            )
+
+        if headers and "x-frame-options" not in lower_header_names and "content-security-policy" not in lower_header_names:
+            findings.append(
+                VulnerabilityFinding(
+                    plugin_id=self.plugin_id,
+                    severity="low",
+                    title="Missing anti-clickjacking header",
+                    evidence="Neither X-Frame-Options nor frame-ancestors CSP directive was observed.",
+                    recommendation="Set X-Frame-Options DENY/SAMEORIGIN or use CSP frame-ancestors.",
+                    host=ctx.target,
+                    port=ctx.probe.port,
+                    cvss=3.0,
                 )
             )
 

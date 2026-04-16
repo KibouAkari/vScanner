@@ -125,11 +125,33 @@ class AsyncScannerV2:
                     probe.metadata.update(banner_data.get("metadata") or {})
 
                     product, version = infer_product_version(probe.banner)
+
+                    # Enrich from protocol metadata when banner regex is inconclusive.
+                    protocol_hint = str((probe.metadata or {}).get("protocol") or "").strip().lower()
+                    if not product and protocol_hint:
+                        protocol_map = {
+                            "ssh": ("OpenSSH", ""),
+                            "postgresql": ("PostgreSQL", str((probe.metadata or {}).get("postgres_version") or "")),
+                            "mysql": ("MySQL", str((probe.metadata or {}).get("mysql_version") or "")),
+                            "redis": ("Redis", str((probe.metadata or {}).get("redis_version") or "")),
+                        }
+                        mapped = protocol_map.get(protocol_hint)
+                        if mapped:
+                            product, version = mapped
+
+                    if not product:
+                        http_server = str((probe.metadata or {}).get("http_server") or "")
+                        if http_server:
+                            product, version = infer_product_version(http_server)
+
                     if product:
                         probe.product = product
                         probe.version = version
                         if probe.service == "unknown":
                             probe.service = product.lower().replace(" ", "-")
+
+                    if probe.service == "unknown" and protocol_hint:
+                        probe.service = protocol_hint.replace("_", "-")
 
                     if int(port) in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
                         probe.metadata.update(await probe_tls_metadata(request.target, int(port), timeout_s=timeout_s))
@@ -193,11 +215,32 @@ class AsyncScannerV2:
                     probe.metadata.update(banner_data.get("metadata") or {})
 
                     product, version = infer_product_version(probe.banner)
+
+                    protocol_hint = str((probe.metadata or {}).get("protocol") or "").strip().lower()
+                    if not product and protocol_hint:
+                        protocol_map = {
+                            "ssh": ("OpenSSH", ""),
+                            "postgresql": ("PostgreSQL", str((probe.metadata or {}).get("postgres_version") or "")),
+                            "mysql": ("MySQL", str((probe.metadata or {}).get("mysql_version") or "")),
+                            "redis": ("Redis", str((probe.metadata or {}).get("redis_version") or "")),
+                        }
+                        mapped = protocol_map.get(protocol_hint)
+                        if mapped:
+                            product, version = mapped
+
+                    if not product:
+                        http_server = str((probe.metadata or {}).get("http_server") or "")
+                        if http_server:
+                            product, version = infer_product_version(http_server)
+
                     if product:
                         probe.product = product
                         probe.version = version
                         if probe.service == "unknown":
                             probe.service = product.lower().replace(" ", "-")
+
+                    if probe.service == "unknown" and protocol_hint:
+                        probe.service = protocol_hint.replace("_", "-")
 
                     if port in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
                         probe.metadata.update(await probe_tls_metadata(request.target, port, timeout_s=timeout_s))

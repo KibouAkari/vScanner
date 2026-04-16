@@ -457,11 +457,19 @@ body {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 0.65rem;
+    grid-auto-rows: 1fr;
+    align-items: stretch;
 }
 
 .kpi {
     display: grid;
     gap: 0.22rem;
+}
+
+.kpi.panel {
+    height: 100%;
+    align-content: space-between;
+    min-height: 104px;
 }
 
 .kpi span {
@@ -485,6 +493,16 @@ body {
 .chart-panel {
     display: grid;
     gap: 0.65rem;
+}
+
+.major-panel {
+    border-color: rgba(102, 182, 240, 0.34);
+    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(46, 118, 182, 0.22);
+}
+
+.major-panel .panel-head h3,
+.major-panel > h3 {
+    font-size: 1.04rem;
 }
 
 .panel-head {
@@ -527,6 +545,11 @@ canvas {
     width: 100%;
     min-height: 180px;
     height: clamp(180px, 28vh, 255px);
+}
+
+.major-panel .chart-wrap {
+    min-height: 210px;
+    height: clamp(210px, 30vh, 290px);
 }
 
 .chart-wrap canvas {
@@ -576,6 +599,11 @@ canvas {
 .stack-panel .chart-wrap {
     min-height: 150px;
     height: clamp(150px, 22vh, 220px);
+}
+
+.stack-panel.major-panel .chart-wrap {
+    min-height: 180px;
+    height: clamp(180px, 24vh, 245px);
 }
 
 .heatmap-panel-compact {
@@ -1267,6 +1295,37 @@ body[data-mode="bright"] .error {
     }
 }
 
+@media (max-width: 980px) {
+    .workspace {
+        padding: 0.62rem;
+        gap: 0.56rem;
+    }
+
+    .tab.active {
+        gap: 0.6rem;
+    }
+
+    .panel {
+        padding: 0.62rem;
+    }
+
+    .split-grid-balanced,
+    .exec-grid-tight,
+    .snapshot-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .major-panel .chart-wrap,
+    .stack-panel.major-panel .chart-wrap {
+        min-height: 170px;
+        height: clamp(170px, 26vh, 220px);
+    }
+
+    .list-scroll {
+        max-height: clamp(160px, 28vh, 250px);
+    }
+}
+
 @media (max-width: 700px) {
     .workspace {
         padding: 0.65rem;
@@ -1292,5 +1351,28 @@ body[data-mode="bright"] .error {
 
     .scan-summary-grid {
         grid-template-columns: 1fr;
+    }
+
+    .kpi-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .topbar h1 {
+        font-size: clamp(1.2rem, 5vw, 1.5rem);
+    }
+
+    .topbar p {
+        font-size: 0.8rem;
+    }
+
+    .major-panel .chart-wrap,
+    .stack-panel.major-panel .chart-wrap,
+    .stack-panel .chart-wrap {
+        min-height: 150px;
+        height: clamp(150px, 24vh, 190px);
+    }
+
+    .list-scroll {
+        max-height: 220px;
     }
 }

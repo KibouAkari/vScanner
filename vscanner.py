@@ -10,6 +10,7 @@ import os
 import re
 import socket
 import sqlite3
+import struct
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -2131,9 +2132,14 @@ def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
 
     signatures = [
         ("OpenSSH", r"openssh[_/ -]([\w\.-]+)"),
+        ("Dropbear SSH", r"dropbear[_/ -]?([\w\.-]+)?"),
         ("nginx", r"nginx[/ ]([\w\.-]+)"),
         ("Apache httpd", r"apache(?:/|\s)([\w\.-]+)"),
         ("Microsoft-IIS", r"microsoft-iis/([\w\.-]+)"),
+        ("Caddy", r"caddy[/ ]([\w\.-]+)"),
+        ("Gunicorn", r"gunicorn[/ ]([\w\.-]+)"),
+        ("uvicorn", r"uvicorn[/ ]([\w\.-]+)"),
+        ("Node.js", r"node\.js[/ ]([\w\.-]+)"),
         ("vsftpd", r"vsftpd\s*([\w\.-]+)?"),
         ("Postfix SMTP", r"postfix(?:\s|/)?([\w\.-]+)?"),
         ("Exim SMTP", r"exim(?:\s|/)?([\w\.-]+)?"),
@@ -2141,6 +2147,8 @@ def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
         ("PostgreSQL", r"postgres(?:ql)?(?:\s|/)?([\w\.-]+)?"),
         ("MySQL", r"mysql(?:\s|/)?([\w\.-]+)?"),
         ("RabbitMQ", r"rabbitmq(?:\s|/)?([\w\.-]+)?"),
+        ("Elasticsearch", r"elasticsearch(?:\s|/)?([\w\.-]+)?"),
+        ("Jenkins", r"jenkins(?:\s|/)?([\w\.-]+)?"),
         ("Kubernetes API", r"kubernetes"),
         ("OpenVPN", r"openvpn(?:\s|/)?([\w\.-]+)?"),
         ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
@@ -2550,6 +2558,8 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         20,
         21,
         22,
+        2222,
+        12222,
         23,
         25,
         53,
@@ -2605,6 +2615,7 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         7443,
         8080,
         8081,
+        18080,
         8088,
         8090,
         8161,
@@ -2856,11 +2867,35 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
 
 def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
     request_data = (
-        f"HEAD / HTTP/1.1\r\nHost: {host_or_ip}\r\n"
+        f"GET / HTTP/1.1\r\nHost: {host_or_ip}\r\n"
         "User-Agent: vScanner/3.0\r\nConnection: close\r\n\r\n"
     )
     sock.sendall(request_data.encode())
-    return sock.recv(320).decode(errors="ignore").strip()
+    raw = sock.recv(1400).decode(errors="ignore")
+    if not raw:
+        return ""
+
+    head, _, body = raw.partition("\r\n\r\n")
+    status_line = ""
+    server = ""
+    powered_by = ""
+    for idx, line in enumerate(head.split("\r\n")):
+        if idx == 0:
+            status_line = line.strip()
+            continue
+        low = line.lower()
+        if low.startswith("server:"):
+            server = line.split(":", 1)[1].strip()
+        elif low.startswith("x-powered-by:"):
+            powered_by = line.split(":", 1)[1].strip()
+
+    title = ""
+    title_match = re.search(r"<title>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    if title_match:
+        title = title_match.group(1).strip()[:120]
+
+    parts = [p for p in [status_line, f"Server: {server}" if server else "", f"X-Powered-By: {powered_by}" if powered_by else "", f"Title: {title}" if title else ""] if p]
+    return " | ".join(parts)[:600]
 
 
 def _mc_varint_encode(value: int) -> bytes:
@@ -2980,19 +3015,33 @@ def _probe_port_banner(sock: socket.socket, host_or_ip: str, port: int) -> str:
 
     try:
         if port in {3306, 5432}:
-            data = sock.recv(256)
-            if data:
-                text = data.decode(errors="ignore").strip()
-                if text:
-                    return text
-                if port == 3306 and len(data) > 5:
-                    return "mysql-handshake"
+            if port == 5432:
+                try:
+                    sock.sendall(struct.pack("!II", 8, 80877103))
+                    data = sock.recv(8)
+                    if data[:1] == b"S":
+                        return "PostgreSQL SSLRequest response: S"
+                    if data[:1] == b"N":
+                        return "PostgreSQL SSLRequest response: N"
+                except Exception:
+                    pass
+            else:
+                data = sock.recv(256)
+                if data:
+                    text = data.decode(errors="ignore").strip()
+                    if text:
+                        return text
+                    if port == 3306 and len(data) > 5:
+                        return "MySQL handshake"
         probe = probes.get(port)
         if probe:
             sock.sendall(probe)
             data = sock.recv(320)
             if data:
-                return data.decode(errors="ignore").strip()
+                text = data.decode(errors="ignore").strip()
+                if port == 6379 and text and ("PONG" in text.upper() or "ERR" in text.upper()):
+                    return f"Redis {text}"
+                return text
         data = sock.recv(256)
         if data:
             return data.decode(errors="ignore").strip()
@@ -3101,10 +3150,10 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
         timeout_s = 0.9
         max_workers = 32
     elif profile == "deep":
-        timeout_s = 0.45 if port_strategy == "standard" else 0.62
+        timeout_s = 0.58 if port_strategy == "standard" else 0.75
         max_workers = 150
     else:
-        timeout_s = 0.36 if port_strategy == "standard" else 0.5
+        timeout_s = 0.45 if port_strategy == "standard" else 0.62
         max_workers = 220
 
     for ip_s in ips[:4]:
@@ -3146,25 +3195,25 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
-        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
+        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
+        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info"
+            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,minecraft-info,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -3213,6 +3262,24 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                             service_version = mc_version
                         if mc_banner and not banner_text:
                             banner_text = mc_banner
+
+                if data.get("state") == "open" and (not banner_text or not service_product or service_name == "unknown"):
+                    enrich = _scan_single_port(host, int(port), timeout_s=0.85)
+                    if enrich.get("state") == "open":
+                        enrich_banner = str(enrich.get("banner") or "")
+                        if enrich_banner and not banner_text:
+                            banner_text = enrich_banner
+
+                        enrich_product = str(enrich.get("product") or "")
+                        enrich_version = str(enrich.get("version") or "")
+                        enrich_name = str(enrich.get("name") or "")
+
+                        if enrich_product and not service_product:
+                            service_product = enrich_product
+                        if enrich_version and not service_version:
+                            service_version = enrich_version
+                        if service_name == "unknown" and enrich_name and enrich_name != "unknown":
+                            service_name = enrich_name
 
                 entry = {
                     "protocol": proto,
@@ -3523,11 +3590,11 @@ def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
         return sorted(set([22, 53, 80, 110, 143, 443, 587, 636, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 9443]))
 
     if canonical == "deep":
-        deep_cap = 10000 if port_strategy == "aggressive" else 7000
+        deep_cap = 18000 if port_strategy == "aggressive" else 12000
         base.extend(range(1, deep_cap + 1))
 
     if port_strategy == "aggressive":
-        base.extend([2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
+        base.extend([2222, 12222, 18080, 2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
 
     return sorted(set(p for p in base if 1 <= int(p) <= 65535))
 
