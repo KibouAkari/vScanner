@@ -1,122 +1,108 @@
-# vScanner
+<p align="center">
+  <img src="static/icons/vscanner-shield.svg" alt="vScanner icon" width="110" />
+</p>
 
-vScanner is a modern vulnerability scanning workspace with a professional web UI, adaptive scan profiles, persistent project analytics, and deduplicated findings intelligence.
+<h1 align="center">vScanner</h1>
 
-## Core Capabilities
+<p align="center">
+  Professional vulnerability scanning workspace with modern reporting, adaptive scan engines, and project-level security analytics.
+</p>
 
-- Scan targets as:
-  - Single host IP
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" />
+  <img alt="Flask" src="https://img.shields.io/badge/Flask-API%20%26%20UI-000000?logo=flask&logoColor=white" />
+  <img alt="Nmap" src="https://img.shields.io/badge/Nmap-Network%20Discovery-2E8B57" />
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-blue" />
+</p>
+
+## Why vScanner
+
+vScanner started as a simple Python script with a basic Flask website and a few Nmap-based scan options for a school project.
+
+It has evolved into a larger security platform with modular scan engines, deduplicated findings intelligence, persistent project analytics, exportable reports, and production-ready deployment options.
+
+## Live Report Showcase
+
+vScanner provides a full reporting flow from first scan to executive dashboard views:
+
+- Real-time scan execution with selectable profiles and strategies
+- Project dashboards with risk trends, severity distribution, and top vulnerabilities
+- Aggregated findings view with filtering, sorting, and asset impact context
+- One-click report exports in PDF and CSV for audits and stakeholder communication
+
+If you deploy vScanner publicly, add your links here:
+
+- Live UI: `https://your-domain.example`
+- Health API: `https://your-domain.example/api/health`
+- Example dashboard endpoint: `https://your-domain.example/api/projects/default/dashboard?window_days=30`
+
+## Feature Overview
+
+- Target types:
+  - Single IP
   - Domain
-  - CIDR network (for local/authorized network discovery)
+  - CIDR network (authorized local/lab discovery)
 - Scan profiles:
   - `light` for fast discovery
-  - `deep` for broader service/version analysis
-  - `stealth` for defensive low-noise scanning
-  - `network` for CIDR host discovery
-- Port strategy:
+  - `deep` for broader service and version analysis
+  - `stealth` for low-noise defensive scanning
+  - `network` for CIDR discovery
+  - `advanced_v2` for adaptive async engine and plugin checks
+- Port strategies:
   - `standard`
   - `aggressive`
-- Findings model with project persistence:
-  - Same asset + same vulnerability is not duplicated
-  - Same vulnerability across multiple assets is aggregated with affected-assets context
-- Dashboard and analytics:
-  - Risk trend by time window
-  - Severity timeline (stacked executive chart)
-  - Severity heatmap snapshot
-  - Risk distribution
-  - Top vulnerabilities
-  - Search, filter, and sort on aggregated findings
+- Findings intelligence:
+  - Deduplicated vulnerability tracking per asset
+  - Aggregated weakness visibility across assets
+  - Cleaner risk distribution (actionable findings only)
 - Reporting:
-  - Single scan PDF export
-  - Project dashboard PDF export
-  - Single scan CSV export
-  - Project findings CSV export
-  - Project dashboard CSV export
+  - Single-scan PDF and CSV
+  - Project findings PDF and CSV
+  - Dashboard exports for sharing and review
 
-## Important Legal Notice
+## Architecture Snapshot
 
-Use vScanner only on systems and networks you are explicitly authorized to test.
-Unauthorized scanning may violate law or policy.
+- `vscanner.py`: primary backend, APIs, persistence, analytics, scan orchestration
+- `scanner_v2/`: modular async scanner engine, protocol fingerprinting, plugin checks
+- `scanner_v2/rust_bridge.py`: optional Rust worker bridge for fast TCP probing
+- `rust_worker/`: Rust data-plane worker (optional)
+- `templates/index.html` + `static/app.js` + `static/style.css`: web UI and dashboard experience
+- `api/index.py` + `vercel.json`: serverless deployment entrypoint and routing
 
-## Tech Stack
-
-- Python 3.10+
-- Flask
-- python-nmap
-- requests + urllib3
-- reportlab
-- Optional Vercel Postgres support via `DATABASE_URL` and `psycopg`
-- Optional MongoDB Atlas support via `MONGODB_URI` and `pymongo`
-
-## Vercel Deployment
-
-This project is ready for Vercel deployment:
-
-- `api/index.py` is the serverless entrypoint
-- `vercel.json` routes traffic to Flask
-
-### Recommended Environment Variables
-
-- `VSCANNER_PUBLIC_MODE=1`
-- Optional: `VSCANNER_FORCE_LIGHT_SCAN=1`
-- Optional: `DATABASE_URL=<vercel-postgres-url>`
-- Optional: `MONGODB_URI=<mongodb-atlas-uri>`
-- Optional: `MONGODB_DB_NAME=vscanner`
-
-## Installation
+## Quickstart
 
 1. Install Nmap
+   - macOS: `brew install nmap`
+   - Linux: package manager, for example `sudo apt install nmap`
    - Windows: https://nmap.org/download.html
-   - Linux: package manager (example: `sudo apt install nmap`)
-   - macOS: example `brew install nmap`
 
-2. Install dependencies
+2. Install Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Run
+3. Start application
 
 ```bash
 python vscanner.py
 ```
 
-Open browser:
+4. Open UI
 
 - `http://127.0.0.1:5000`
 
-## API Endpoints
+## API Highlights
 
-- `GET /api/health`
-- `GET /api/client-ip`
-- `GET /api/projects`
-- `POST /api/projects`
-- `GET /api/projects/<project_id>/dashboard?window_days=30`
-- `GET /api/projects/<project_id>/dashboard.csv?window_days=30`
-- `GET /api/projects/<project_id>/findings?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
-- `GET /api/projects/<project_id>/findings.csv?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
-- `GET /api/projects/<project_id>/pdf?window_days=30`
 - `POST /api/scan`
 - `POST /api/scan/v2`
-- `POST /api/admin/reset-data`
-- `GET /api/reports`
-- `GET /api/reports/<report_id>`
-- `GET /api/reports/<report_id>/csv`
+- `GET /api/projects`
+- `GET /api/projects/<project_id>/dashboard?window_days=30`
+- `GET /api/projects/<project_id>/findings?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
 - `GET /api/reports/<report_id>/pdf`
-- `POST /api/admin/migrate-sql-to-mongo`
+- `POST /api/admin/reset-data`
 
-Migration body example (`POST /api/admin/migrate-sql-to-mongo`):
-
-```json
-{
-  "source_database_url": "",
-  "source_sqlite_path": "data/vscanner_reports.db",
-  "overwrite": false
-}
-```
-
-Example `POST /api/scan` or `POST /api/scan/v2` body:
+Example scan request (`POST /api/scan` or `POST /api/scan/v2`):
 
 ```json
 {
@@ -127,53 +113,66 @@ Example `POST /api/scan` or `POST /api/scan/v2` body:
 }
 ```
 
-## Project Structure
+## Deployment (Vercel)
 
-- `vscanner.py` backend scanner, persistence, analytics, API routes
-- `scanner_v2/` modular async scanner engine, protocol fingerprinting, plugin vulnerability checks
-- `templates/index.html` redesigned UI shell
-- `static/style.css` responsive visual system
-- `static/app.js` dynamic dashboard and interaction logic
-- `api/index.py` Vercel entrypoint
-- `vercel.json` Vercel routing/build config
-- `requirements.txt` dependency manifest
+This repository supports Vercel deployment out of the box:
 
-## Security Posture
+- `api/index.py` is the serverless entrypoint
+- `vercel.json` routes incoming traffic to Flask
 
-- Input validation for target type and profile combinations
-- Public mode guard against private/internal scans when enabled
-- Per-client API rate limiting
-- Security response headers (CSP, X-Frame-Options, etc.)
-- Debug mode off by default
+Recommended environment variables:
 
-## Stealth Profile Clarification
-
-`stealth` means low-noise defensive scanning behavior.
-It does not provide SIEM evasion, IDS bypass, or hidden offensive capabilities.
+- `VSCANNER_PUBLIC_MODE=1`
+- `VSCANNER_FORCE_LIGHT_SCAN=1` (optional)
+- `DATABASE_URL=<vercel-postgres-url>` (optional)
+- `MONGODB_URI=<mongodb-atlas-uri>` (optional)
+- `MONGODB_DB_NAME=vscanner` (optional)
 
 ## Optional Rust Data Plane (V2)
 
-You can keep Python as control plane and use an optional Rust TCP worker for faster connect probing.
+Keep Python as control plane and use Rust as optional data plane for faster connect probing.
 
-Build:
+Build worker:
 
 ```bash
 cd rust_worker
 cargo build --release
 ```
 
-Enable for V2 scans:
+Enable worker:
 
 ```bash
 export VSCANNER_USE_RUST_WORKER=1
 export VSCANNER_RUST_WORKER_BIN="$(pwd)/rust_worker/target/release/vscanner-rust-worker"
 ```
 
-Then use `POST /api/scan/v2` from UI or API.
+Then run scans through `POST /api/scan/v2` or select Advanced V2 mode in the UI.
 
 ## Engineering Validation
 
-- Unit tests: `python -m unittest tests/test_scanner_v2.py`
-- Benchmark: `python scripts/benchmark_v2.py --host 127.0.0.1 --runs 3 --ports 400`
-- Integration tests (container stack): `python -m unittest tests/integration/test_container_stack.py`
-- Architecture/design notes: `docs/scanner_v2_architecture.md`
+- Unit tests:
+
+```bash
+python -m unittest tests/test_scanner_v2.py
+```
+
+- Integration tests (container stack):
+
+```bash
+python -m unittest tests/integration/test_container_stack.py
+```
+
+- Benchmark:
+
+```bash
+python scripts/benchmark_v2.py --host 127.0.0.1 --runs 3 --ports 400
+```
+
+Architecture notes are available in `docs/scanner_v2_architecture.md`.
+
+## Security and Legal
+
+Use vScanner only on systems and networks you are explicitly authorized to test.
+Unauthorized scanning may violate law, contracts, or policy.
+
+`stealth` means low-noise defensive behavior. It does not provide evasion or bypass capabilities.
