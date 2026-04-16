@@ -38,6 +38,10 @@ from reportlab.graphics.shapes import Drawing, Rect
 from reportlab.graphics.shapes import String as _GStr
 from urllib3.exceptions import InsecureRequestWarning
 
+from scanner_v2 import run_scan_sync as run_scan_v2_sync
+from scanner_v2.models import ScanRequest as ScanRequestV2
+from scanner_v2.profiles import DEFAULT_PORTS as V2_DEFAULT_PORTS, get_profile as get_profile_v2
+
 try:
     import psycopg
 except Exception:  # pragma: no cover
@@ -3398,6 +3402,139 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     }
 
 
+def resolve_v2_profile(profile: str, port_strategy: str) -> str:
+    canonical = canonical_profile(profile)
+    if canonical == "stealth":
+        return "stealth"
+    if canonical == "deep" and port_strategy == "aggressive":
+        return "aggressive"
+    return "balanced"
+
+
+def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
+    base = list(V2_DEFAULT_PORTS)
+    canonical = canonical_profile(profile)
+
+    if canonical == "stealth":
+        return sorted(set([22, 53, 80, 110, 143, 443, 587, 636, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 9443]))
+
+    if canonical == "deep":
+        deep_cap = 10000 if port_strategy == "aggressive" else 7000
+        base.extend(range(1, deep_cap + 1))
+
+    if port_strategy == "aggressive":
+        base.extend([2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
+
+    return sorted(set(p for p in base if 1 <= int(p) <= 65535))
+
+
+def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> dict[str, Any]:
+    target_input = (raw_target or "").strip()
+    if not target_input:
+        raise ScanInputError("Please provide a target.")
+
+    target, target_type = normalize_target(target_input)
+    if target_type == "network":
+        raise ScanInputError("V2 async engine currently supports host/domain targets. Use profile network with classic engine for CIDR scans.")
+
+    enforce_public_safety(target, target_type)
+
+    profile_v2 = resolve_v2_profile(profile, port_strategy)
+    ports = build_v2_port_list(profile, port_strategy)
+
+    req = ScanRequestV2(
+        target=target,
+        ports=ports,
+        profile=get_profile_v2(profile_v2),
+        enable_service_fingerprinting=True,
+        enable_vuln_plugins=True,
+    )
+    result_v2 = run_scan_v2_sync(req)
+    result_json = result_v2.to_dict()
+
+    open_ports = result_json.get("open_ports", [])
+    findings = result_json.get("findings", [])
+
+    host_findings: list[dict[str, Any]] = []
+    cve_items: list[dict[str, Any]] = []
+    for finding in findings:
+        item = {
+            "host": target,
+            "severity": normalize_severity(str(finding.get("severity", "low"))),
+            "title": str(finding.get("title", "Finding")),
+            "evidence": str(finding.get("evidence", "-")),
+            "type": str(finding.get("plugin_id", "plugin_check")),
+            "cve": str(finding.get("cve", "")),
+        }
+        host_findings.append(item)
+        if item["cve"]:
+            cve_items.append(item)
+
+    risk_summary = build_risk_summary(host_findings)
+    risk_level = compute_risk_level(risk_summary)
+    risk_score = compute_true_risk_score(risk_summary, len(open_ports), len(cve_items))
+
+    host_entry = {
+        "host": target,
+        "state": "up" if open_ports else "unknown",
+        "hostnames": [target] if target_type == "domain" else [],
+        "reverse_dns": safe_reverse_dns(target) if target_type == "host" else None,
+        "os_matches": [],
+        "ports": [
+            {
+                "protocol": p.get("protocol", "tcp"),
+                "port": p.get("port", 0),
+                "state": p.get("state", "open"),
+                "name": p.get("service", "unknown"),
+                "product": p.get("product", ""),
+                "version": p.get("version", ""),
+                "extra_info": "",
+                "cpe": "",
+                "banner": p.get("banner", ""),
+            }
+            for p in open_ports
+        ],
+        "findings": host_findings,
+        "web_evidence": [],
+        "finding_count": len(host_findings),
+        "open_port_count": len(open_ports),
+    }
+
+    return {
+        "meta": {
+            "scanner": "vScanner 3.0",
+            "engine": "async-v2",
+            "started_at": result_json.get("meta", {}).get("started_at"),
+            "finished_at": result_json.get("meta", {}).get("finished_at"),
+            "target": target,
+            "target_type": target_type,
+            "profile": canonical_profile(profile),
+            "port_strategy": port_strategy,
+            "risk_level": risk_level,
+            "public_mode": is_public_mode(),
+            "authorization_notice": "Only scan systems you are explicitly authorized to test.",
+            "stealth_note": "Stealth profile is low-noise only and does not bypass security monitoring.",
+        },
+        "nmap": {
+            "command": f"v2-async ports={len(ports)} profile={profile_v2}",
+            "summary": result_json.get("stats", {}),
+        },
+        "hosts": [host_entry],
+        "finding_items": deduplicate_finding_items(host_findings),
+        "cve_items": deduplicate_cves(cve_items),
+        "risk_summary": risk_summary,
+        "true_risk_score": risk_score,
+        "metrics": {
+            "open_ports": len(open_ports),
+            "exposed_services": sum(1 for f in host_findings if "exposed" in str(f.get("title", "")).lower()),
+            "cve_candidates": len(deduplicate_cves(cve_items)),
+            "hosts_scanned": 1,
+        },
+        "intel": None,
+        "total_findings": len(deduplicate_finding_items(host_findings)),
+    }
+
+
 @app.after_request
 def set_security_headers(response: Any) -> Any:
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -3775,6 +3912,48 @@ def scan_api() -> Any:
                 "details": str(exc),
             }
         ), 500
+    except Exception as exc:
+        return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
+
+
+@app.route("/api/scan/v2", methods=["POST"])
+def scan_api_v2() -> Any:
+    payload = request.get_json(silent=True) or {}
+    target = payload.get("target", "")
+    profile = (payload.get("profile") or "light").lower()
+    port_strategy = (payload.get("port_strategy") or "standard").lower()
+    project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": "Invalid profile. Allowed: light, deep, stealth, network."}), 400
+
+    if port_strategy not in {"standard", "aggressive"}:
+        return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
+
+    client = request.headers.get("X-Forwarded-For", "")
+    client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
+
+    try:
+        project = get_project(project_id)
+        if not project:
+            raise ScanInputError("Project not found.")
+
+        enforce_rate_limit(client_ip_value)
+        result = orchestrate_scan_v2(target, profile, port_strategy)
+        result["meta"]["project_id"] = project["id"]
+        result["meta"]["project_name"] = project["name"]
+
+        try:
+            report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
+            result["report_id"] = report_id
+            result["persisted"] = True
+        except Exception as exc:
+            result["persisted"] = False
+            result["warning"] = "Scan completed, but saving the report failed."
+            result["persist_error"] = str(exc)
+        return jsonify(result)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
 

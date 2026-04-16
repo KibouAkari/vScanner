@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import asyncio
+import time
+from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any
+
+from .fingerprint import infer_product_version, probe_tcp_banner, probe_tls_metadata
+from .models import ProbeResult, ScanRequest, ScanResult, prioritize_findings, utc_now
+from .timing import AdaptiveRateController
+from .vuln_engine import VulnerabilityEngine
+
+
+_COMMON_SERVICE_NAMES = {
+    21: "ftp",
+    22: "ssh",
+    23: "telnet",
+    25: "smtp",
+    53: "dns",
+    80: "http",
+    110: "pop3",
+    143: "imap",
+    443: "https",
+    445: "smb",
+    587: "smtp-submission",
+    993: "imaps",
+    995: "pop3s",
+    1433: "mssql",
+    1521: "oracle",
+    2375: "docker",
+    3306: "mysql",
+    3389: "rdp",
+    5432: "postgresql",
+    5900: "vnc",
+    6379: "redis",
+    8080: "http-alt",
+    8443: "https-alt",
+    9200: "elasticsearch",
+    11211: "memcached",
+    27017: "mongodb",
+    50000: "jenkins",
+}
+
+
+class AsyncScannerV2:
+    def __init__(self, vuln_engine: VulnerabilityEngine | None = None) -> None:
+        self.vuln_engine = vuln_engine or VulnerabilityEngine()
+
+    async def run(self, request: ScanRequest) -> ScanResult:
+        started_iso = utc_now()
+        started_perf = time.perf_counter()
+
+        sem = asyncio.Semaphore(max(1, request.profile.max_concurrency))
+        rate = AdaptiveRateController(
+            base_timeout_s=request.profile.timeout_s,
+            jitter_min_ms=request.profile.jitter_min_ms,
+            jitter_max_ms=request.profile.jitter_max_ms,
+            burst_limit=request.profile.ids_aware_burst_limit,
+        )
+
+        async def scan_one(index: int, port: int) -> ProbeResult:
+            await rate.pace(index)
+            async with sem:
+                return await self._scan_port(request, rate, port)
+
+        tasks = [scan_one(i, p) for i, p in enumerate(sorted(set(request.ports)))]
+        results = await asyncio.gather(*tasks)
+        open_ports = [r for r in results if r.state == "open"]
+
+        findings = self.vuln_engine.run(request.target, open_ports) if request.enable_vuln_plugins else []
+        findings = prioritize_findings(findings)
+
+        duration = round(time.perf_counter() - started_perf, 3)
+        finished_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        stats = self._build_stats(request, results, open_ports, findings, rate, duration)
+
+        return ScanResult(
+            started_at=started_iso,
+            finished_at=finished_iso,
+            target=request.target,
+            profile=request.profile.name,
+            duration_s=duration,
+            open_ports=open_ports,
+            findings=findings,
+            stats=stats,
+        )
+
+    async def _scan_port(self, request: ScanRequest, rate: AdaptiveRateController, port: int) -> ProbeResult:
+        attempts = max(1, request.profile.retries + 1)
+        last_latency_ms = 0.0
+
+        for attempt in range(attempts):
+            timeout_s = rate.timeout_for_attempt(attempt)
+            start = time.perf_counter()
+            try:
+                conn = asyncio.open_connection(request.target, port)
+                reader, writer = await asyncio.wait_for(conn, timeout=timeout_s)
+                last_latency_ms = (time.perf_counter() - start) * 1000.0
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+
+                probe = ProbeResult(
+                    port=port,
+                    state="open",
+                    latency_ms=round(last_latency_ms, 2),
+                    service=_COMMON_SERVICE_NAMES.get(port, "unknown"),
+                )
+
+                if request.enable_service_fingerprinting:
+                    banner_data = await probe_tcp_banner(request.target, port, timeout_s=timeout_s)
+                    probe.banner = str(banner_data.get("banner") or "")
+                    probe.metadata.update(banner_data.get("metadata") or {})
+
+                    product, version = infer_product_version(probe.banner)
+                    if product:
+                        probe.product = product
+                        probe.version = version
+                        if probe.service == "unknown":
+                            probe.service = product.lower().replace(" ", "-")
+
+                    if port in {443, 465, 636, 853, 990, 993, 995, 2376, 8443, 9443}:
+                        probe.metadata.update(await probe_tls_metadata(request.target, port, timeout_s=timeout_s))
+
+                rate.observe(True)
+                return probe
+            except Exception:
+                rate.observe(False)
+
+        return ProbeResult(port=port, state="closed", latency_ms=round(last_latency_ms, 2), service=_COMMON_SERVICE_NAMES.get(port, "unknown"))
+
+    def _build_stats(
+        self,
+        request: ScanRequest,
+        all_results: list[ProbeResult],
+        open_ports: list[ProbeResult],
+        findings: list[Any],
+        rate: AdaptiveRateController,
+        duration: float,
+    ) -> dict[str, Any]:
+        severity_counts: dict[str, int] = defaultdict(int)
+        for finding in findings:
+            severity_counts[str(getattr(finding, "severity", "low"))] += 1
+
+        return {
+            "target": request.target,
+            "ports_requested": len(request.ports),
+            "ports_open": len(open_ports),
+            "ports_closed": max(0, len(all_results) - len(open_ports)),
+            "duration_s": duration,
+            "throughput_ports_per_s": round(len(all_results) / duration, 2) if duration > 0 else 0,
+            "reliability": {
+                "probe_successes": rate.successes,
+                "probe_failures": rate.failures,
+            },
+            "severity_summary": dict(severity_counts),
+            "findings_total": len(findings),
+        }
+
+
+def run_scan_sync(request: ScanRequest) -> ScanResult:
+    scanner = AsyncScannerV2()
+    return asyncio.run(scanner.run(request))

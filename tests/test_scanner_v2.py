@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+import unittest
+
+from scanner_v2.fingerprint import infer_product_version
+from scanner_v2.models import ScanRequest
+from scanner_v2.profiles import get_profile
+from scanner_v2.vuln_engine import VulnerabilityEngine
+from scanner_v2.models import ProbeResult
+
+
+class ScannerV2UnitTests(unittest.TestCase):
+    def test_fingerprint_infers_nginx(self) -> None:
+        product, version = infer_product_version("HTTP/1.1 200 OK\r\nServer: nginx/1.24.0")
+        self.assertEqual(product, "nginx")
+        self.assertEqual(version, "1.24.0")
+
+    def test_profile_resolution(self) -> None:
+        self.assertEqual(get_profile("stealth").name, "stealth")
+        self.assertEqual(get_profile("unknown").name, "balanced")
+
+    def test_plugin_engine_detects_exposed_port(self) -> None:
+        engine = VulnerabilityEngine()
+        probe = ProbeResult(port=6379, state="open", service="redis")
+        findings = engine.run("127.0.0.1", [probe])
+        self.assertTrue(any("Redis service exposed" in f.title for f in findings))
+
+    def test_scan_request_shape(self) -> None:
+        req = ScanRequest(target="127.0.0.1", ports=[22, 80], profile=get_profile("balanced"))
+        self.assertEqual(req.target, "127.0.0.1")
+        self.assertEqual(len(req.ports), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

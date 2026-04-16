@@ -98,6 +98,7 @@ Open browser:
 - `GET /api/projects/<project_id>/findings.csv?severity=all&since_days=90&sort_by=severity&sort_dir=desc&search=`
 - `GET /api/projects/<project_id>/pdf?window_days=30`
 - `POST /api/scan`
+- `POST /api/scan/v2`
 - `GET /api/reports`
 - `GET /api/reports/<report_id>`
 - `GET /api/reports/<report_id>/csv`
@@ -114,7 +115,7 @@ Migration body example (`POST /api/admin/migrate-sql-to-mongo`):
 }
 ```
 
-Example `POST /api/scan` body:
+Example `POST /api/scan` or `POST /api/scan/v2` body:
 
 ```json
 {
@@ -128,6 +129,7 @@ Example `POST /api/scan` body:
 ## Project Structure
 
 - `vscanner.py` backend scanner, persistence, analytics, API routes
+- `scanner_v2/` modular async scanner engine, protocol fingerprinting, plugin vulnerability checks
 - `templates/index.html` redesigned UI shell
 - `static/style.css` responsive visual system
 - `static/app.js` dynamic dashboard and interaction logic
@@ -147,3 +149,9 @@ Example `POST /api/scan` body:
 
 `stealth` means low-noise defensive scanning behavior.
 It does not provide SIEM evasion, IDS bypass, or hidden offensive capabilities.
+
+## Engineering Validation
+
+- Unit tests: `python -m unittest tests/test_scanner_v2.py`
+- Benchmark: `python scripts/benchmark_v2.py --host 127.0.0.1 --runs 3 --ports 400`
+- Architecture/design notes: `docs/scanner_v2_architecture.md`
