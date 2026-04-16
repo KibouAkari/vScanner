@@ -26,13 +26,34 @@
             </div>
 
             <nav class="menu-list">
-                <button class="menu-item active" data-tab="dashboard"><span class="menu-ico" aria-hidden="true">DB</span><span class="menu-label">Dashboard</span></button>
-                <button class="menu-item" data-tab="scanner"><span class="menu-ico" aria-hidden="true">RS</span><span class="menu-label">Scanner</span></button>
-                <button class="menu-item nav-item-network" data-tab="network"><span class="menu-ico" aria-hidden="true">NW</span><span class="menu-label">Network</span></button>
-                <button class="menu-item nav-item-stealth" data-tab="stealth"><span class="menu-ico" aria-hidden="true">ST</span><span class="menu-label">Stealth</span></button>
-                <button class="menu-item" data-tab="findings"><span class="menu-ico" aria-hidden="true">FG</span><span class="menu-label">Findings</span></button>
-                <button class="menu-item" data-tab="history"><span class="menu-ico" aria-hidden="true">HS</span><span class="menu-label">History</span></button>
-                <button class="menu-item" data-tab="settings"><span class="menu-ico" aria-hidden="true">SE</span><span class="menu-label">Settings</span></button>
+                <button class="menu-item active" data-tab="dashboard">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg></span>
+                    <span class="menu-label">Dashboard</span>
+                </button>
+                <button class="menu-item" data-tab="scanner">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="7.5"/><circle cx="10" cy="10" r="3"/><line x1="10" y1="1.5" x2="10" y2="5"/><line x1="10" y1="15" x2="10" y2="18.5"/><line x1="1.5" y1="10" x2="5" y2="10"/><line x1="15" y1="10" x2="18.5" y2="10"/></svg></span>
+                    <span class="menu-label">Scanner</span>
+                </button>
+                <button class="menu-item nav-item-network" data-tab="network">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="3.5" r="2"/><circle cx="3.5" cy="16" r="2"/><circle cx="16.5" cy="16" r="2"/><line x1="10" y1="5.5" x2="3.5" y2="14"/><line x1="10" y1="5.5" x2="16.5" y2="14"/><line x1="5.5" y1="16" x2="14.5" y2="16"/></svg></span>
+                    <span class="menu-label">Network</span>
+                </button>
+                <button class="menu-item nav-item-stealth" data-tab="stealth">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 10c0 0 3-5.5 7.5-5.5S17.5 10 17.5 10s-3 5.5-7.5 5.5S2.5 10 2.5 10z"/><circle cx="10" cy="10" r="2.2"/><line x1="3.5" y1="4" x2="16.5" y2="16"/></svg></span>
+                    <span class="menu-label">Stealth</span>
+                </button>
+                <button class="menu-item" data-tab="findings">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5 L18 17 H2 Z"/><line x1="10" y1="9" x2="10" y2="13"/><circle cx="10" cy="15.2" r="0.7" fill="currentColor" stroke="none"/></svg></span>
+                    <span class="menu-label">Findings</span>
+                </button>
+                <button class="menu-item" data-tab="history">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><polyline points="10,5.5 10,10 13,12.5"/></svg></span>
+                    <span class="menu-label">History</span>
+                </button>
+                <button class="menu-item" data-tab="settings">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.8"/><path d="M10 2v1.8M10 16.2V18M2 10h1.8M16.2 10H18M4.1 4.1l1.3 1.3M14.6 14.6l1.3 1.3M4.1 15.9l1.3-1.3M14.6 5.4l1.3-1.3"/></svg></span>
+                    <span class="menu-label">Settings</span>
+                </button>
             </nav>
 
             <div class="rail-status">
@@ -135,21 +156,12 @@
                         </div>
                     </article>
 
-                    <article class="panel heatmap-panel heatmap-panel-compact">
+                    <article class="panel heatmap-exposure-combined">
                         <h3 id="severityHeatmapTitle">Severity Heatmap</h3>
                         <div id="severityHeatmap" class="heatmap"></div>
-                    </article>
-                </div>
-
-                <div class="split-grid snapshot-grid">
-                    <article class="panel">
-                        <h3 id="recentScansTitle">Recent Scans</h3>
-                        <div id="recentScans" class="list-scroll"></div>
-                    </article>
-
-                    <article class="panel exposure-panel">
-                        <h3 id="exposureSnapshotTitle">Exposure Snapshot</h3>
-                        <div id="exposureSummary" class="risk-legend"></div>
+                        <div class="heatmap-exposure-divider"></div>
+                        <h3 id="exposureSnapshotTitle" class="exposure-sub-title">Exposure Snapshot</h3>
+                        <div id="exposureSummary" class="risk-legend exposure-legend-compact"></div>
                     </article>
                 </div>
 
@@ -162,6 +174,21 @@
                     <article class="panel">
                         <h3 id="serviceInventoryTitle">Service Inventory</h3>
                         <div id="serviceInventory" class="list-scroll"></div>
+                    </article>
+                </div>
+
+                <div class="split-grid">
+                    <article class="panel">
+                        <h3 id="recentScansTitle">Recent Scans</h3>
+                        <div id="recentScans" class="list-scroll"></div>
+                    </article>
+
+                    <article class="panel port-intel-panel">
+                        <div class="panel-head">
+                            <h3 id="portIntelTitle">Port Intelligence</h3>
+                            <span class="panel-sub-badge">Live Aggregation</span>
+                        </div>
+                        <div id="portIntelList" class="port-intel-list"></div>
                     </article>
                 </div>
             </section>
@@ -188,6 +215,9 @@
                                 <span class="mode-badge mode-badge-risk">Core</span>
                                 <span class="mode-chip">Host + Domain</span>
                             </div>
+                            <div class="mode-card-icon mode-card-icon-risk" aria-hidden="true">
+                                <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="16" cy="16" r="13"/><circle cx="16" cy="16" r="7"/><circle cx="16" cy="16" r="2.5" fill="currentColor" stroke="none"/><line x1="16" y1="2" x2="16" y2="7"/><line x1="16" y1="25" x2="16" y2="30"/><line x1="2" y1="16" x2="7" y2="16"/><line x1="25" y1="16" x2="30" y2="16"/></svg>
+                            </div>
                             <strong id="modeRiskTitle">Risk Scanner</strong>
                             <span id="modeRiskDesc">Precise vulnerability coverage with configurable Light and Deep scanning profiles.</span>
                             <div class="mode-card-rails" aria-hidden="true"><i></i><i></i><i></i></div>
@@ -196,6 +226,9 @@
                             <div class="mode-card-head">
                                 <span class="mode-badge mode-badge-v2">Pro</span>
                                 <span class="mode-chip">Async Engine</span>
+                            </div>
+                            <div class="mode-card-icon mode-card-icon-v2" aria-hidden="true">
+                                <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polygon points="8,4 24,4 28,16 16,30 4,16"/><circle cx="16" cy="16" r="3.5"/><line x1="16" y1="4" x2="16" y2="11"/><line x1="16" y1="21" x2="16" y2="28"/><line x1="4.5" y1="14" x2="11" y2="14.5"/><line x1="21" y1="17.5" x2="27.5" y2="18"/></svg>
                             </div>
                             <strong id="modeV2Title">Adaptive V2 Scanner</strong>
                             <span id="modeV2Desc">Parallel probing engine with plugin checks, enriched service fingerprints and smarter detection depth.</span>
@@ -449,6 +482,10 @@
                                 <select id="themeSelect" class="input compact"></select>
                             </div>
                         </div>
+                        <div class="settings-danger-row">
+                            <button id="resetProjectButton" class="btn ghost" type="button">Reset Current Project</button>
+                            <button id="deleteProjectButton" class="btn ghost" type="button">Delete Current Project</button>
+                        </div>
                         <p class="note" id="preferencesNote">Preferences are stored in the browser and applied instantly across the workspace.</p>
                     </article>
 
@@ -486,6 +523,18 @@
         </main>
     </div>
 
+    <div id="confirmModal" class="confirm-modal hidden" aria-hidden="true">
+        <div class="confirm-dialog panel" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+            <h3 id="confirmModalTitle">Confirm Action</h3>
+            <p id="confirmModalMessage" class="note">Please confirm this action.</p>
+            <label for="confirmPhraseInput" id="confirmModalPhraseLabel">Type confirmation phrase</label>
+            <input id="confirmPhraseInput" class="input" type="text" autocomplete="off" />
+            <div class="confirm-actions">
+                <button id="confirmModalCancel" class="btn ghost" type="button">Cancel</button>
+                <button id="confirmModalOk" class="btn primary" type="button" disabled>Confirm</button>
+            </div>
+        </div>
+    </div>
     <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

@@ -14,7 +14,7 @@ import struct
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable
 
 import nmap
 import requests
@@ -863,6 +863,164 @@ def create_project(name: str) -> dict[str, Any]:
             raise
 
     return {"id": project_id, "name": clean_name, "created_at": now}
+
+
+def reset_project_data(project_id: str) -> dict[str, int]:
+    if not DB_READY:
+        raise ScanInputError("Storage is currently unavailable.")
+
+    if not get_project(project_id):
+        raise ScanInputError("Project not found.")
+
+    if use_mongodb():
+        db = get_mongo_db()
+        deleted_reports = int(db.reports.delete_many({"project_id": project_id}).deleted_count)
+        deleted_findings = int(db.findings.delete_many({"project_id": project_id}).deleted_count)
+        return {"deleted_reports": deleted_reports, "deleted_findings": deleted_findings}
+
+    with db_connection() as connection:
+        report_row = fetchone(connection, "SELECT COUNT(*) AS c FROM reports WHERE project_id = ?", (project_id,)) or {"c": 0}
+        finding_row = fetchone(connection, "SELECT COUNT(*) AS c FROM findings WHERE project_id = ?", (project_id,)) or {"c": 0}
+        execute(connection, "DELETE FROM reports WHERE project_id = ?", (project_id,))
+        execute(connection, "DELETE FROM findings WHERE project_id = ?", (project_id,))
+        connection.commit()
+    return {"deleted_reports": int(report_row.get("c", 0)), "deleted_findings": int(finding_row.get("c", 0))}
+
+
+def delete_project(project_id: str) -> dict[str, Any]:
+    safe_id = (project_id or "").strip()
+    if not safe_id:
+        raise ScanInputError("Project not found.")
+    if safe_id == DEFAULT_PROJECT_ID:
+        raise ScanInputError("Default project cannot be deleted.")
+    project = get_project(safe_id)
+    if not project:
+        raise ScanInputError("Project not found.")
+
+    deleted = reset_project_data(safe_id)
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.projects.delete_one({"id": safe_id})
+    else:
+        with db_connection() as connection:
+            execute(connection, "DELETE FROM projects WHERE id = ?", (safe_id,))
+            connection.commit()
+
+    return {"deleted_project_id": safe_id, **deleted}
+
+
+def _iter_project_report_payloads(project_id: str) -> Iterable[dict[str, Any]]:
+    if use_mongodb():
+        db = get_mongo_db()
+        cursor = db.reports.find({"project_id": project_id}, {"_id": 0, "data_json": 1})
+        for row in cursor:
+            payload = row.get("data_json")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    payload = None
+            if isinstance(payload, dict):
+                yield payload
+        return
+
+    with db_connection() as connection:
+        rows = fetchall(connection, "SELECT data_json FROM reports WHERE project_id = ?", (project_id,))
+    for row in rows:
+        try:
+            payload = json.loads(row.get("data_json") or "{}")
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            yield payload
+
+
+def rebuild_project_findings(project_id: str) -> None:
+    if not DB_READY:
+        return
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.findings.delete_many({"project_id": project_id})
+    else:
+        with db_connection() as connection:
+            execute(connection, "DELETE FROM findings WHERE project_id = ?", (project_id,))
+            connection.commit()
+
+    for payload in _iter_project_report_payloads(project_id):
+        upsert_findings(project_id, payload.get("finding_items", []))
+
+
+def delete_report_entry(report_id: str) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Storage is currently unavailable.")
+
+    safe_report = (report_id or "").strip()
+    if not safe_report:
+        raise ScanInputError("Report not found.")
+
+    project_id = None
+    if use_mongodb():
+        db = get_mongo_db()
+        existing = db.reports.find_one({"id": safe_report}, {"_id": 0, "id": 1, "project_id": 1})
+        if not existing:
+            raise ScanInputError("Report not found.")
+        project_id = str(existing.get("project_id") or DEFAULT_PROJECT_ID)
+        db.reports.delete_one({"id": safe_report})
+    else:
+        with db_connection() as connection:
+            existing = fetchone(connection, "SELECT id, project_id FROM reports WHERE id = ?", (safe_report,))
+            if not existing:
+                raise ScanInputError("Report not found.")
+            project_id = str(existing.get("project_id") or DEFAULT_PROJECT_ID)
+            execute(connection, "DELETE FROM reports WHERE id = ?", (safe_report,))
+            connection.commit()
+
+    rebuild_project_findings(project_id)
+    return {"deleted_report_id": safe_report, "project_id": project_id}
+
+
+def filter_report_by_host(data: dict[str, Any], host_filter: str) -> dict[str, Any]:
+    host_value = (host_filter or "").strip()
+    if not host_value:
+        raise ScanInputError("Host is required.")
+
+    hosts = data.get("hosts") or []
+    selected_hosts = [h for h in hosts if str(h.get("host") or "").strip() == host_value]
+    if not selected_hosts:
+        raise ScanInputError("Host not found in report.")
+
+    selected_findings = [
+        item for item in (data.get("finding_items") or []) if str(item.get("host") or "").strip() == host_value
+    ]
+    selected_cves = [
+        item for item in (data.get("cve_items") or []) if str(item.get("host") or "").strip() == host_value
+    ]
+
+    risk_summary = build_risk_summary(selected_findings)
+    risk_level = compute_risk_level(risk_summary)
+
+    host_open_count = 0
+    for host in selected_hosts:
+        host_open_count += len([p for p in (host.get("ports") or []) if str(p.get("state") or "").lower() == "open"])
+
+    filtered = dict(data)
+    filtered["hosts"] = selected_hosts
+    filtered["finding_items"] = selected_findings
+    filtered["cve_items"] = selected_cves
+    filtered["risk_summary"] = risk_summary
+    filtered["total_findings"] = len(selected_findings)
+    filtered["metrics"] = {
+        "hosts_scanned": len(selected_hosts),
+        "open_ports": host_open_count,
+        "cve_candidates": len(selected_cves),
+        "exposed_services": sum(1 for item in selected_findings if item.get("type") == "exposed_port"),
+    }
+    filtered["meta"] = dict(data.get("meta") or {})
+    filtered["meta"]["target"] = host_value
+    filtered["meta"]["risk_level"] = risk_level
+    return filtered
 
 
 def list_report_entries(limit: int = 40, project_id: str | None = None) -> list[dict[str, Any]]:
@@ -3141,16 +3299,22 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
     state = "closed"
     banner = ""
 
-    try:
-        with socket.create_connection((host_or_ip, port), timeout=timeout_s) as sock:
-            state = "open"
-            sock.settimeout(timeout_s)
-            try:
-                banner = _probe_port_banner(sock, host_or_ip, port)
-            except Exception:
-                banner = ""
-    except Exception:
-        state = "closed"
+    connect_timeouts = [timeout_s]
+    if port <= 1024 or port in COMMON_SERVICE_NAMES:
+        connect_timeouts.append(max(timeout_s * 1.9, 0.9))
+
+    for connect_timeout in connect_timeouts:
+        try:
+            with socket.create_connection((host_or_ip, port), timeout=connect_timeout) as sock:
+                state = "open"
+                sock.settimeout(max(connect_timeout, timeout_s))
+                try:
+                    banner = _probe_port_banner(sock, host_or_ip, port)
+                except Exception:
+                    banner = ""
+                break
+        except Exception:
+            state = "closed"
 
     service_name = COMMON_SERVICE_NAMES.get(port, "unknown")
     product = ""
@@ -3239,15 +3403,14 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
     hosts: list[dict[str, Any]] = []
     scan_ports = build_port_list(profile=profile, port_strategy=port_strategy)
     if profile == "stealth":
-        timeout_s = 0.9
-        max_workers = 32
+        timeout_s = 1.15 if port_strategy == "standard" else 1.35
+        max_workers = 48
     elif profile == "deep":
-        timeout_s = 0.58 if port_strategy == "standard" else 0.75
-        max_workers = 150
+        timeout_s = 0.95 if port_strategy == "standard" else 1.15
+        max_workers = 180
     else:
-        timeout_s = 0.45 if port_strategy == "standard" else 0.62
-        max_workers = 220
-
+        timeout_s = 0.85 if port_strategy == "standard" else 1.05
+        max_workers = 180
     for ip_s in ips[:4]:
         host_findings: list[dict[str, Any]] = []
         port_entries = lightweight_port_scan(ip_s, scan_ports, timeout_s=timeout_s, max_workers=max_workers)
@@ -3356,7 +3519,7 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                             banner_text = mc_banner
 
                 if data.get("state") == "open" and (not banner_text or not service_product or service_name == "unknown"):
-                    enrich = _scan_single_port(host, int(port), timeout_s=0.85)
+                    enrich = _scan_single_port(host, int(port), timeout_s=1.35)
                     if enrich.get("state") == "open":
                         enrich_banner = str(enrich.get("banner") or "")
                         if enrich_banner and not banner_text:
@@ -3675,7 +3838,19 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
     risk_summary = build_risk_summary(all_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(finding_items)
-    dedup_findings, external_cves = enrich_findings_with_external_cve(dedup_findings, max_queries=8, timeout_s=2.4)
+    cve_query_budget = 10
+    cve_timeout = 1.8
+    if canonical == "deep":
+        cve_query_budget = 22 if port_strategy == "aggressive" else 16
+    elif canonical in {"light", "network"}:
+        cve_query_budget = 14 if port_strategy == "aggressive" else 12
+    elif canonical == "stealth":
+        cve_query_budget = 12
+    dedup_findings, external_cves = enrich_findings_with_external_cve(
+        dedup_findings,
+        max_queries=cve_query_budget,
+        timeout_s=cve_timeout,
+    )
     if external_cves:
         cve_items.extend(external_cves)
     dedup_cves = deduplicate_cves(cve_items)
@@ -3743,13 +3918,16 @@ def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
             )
         )
 
+    if canonical == "light":
+        cap = 8192 if port_strategy == "aggressive" else 4096
+        base.extend(range(1, cap + 1))
+
     if canonical == "deep":
         deep_cap = 18000 if port_strategy == "aggressive" else 12000
         base.extend(range(1, deep_cap + 1))
 
     if port_strategy == "aggressive":
         base.extend([2222, 12222, 18080, 2375, 2376, 50000, 27017, 27018, 15672, 6443, 9090, 9091, 11211])
-
     return sorted(set(p for p in base if 1 <= int(p) <= 65535))
 
 
@@ -3813,7 +3991,12 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     risk_summary = build_risk_summary(host_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(host_findings)
-    dedup_findings, external_cves = enrich_findings_with_external_cve(dedup_findings, max_queries=8, timeout_s=2.4)
+    cve_query_budget = 12 if port_strategy == "standard" else 20
+    dedup_findings, external_cves = enrich_findings_with_external_cve(
+        dedup_findings,
+        max_queries=cve_query_budget,
+        timeout_s=1.8,
+    )
     if external_cves:
         cve_items.extend(external_cves)
     dedup_cves = deduplicate_cves(cve_items)
@@ -3966,6 +4149,28 @@ def projects_api() -> Any:
         return jsonify(project), 201
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>", methods=["DELETE"])
+def project_delete_api(project_id: str) -> Any:
+    try:
+        result = delete_project(project_id)
+        return jsonify({"ok": True, **result, "fallback_project_id": DEFAULT_PROJECT_ID})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Project deletion failed.", "details": str(exc)}), 500
+
+
+@app.route("/api/projects/<project_id>/reset", methods=["POST"])
+def project_reset_api(project_id: str) -> Any:
+    try:
+        result = reset_project_data(project_id)
+        return jsonify({"ok": True, "project_id": project_id, **result})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Project reset failed.", "details": str(exc)}), 500
 
 
 @app.route("/api/projects/<project_id>/dashboard")
@@ -4366,12 +4571,18 @@ def report_detail_api(report_id: str) -> Any:
     return jsonify(data)
 
 
-@app.route("/api/reports/<report_id>/csv")
-def report_csv_api(report_id: str) -> Any:
-    data = get_report_entry(report_id)
-    if not data:
-        return jsonify({"error": "Report not found."}), 404
+@app.route("/api/reports/<report_id>", methods=["DELETE"])
+def report_delete_api(report_id: str) -> Any:
+    try:
+        result = delete_report_entry(report_id)
+        return jsonify({"ok": True, **result})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:
+        return jsonify({"error": "Report deletion failed.", "details": str(exc)}), 500
 
+
+def report_csv_response(report_id: str, data: dict[str, Any], download_name: str | None = None) -> Any:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["report_id", report_id])
@@ -4417,8 +4628,28 @@ def report_csv_api(report_id: str) -> Any:
         csv_bytes,
         mimetype="text/csv",
         as_attachment=True,
-        download_name=f"vscanner-report-{report_id[:8]}.csv",
+        download_name=download_name or f"vscanner-report-{report_id[:8]}.csv",
     )
+
+
+@app.route("/api/reports/<report_id>/csv")
+def report_csv_api(report_id: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+    return report_csv_response(report_id, data)
+
+
+@app.route("/api/reports/<report_id>/hosts/<path:host>/csv")
+def report_host_csv_api(report_id: str, host: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+    try:
+        filtered = filter_report_by_host(data, host)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return report_csv_response(report_id, filtered, download_name=f"vscanner-report-{report_id[:8]}-{host[:40]}.csv")
 
 
 @app.route("/api/reports/<report_id>/pdf")
@@ -4433,6 +4664,25 @@ def report_pdf_api(report_id: str) -> Any:
         mimetype="application/pdf",
         as_attachment=True,
         download_name=f"vscanner-report-{report_id[:8]}.pdf",
+    )
+
+
+@app.route("/api/reports/<report_id>/hosts/<path:host>/pdf")
+def report_host_pdf_api(report_id: str, host: str) -> Any:
+    data = get_report_entry(report_id)
+    if not data:
+        return jsonify({"error": "Report not found."}), 404
+    try:
+        filtered = filter_report_by_host(data, host)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+    pdf_buffer = build_report_pdf(filtered)
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"vscanner-report-{report_id[:8]}-{host[:40]}.pdf",
     )
 
 

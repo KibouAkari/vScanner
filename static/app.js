@@ -63,6 +63,16 @@ const modeSelect = document.getElementById("modeSelect");
 const themeSelect = document.getElementById("themeSelect");
 const sidebarToggle = document.getElementById("sidebarToggle");
 const appShell = document.querySelector(".app-shell");
+const resetProjectButton = document.getElementById("resetProjectButton");
+const deleteProjectButton = document.getElementById("deleteProjectButton");
+
+const confirmModal = document.getElementById("confirmModal");
+const confirmModalTitle = document.getElementById("confirmModalTitle");
+const confirmModalMessage = document.getElementById("confirmModalMessage");
+const confirmModalPhraseLabel = document.getElementById("confirmModalPhraseLabel");
+const confirmPhraseInput = document.getElementById("confirmPhraseInput");
+const confirmModalCancel = document.getElementById("confirmModalCancel");
+const confirmModalOk = document.getElementById("confirmModalOk");
 
 const ORDER = ["critical", "high", "medium", "low"];
 const COLORS = {
@@ -136,6 +146,19 @@ const I18N = {
         scanNetworkButton: "Netzwerk scannen",
         runStealthButton: "Stealth-Scan starten",
         toggleMenu: "Menü",
+        hostCsv: "Host CSV",
+        hostPdf: "Host PDF",
+        deleteScan: "Scan löschen",
+        resetProject: "Aktuelles Projekt zurücksetzen",
+        deleteProject: "Aktuelles Projekt löschen",
+        confirmAction: "Aktion bestätigen",
+        confirmCancel: "Abbrechen",
+        confirmProceed: "Bestätigen",
+        confirmPhraseLabel: "Bestätigungsphrase eingeben",
+        resetProjectConfirm: "Dadurch werden alle Scans und Befunde im aktuellen Projekt entfernt.",
+        deleteProjectConfirm: "Dadurch wird das Projekt mit allen Scans und Befunden dauerhaft gelöscht.",
+        deleteScanConfirm: "Dadurch wird dieser einzelne Scan dauerhaft gelöscht.",
+        requiredPhrase: "Erforderliche Phrase",
         noteDedup: "Befunde werden pro Projekt, Asset und Schwachstellen-Schlüssel dedupliziert.",
         noteMetrics: "Dashboard-Metriken trennen eindeutige Host-Port-Expositionen von wiederholten Scans.",
         noteNetworkHint: "Netzwerkvorschläge werden nur angezeigt, wo CIDR-Scanning sinnvoll ist.",
@@ -215,6 +238,7 @@ const I18N = {
         exposureSnapshotTitle: "Exposure-Snapshot",
         topAssetsTitle: "Top exponierte Assets",
         serviceInventoryTitle: "Service-Inventar",
+        portIntelTitle: "Port-Intelligenz",
         themeOcean: "Ozean",
         themeEmerald: "Smaragd",
         themeVoid: "Void",
@@ -278,6 +302,19 @@ const I18N = {
         scanNetworkButton: "Scan Network",
         runStealthButton: "Run Stealth Scan",
         toggleMenu: "Menu",
+        hostCsv: "Host CSV",
+        hostPdf: "Host PDF",
+        deleteScan: "Delete Scan",
+        resetProject: "Reset Current Project",
+        deleteProject: "Delete Current Project",
+        confirmAction: "Confirm Action",
+        confirmCancel: "Cancel",
+        confirmProceed: "Confirm",
+        confirmPhraseLabel: "Type confirmation phrase",
+        resetProjectConfirm: "This will remove all scans and findings in the current project.",
+        deleteProjectConfirm: "This will permanently delete the project including all scans and findings.",
+        deleteScanConfirm: "This will permanently delete this scan.",
+        requiredPhrase: "Required phrase",
         noteDedup: "Findings are deduplicated per project, asset and vulnerability key.",
         noteMetrics: "Dashboard metrics separate unique host-port exposures from repeated scans.",
         noteNetworkHint: "Network suggestions are shown only where CIDR scanning is meaningful.",
@@ -357,6 +394,7 @@ const I18N = {
         exposureSnapshotTitle: "Exposure Snapshot",
         topAssetsTitle: "Top Exposed Assets",
         serviceInventoryTitle: "Service Inventory",
+        portIntelTitle: "Port Intelligence",
         themeOcean: "Ocean",
         themeEmerald: "Emerald",
         themeVoid: "Void",
@@ -541,6 +579,47 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 180000) {
     }
 }
 
+function openConfirmDialog({ title, message, phrase }) {
+    return new Promise((resolve) => {
+        if (!confirmModal || !confirmPhraseInput || !confirmModalOk || !confirmModalCancel) {
+            resolve(false);
+            return;
+        }
+
+        const safePhrase = String(phrase || "").trim();
+        confirmModalTitle.textContent = title || t("confirmAction");
+        confirmModalMessage.textContent = message || "";
+        confirmModalPhraseLabel.textContent = `${t("confirmPhraseLabel")}: ${t("requiredPhrase")} \"${safePhrase}\"`;
+        confirmPhraseInput.value = "";
+        confirmModalOk.disabled = true;
+        confirmModalCancel.textContent = t("confirmCancel");
+        confirmModalOk.textContent = t("confirmProceed");
+
+        const close = (accepted) => {
+            confirmModal.classList.add("hidden");
+            confirmModal.setAttribute("aria-hidden", "true");
+            confirmPhraseInput.removeEventListener("input", onInput);
+            confirmModalCancel.removeEventListener("click", onCancel);
+            confirmModalOk.removeEventListener("click", onOk);
+            resolve(accepted);
+        };
+
+        const onInput = () => {
+            confirmModalOk.disabled = confirmPhraseInput.value.trim() !== safePhrase;
+        };
+        const onCancel = () => close(false);
+        const onOk = () => close(true);
+
+        confirmPhraseInput.addEventListener("input", onInput);
+        confirmModalCancel.addEventListener("click", onCancel);
+        confirmModalOk.addEventListener("click", onOk);
+
+        confirmModal.classList.remove("hidden");
+        confirmModal.setAttribute("aria-hidden", "false");
+        confirmPhraseInput.focus();
+    });
+}
+
 function populateThemeOptions(mode, selectedTheme) {
     const themes = THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark;
     themeSelect.innerHTML = themes
@@ -595,6 +674,13 @@ function applyScannerMode(mode) {
     scannerModeCards.forEach((card) => {
         card.classList.toggle("active", card.dataset.mode === mode);
     });
+
+    // Toggle scanner background pattern based on mode (orange=risk, blue=v2)
+    const patternEl = document.querySelector(".scanner-hero-panel .scanner-header-pattern");
+    if (patternEl) {
+        patternEl.classList.remove("scanner-header-pattern-risk", "scanner-header-pattern-v2");
+        patternEl.classList.add(mode === "advanced_v2" ? "scanner-header-pattern-v2" : "scanner-header-pattern-risk");
+    }
 
     profileSelect.disabled = cfg.disableProfile;
     profileSelect.value = cfg.profile;
@@ -1315,6 +1401,36 @@ function renderServiceInventory(items) {
         .join("");
 }
 
+function renderPortIntelligence(serviceInventory) {
+    const el = document.getElementById("portIntelList");
+    if (!el) return;
+    // Build a flat port→service→count mapping from service_inventory
+    const portMap = new Map();
+    (serviceInventory || []).forEach((item) => {
+        (item.ports || []).forEach((p) => {
+            const key = String(p);
+            if (!portMap.has(key)) portMap.set(key, { service: item.service || "unknown", count: 0 });
+            portMap.get(key).count += item.count || 1;
+        });
+    });
+    const sorted = [...portMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
+    if (!sorted.length) {
+        el.innerHTML = `<div class="port-intel-item"><span class="port-intel-service" style="color:var(--muted)">No port data yet — run a scan to populate.</span></div>`;
+        return;
+    }
+    const maxCount = sorted[0][1].count || 1;
+    el.innerHTML = sorted.map(([port, info]) => {
+        const pct = Math.round((info.count / maxCount) * 100);
+        const svc = info.service.length > 22 ? info.service.slice(0, 20) + "…" : info.service;
+        return `<div class="port-intel-item">
+            <span class="port-intel-port">${esc(port)}</span>
+            <span class="port-intel-service">${esc(svc)}</span>
+            <div class="port-intel-bar-wrap"><div class="port-intel-bar" style="width:${pct}%"></div></div>
+            <span class="port-intel-count">${esc(info.count)}</span>
+        </div>`;
+    }).join("");
+}
+
 function applyTheme(theme) {
     const mode = localStorage.getItem("vscanner.mode") || "dark";
     const themes = THEMES_BY_MODE[mode] || THEMES_BY_MODE.dark;
@@ -1354,6 +1470,7 @@ function applyLanguage(lang) {
     setText("exposureSnapshotTitle", t("exposureSnapshotTitle"));
     setText("topAssetsTitle", t("topAssetsTitle"));
     setText("serviceInventoryTitle", t("serviceInventoryTitle"));
+    setText("portIntelTitle", t("portIntelTitle") || "Port Intelligence");
     setText("runNewScanTitle", text.runScan || I18N.en.runScan);
     setText("modeRiskTitle", text.riskScanner || I18N.en.riskScanner);
     setText("modeRiskDesc", text.riskScannerDesc || I18N.en.riskScannerDesc);
@@ -1478,6 +1595,18 @@ function applyLanguage(lang) {
     if (sidebarToggle) {
         sidebarToggle.textContent = text.toggleMenu || I18N.en.toggleMenu || "Menu";
     }
+    if (resetProjectButton) {
+        resetProjectButton.textContent = text.resetProject || I18N.en.resetProject || "Reset Current Project";
+    }
+    if (deleteProjectButton) {
+        deleteProjectButton.textContent = text.deleteProject || I18N.en.deleteProject || "Delete Current Project";
+    }
+    if (confirmModalCancel) {
+        confirmModalCancel.textContent = text.confirmCancel || I18N.en.confirmCancel || "Cancel";
+    }
+    if (confirmModalOk) {
+        confirmModalOk.textContent = text.confirmProceed || I18N.en.confirmProceed || "Confirm";
+    }
     findingsCsvButton.textContent = text.findingsCsv;
     refreshFindingsButton.textContent = text.refresh;
     refreshHistoryButton.textContent = text.refresh;
@@ -1593,6 +1722,8 @@ function buildScanResultMarkup(data) {
                 .join("");
 
             const hostnames = Array.isArray(host.hostnames) ? host.hostnames.filter(Boolean).join(", ") : "";
+            const hostId = String(host.host || "-");
+            const reportId = String(data.report_id || "");
             return `
                 <div class="host-card">
                     <div class="host-head">
@@ -1600,6 +1731,7 @@ function buildScanResultMarkup(data) {
                         <span>${esc(host.state || "unknown")} | Open ports: ${openPorts.length}</span>
                     </div>
                     <div class="list-line"><span>Hostnames: ${esc(hostnames || "-")}</span><span>Reverse DNS: ${esc(host.reverse_dns || "-")}</span></div>
+                    ${reportId ? `<div class="host-actions"><button class="btn ghost" type="button" data-host-report-csv="${esc(reportId)}" data-host-name="${esc(hostId)}">${esc(t("hostCsv"))}</button><button class="btn ghost" type="button" data-host-report-pdf="${esc(reportId)}" data-host-name="${esc(hostId)}">${esc(t("hostPdf"))}</button></div>` : ""}
                     <table class="table compact-table">
                         <thead>
                             <tr>
@@ -1719,6 +1851,7 @@ function renderHistory(items) {
                                 <button class="btn ghost" type="button" data-open-report="${esc(item.id)}">Open</button>
                                 <button class="btn ghost" type="button" data-open-report-csv="${esc(item.id)}">CSV</button>
                                 <button class="btn ghost" type="button" data-open-report-pdf="${esc(item.id)}">PDF</button>
+                                <button class="btn ghost" type="button" data-delete-report="${esc(item.id)}">${esc(t("deleteScan"))}</button>
                             </div>
                             <div class="history-loading hidden" data-report-loading="${esc(item.id)}">Loading report details...</div>
                             <div data-report-content="${esc(item.id)}"></div>
@@ -1832,6 +1965,7 @@ async function loadDashboard() {
     renderExposureSummary(data.totals || {});
     renderTopAssets(data.top_assets || []);
     renderServiceInventory(data.service_inventory || []);
+    renderPortIntelligence(data.service_inventory || []);
 }
 
 async function loadAggregatedFindings() {
@@ -1888,6 +2022,14 @@ window.openReportCsv = function openReportCsv(reportId) {
     window.open(`/api/reports/${encodeURIComponent(reportId)}/csv`, "_blank", "noopener,noreferrer");
 };
 
+window.openHostReportCsv = function openHostReportCsv(reportId, host) {
+    window.open(`/api/reports/${encodeURIComponent(reportId)}/hosts/${encodeURIComponent(host)}/csv`, "_blank", "noopener,noreferrer");
+};
+
+window.openHostReportPdf = function openHostReportPdf(reportId, host) {
+    window.open(`/api/reports/${encodeURIComponent(reportId)}/hosts/${encodeURIComponent(host)}/pdf`, "_blank", "noopener,noreferrer");
+};
+
 historyList.addEventListener("click", async (event) => {
     const toggle = event.target.closest("[data-report-toggle]");
     if (toggle) {
@@ -1910,6 +2052,31 @@ historyList.addEventListener("click", async (event) => {
     const pdfButton = event.target.closest("[data-open-report-pdf]");
     if (pdfButton) {
         window.openReportPdf(pdfButton.dataset.openReportPdf || "");
+        return;
+    }
+
+    const deleteButton = event.target.closest("[data-delete-report]");
+    if (deleteButton) {
+        const reportId = deleteButton.dataset.deleteReport || "";
+        const accepted = await openConfirmDialog({
+            title: t("confirmAction"),
+            message: t("deleteScanConfirm"),
+            phrase: "DELETE SCAN",
+        });
+        if (!accepted) {
+            return;
+        }
+
+        try {
+            const { response, data } = await fetchJsonWithTimeout(`/api/reports/${encodeURIComponent(reportId)}`, { method: "DELETE" }, 30000);
+            if (!response.ok) {
+                throw new Error(data?.error || "Could not delete scan.");
+            }
+            historyCache.delete(reportId);
+            await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        } catch (error) {
+            showError(error.message || "Could not delete scan.");
+        }
     }
 });
 
@@ -2021,6 +2188,68 @@ findingsCsvButton.addEventListener("click", () => {
 sidebarToggle?.addEventListener("click", () => {
     const isCollapsed = appShell?.classList.contains("sidebar-collapsed");
     applySidebarState(!isCollapsed);
+});
+
+const hostDownloadHandler = (event) => {
+    const csvButton = event.target.closest("[data-host-report-csv]");
+    if (csvButton) {
+        window.openHostReportCsv(csvButton.dataset.hostReportCsv || "", csvButton.dataset.hostName || "");
+        return;
+    }
+    const pdfButton = event.target.closest("[data-host-report-pdf]");
+    if (pdfButton) {
+        window.openHostReportPdf(pdfButton.dataset.hostReportPdf || "", pdfButton.dataset.hostName || "");
+    }
+};
+scanResult?.addEventListener("click", hostDownloadHandler);
+netScanResult?.addEventListener("click", hostDownloadHandler);
+stealthScanResult?.addEventListener("click", hostDownloadHandler);
+
+resetProjectButton?.addEventListener("click", async () => {
+    const project = (projectSelect.options[projectSelect.selectedIndex]?.textContent || "Current Project").trim();
+    const phrase = `RESET ${project}`;
+    const accepted = await openConfirmDialog({
+        title: t("resetProject"),
+        message: t("resetProjectConfirm"),
+        phrase,
+    });
+    if (!accepted) return;
+
+    try {
+        const { response, data } = await fetchJsonWithTimeout(`/api/projects/${encodeURIComponent(activeProjectId)}/reset`, { method: "POST" }, 40000);
+        if (!response.ok) {
+            throw new Error(data?.error || "Project reset failed.");
+        }
+        lastReportId = null;
+        reportPdfButton.disabled = true;
+        reportCsvButton.disabled = true;
+        scanResult.innerHTML = "";
+        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+    } catch (error) {
+        showError(error.message || "Project reset failed.");
+    }
+});
+
+deleteProjectButton?.addEventListener("click", async () => {
+    const project = (projectSelect.options[projectSelect.selectedIndex]?.textContent || "Current Project").trim();
+    const phrase = `DELETE ${project}`;
+    const accepted = await openConfirmDialog({
+        title: t("deleteProject"),
+        message: t("deleteProjectConfirm"),
+        phrase,
+    });
+    if (!accepted) return;
+
+    try {
+        const { response, data } = await fetchJsonWithTimeout(`/api/projects/${encodeURIComponent(activeProjectId)}`, { method: "DELETE" }, 40000);
+        if (!response.ok) {
+            throw new Error(data?.error || "Project deletion failed.");
+        }
+        activeProjectId = data?.fallback_project_id || "default";
+        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+    } catch (error) {
+        showError(error.message || "Project deletion failed.");
+    }
 });
 
 projectSelect.addEventListener("change", async () => {
