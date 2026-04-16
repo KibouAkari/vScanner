@@ -38,20 +38,17 @@ vScanner provides a full reporting flow from first scan to executive dashboard v
 
 These are live snapshots of the deployed application for a professional project showcase.
 
-<p>
-  <strong>Dashboard Overview</strong><br/>
-  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app" alt="vScanner live dashboard overview" />
-</p>
+**Dashboard Overview**
 
-<p>
-  <strong>Project Risk Dashboard (API-backed view)</strong><br/>
-  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app/api/projects/default/dashboard?window_days=30" alt="vScanner live project dashboard response" />
-</p>
+![vScanner live dashboard overview](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app?w=1400)
 
-<p>
-  <strong>Reports Index (Live Data)</strong><br/>
-  <img src="https://image.thum.io/get/width/1400/noanimate/https://vscanner.vercel.app/api/reports" alt="vScanner live reports endpoint preview" />
-</p>
+**Project Risk Dashboard**
+
+![vScanner live project risk dashboard](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app%2Fapi%2Fprojects%2Fdefault%2Fdashboard%3Fwindow_days%3D30?w=1400)
+
+**Reports Endpoint Preview**
+
+![vScanner live reports endpoint preview](https://s.wordpress.com/mshots/v1/https%3A%2F%2Fvscanner.vercel.app%2Fapi%2Freports?w=1400)
 
 Production links:
 
