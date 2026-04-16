@@ -2199,8 +2199,6 @@ const hostDownloadHandler = (event) => {
     }
 };
 scanResult?.addEventListener("click", hostDownloadHandler);
-netScanResult?.addEventListener("click", hostDownloadHandler);
-stealthScanResult?.addEventListener("click", hostDownloadHandler);
 
 resetProjectButton?.addEventListener("click", async () => {
     const project = (projectSelect.options[projectSelect.selectedIndex]?.textContent || "Current Project").trim();
@@ -2421,6 +2419,9 @@ const stealthScanResult = document.getElementById("stealthScanResult");
 const stealthReportPdfButton = document.getElementById("stealthReportPdfButton");
 const stealthReportCsvButton = document.getElementById("stealthReportCsvButton");
 let lastStealthReportId = null;
+
+netScanResult?.addEventListener("click", hostDownloadHandler);
+stealthScanResult?.addEventListener("click", hostDownloadHandler);
 
 document.querySelectorAll(".ss-pill").forEach((pill) => {
     pill.addEventListener("click", () => {
