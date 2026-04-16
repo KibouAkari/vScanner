@@ -26,13 +26,13 @@
             </div>
 
             <nav class="menu-list">
-                <button class="menu-item active" data-tab="dashboard">Dashboard</button>
-                <button class="menu-item" data-tab="scanner">Scanner</button>
-                <button class="menu-item nav-item-network" data-tab="network">Network</button>
-                <button class="menu-item nav-item-stealth" data-tab="stealth">Stealth</button>
-                <button class="menu-item" data-tab="findings">Findings</button>
-                <button class="menu-item" data-tab="history">History</button>
-                <button class="menu-item" data-tab="settings">Settings</button>
+                <button class="menu-item active" data-tab="dashboard"><span class="menu-ico" aria-hidden="true">DB</span><span class="menu-label">Dashboard</span></button>
+                <button class="menu-item" data-tab="scanner"><span class="menu-ico" aria-hidden="true">RS</span><span class="menu-label">Scanner</span></button>
+                <button class="menu-item nav-item-network" data-tab="network"><span class="menu-ico" aria-hidden="true">NW</span><span class="menu-label">Network</span></button>
+                <button class="menu-item nav-item-stealth" data-tab="stealth"><span class="menu-ico" aria-hidden="true">ST</span><span class="menu-label">Stealth</span></button>
+                <button class="menu-item" data-tab="findings"><span class="menu-ico" aria-hidden="true">FG</span><span class="menu-label">Findings</span></button>
+                <button class="menu-item" data-tab="history"><span class="menu-ico" aria-hidden="true">HS</span><span class="menu-label">History</span></button>
+                <button class="menu-item" data-tab="settings"><span class="menu-ico" aria-hidden="true">SE</span><span class="menu-label">Settings</span></button>
             </nav>
 
             <div class="rail-status">
@@ -50,6 +50,7 @@
                     <p id="workspaceSubtitle">Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.</p>
                 </div>
                 <div class="top-actions">
+                    <button id="sidebarToggle" class="btn ghost" type="button" aria-label="Toggle sidebar">Menu</button>
                     <select id="projectSelect" class="input"></select>
                     <button id="newProjectButton" class="btn ghost" type="button">New Project</button>
                     <button id="projectCsvButton" class="btn ghost" type="button">Project CSV</button>
@@ -60,24 +61,24 @@
             <section class="tab active" id="tab-dashboard">
                 <div class="kpi-grid">
                     <article class="kpi panel">
-                        <span>Average Risk</span>
+                        <span id="kpiAvgRiskLabel">Average Risk</span>
                         <strong id="kpiAvgRisk">0.0</strong>
-                        <small>Selected time window</small>
+                        <small id="kpiAvgRiskHint">Selected time window</small>
                     </article>
                     <article class="kpi panel">
-                        <span>Total Scans</span>
+                        <span id="kpiScansLabel">Total Scans</span>
                         <strong id="kpiScans">0</strong>
-                        <small>Reports saved</small>
+                        <small id="kpiScansHint">Reports saved</small>
                     </article>
                     <article class="kpi panel">
-                        <span>Unique Vulnerabilities</span>
+                        <span id="kpiUniqueLabel">Unique Vulnerabilities</span>
                         <strong id="kpiUnique">0</strong>
-                        <small>Aggregated by vuln key</small>
+                        <small id="kpiUniqueHint">Aggregated by vuln key</small>
                     </article>
                     <article class="kpi panel">
-                        <span>Affected Assets</span>
+                        <span id="kpiAssetsLabel">Affected Assets</span>
                         <strong id="kpiAssets">0</strong>
-                        <small>Across current project</small>
+                        <small id="kpiAssetsHint">Across current project</small>
                     </article>
                 </div>
 
@@ -454,12 +455,12 @@
                     <article class="panel">
                         <h3 id="operationalNotesTitle">Operational Notes</h3>
                         <ul class="settings-list">
-                            <li>Findings are deduplicated per project, asset and vulnerability key.</li>
-                            <li>Dashboard metrics now separate unique host-port exposures from repeated scans.</li>
-                            <li>Network suggestions are only shown where CIDR scanning is meaningful.</li>
-                            <li>Stealth mode remains low-noise only and does not attempt monitoring bypass.</li>
-                            <li>For Vercel Postgres set DATABASE_URL and install psycopg in requirements.</li>
-                            <li>For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.</li>
+                            <li id="noteDedup">Findings are deduplicated per project, asset and vulnerability key.</li>
+                            <li id="noteMetrics">Dashboard metrics now separate unique host-port exposures from repeated scans.</li>
+                            <li id="noteNetworkHint">Network suggestions are only shown where CIDR scanning is meaningful.</li>
+                            <li id="noteStealth">Stealth mode remains low-noise only and does not attempt monitoring bypass.</li>
+                            <li id="notePg">For Vercel Postgres set DATABASE_URL and install psycopg in requirements.</li>
+                            <li id="noteMongo">For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.</li>
                         </ul>
                     </article>
                 </div>
@@ -468,16 +469,16 @@
                     <h3 id="scannerReferenceTitle">Scanner Reference</h3>
                     <div id="settingsInfoCards" class="scanner-mode-grid">
                         <div class="scanner-mode-card active">
-                            <strong>Risk Scanner</strong>
-                            <span>Use for single hosts and domains when you want broad port, version and HTTP security coverage.</span>
+                            <strong id="refRiskTitle">Risk Scanner</strong>
+                            <span id="refRiskDesc">Use for single hosts and domains when you want broad port, version and HTTP security coverage.</span>
                         </div>
                         <div class="scanner-mode-card active">
-                            <strong>Network Discovery</strong>
-                            <span>Use on authorized private networks to enumerate hosts, services and exposed surface by subnet. Access via the Network tab.</span>
+                            <strong id="refNetworkTitle">Network Discovery</strong>
+                            <span id="refNetworkDesc">Use on authorized private networks to enumerate hosts, services and exposed surface by subnet. Access via the Network tab.</span>
                         </div>
                         <div class="scanner-mode-card active">
-                            <strong>Stealth &amp; Intel</strong>
-                            <span>Low-noise profiling and passive metadata collection. Access via the Stealth tab.</span>
+                            <strong id="refStealthTitle">Stealth &amp; Intel</strong>
+                            <span id="refStealthDesc">Low-noise profiling and passive metadata collection. Access via the Stealth tab.</span>
                         </div>
                     </div>
                 </article>

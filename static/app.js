@@ -61,6 +61,8 @@ const refreshHistoryButton = document.getElementById("refreshHistoryButton");
 const languageSelect = document.getElementById("languageSelect");
 const modeSelect = document.getElementById("modeSelect");
 const themeSelect = document.getElementById("themeSelect");
+const sidebarToggle = document.getElementById("sidebarToggle");
+const appShell = document.querySelector(".app-shell");
 
 const ORDER = ["critical", "high", "medium", "low"];
 const COLORS = {
@@ -121,6 +123,28 @@ const I18N = {
         v2ModeNote: "Der Adaptive V2 Scanner nutzt asynchrone Probes und Plugin-Checks für tiefere Service-Intelligenz.",
         operationalNotes: "Betriebshinweise",
         scannerReference: "Scanner-Referenz",
+        kpiAvgRiskLabel: "Durchschnittliches Risiko",
+        kpiAvgRiskHint: "Gewähltes Zeitfenster",
+        kpiScansLabel: "Gesamt-Scans",
+        kpiScansHint: "Gespeicherte Reports",
+        kpiUniqueLabel: "Eindeutige Schwachstellen",
+        kpiUniqueHint: "Nach Schwachstellen-Schlüssel aggregiert",
+        kpiAssetsLabel: "Betroffene Assets",
+        kpiAssetsHint: "Im aktuellen Projekt",
+        netResultTitle: "Netzwerk-Scan-Ergebnisse",
+        stealthResultTitle: "Stealth-Scan-Ergebnisse",
+        scanNetworkButton: "Netzwerk scannen",
+        runStealthButton: "Stealth-Scan starten",
+        toggleMenu: "Menü",
+        noteDedup: "Befunde werden pro Projekt, Asset und Schwachstellen-Schlüssel dedupliziert.",
+        noteMetrics: "Dashboard-Metriken trennen eindeutige Host-Port-Expositionen von wiederholten Scans.",
+        noteNetworkHint: "Netzwerkvorschläge werden nur angezeigt, wo CIDR-Scanning sinnvoll ist.",
+        noteStealth: "Stealth bleibt Low-Noise und versucht kein Monitoring-Bypass.",
+        notePg: "Für Vercel Postgres: DATABASE_URL setzen und psycopg in requirements installieren.",
+        noteMongo: "Für MongoDB Atlas auf Vercel: MONGODB_URI und optional MONGODB_DB_NAME setzen.",
+        refRiskDesc: "Für einzelne Hosts und Domains mit breiter Port-, Versions- und HTTP-Sicherheitsabdeckung.",
+        refNetworkDesc: "Für autorisierte private Netzwerke zur Host-/Service-Erkennung pro Subnetz (Network-Tab).",
+        refStealthDesc: "Rauscharmes Profiling und passive Metadatensammlung (Stealth-Tab).",
         refresh: "Aktualisieren",
         noData: "Keine Daten",
         noScansWindow: "Keine Scans in diesem Zeitraum.",
@@ -241,6 +265,28 @@ const I18N = {
         v2ModeNote: "Adaptive V2 scanner uses async probing and plugin checks. Use for deeper service intelligence.",
         operationalNotes: "Operational Notes",
         scannerReference: "Scanner Reference",
+        kpiAvgRiskLabel: "Average Risk",
+        kpiAvgRiskHint: "Selected time window",
+        kpiScansLabel: "Total Scans",
+        kpiScansHint: "Reports saved",
+        kpiUniqueLabel: "Unique Vulnerabilities",
+        kpiUniqueHint: "Aggregated by vulnerability key",
+        kpiAssetsLabel: "Affected Assets",
+        kpiAssetsHint: "Across current project",
+        netResultTitle: "Network Scan Results",
+        stealthResultTitle: "Stealth Scan Results",
+        scanNetworkButton: "Scan Network",
+        runStealthButton: "Run Stealth Scan",
+        toggleMenu: "Menu",
+        noteDedup: "Findings are deduplicated per project, asset and vulnerability key.",
+        noteMetrics: "Dashboard metrics separate unique host-port exposures from repeated scans.",
+        noteNetworkHint: "Network suggestions are shown only where CIDR scanning is meaningful.",
+        noteStealth: "Stealth mode remains low-noise only and does not attempt monitoring bypass.",
+        notePg: "For Vercel Postgres set DATABASE_URL and install psycopg in requirements.",
+        noteMongo: "For MongoDB Atlas on Vercel set MONGODB_URI and optional MONGODB_DB_NAME.",
+        refRiskDesc: "Use for single hosts and domains when you want broad port, version and HTTP security coverage.",
+        refNetworkDesc: "Use on authorized private networks to enumerate hosts, services and exposed surface by subnet. Access via the Network tab.",
+        refStealthDesc: "Low-noise profiling and passive metadata collection. Access via the Stealth tab.",
         refresh: "Refresh",
         noData: "No data",
         noScansWindow: "No scans in this window.",
@@ -471,6 +517,28 @@ function t(key) {
     const lang = localStorage.getItem("vscanner.language") || "en";
     const base = I18N[lang] || I18N.en;
     return base[key] || I18N.en[key] || I18N.de[key] || key;
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 180000) {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        let data = null;
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = null;
+        }
+        return { response, data };
+    } catch (error) {
+        if (error?.name === "AbortError") {
+            throw new Error("Request timed out. Try Light/Standard profile or a smaller target.");
+        }
+        throw new Error("Failed to fetch. Please verify backend connection and retry.");
+    } finally {
+        window.clearTimeout(timeoutId);
+    }
 }
 
 function populateThemeOptions(mode, selectedTheme) {
@@ -1295,7 +1363,7 @@ function applyLanguage(lang) {
     setText("modeStealthDesc", text.stealthScannerDesc || I18N.en.stealthScannerDesc);
     setText("modeV2Title", text.v2Scanner || I18N.en.v2Scanner || "Adaptive V2 Scanner");
     setText("modeV2Desc", text.v2ScannerDesc || I18N.en.v2ScannerDesc || "Async scanner engine with plugin-based checks and deeper protocol fingerprinting.");
-    setText("suggestedNetworksLabel", text.suggestedNetworks || I18N.en.suggestedNetworks);
+    setText("netSuggestedLabel", text.suggestedNetworks || I18N.en.suggestedNetworks);
     setText("latestScanFindingsTitle", text.latestFindings || I18N.en.latestFindings);
     setText("aggregatedFindingsTitle", text.aggregatedFindings || I18N.en.aggregatedFindings);
     setText("scanHistoryTitle", text.scanHistory || I18N.en.scanHistory);
@@ -1303,6 +1371,30 @@ function applyLanguage(lang) {
     setText("preferencesNote", text.preferencesNote || I18N.en.preferencesNote);
     setText("operationalNotesTitle", text.operationalNotes || I18N.en.operationalNotes);
     setText("scannerReferenceTitle", text.scannerReference || I18N.en.scannerReference);
+    setText("kpiAvgRiskLabel", text.kpiAvgRiskLabel || I18N.en.kpiAvgRiskLabel);
+    setText("kpiAvgRiskHint", text.kpiAvgRiskHint || I18N.en.kpiAvgRiskHint);
+    setText("kpiScansLabel", text.kpiScansLabel || I18N.en.kpiScansLabel);
+    setText("kpiScansHint", text.kpiScansHint || I18N.en.kpiScansHint);
+    setText("kpiUniqueLabel", text.kpiUniqueLabel || I18N.en.kpiUniqueLabel);
+    setText("kpiUniqueHint", text.kpiUniqueHint || I18N.en.kpiUniqueHint);
+    setText("kpiAssetsLabel", text.kpiAssetsLabel || I18N.en.kpiAssetsLabel);
+    setText("kpiAssetsHint", text.kpiAssetsHint || I18N.en.kpiAssetsHint);
+    setText("netScanTitle", text.networkScanner || I18N.en.networkScanner);
+    setText("netResultTitle", text.netResultTitle || I18N.en.netResultTitle);
+    setText("stealthScanTitle", text.stealthScanner || I18N.en.stealthScanner);
+    setText("stealthResultTitle", text.stealthResultTitle || I18N.en.stealthResultTitle);
+    setText("noteDedup", text.noteDedup || I18N.en.noteDedup);
+    setText("noteMetrics", text.noteMetrics || I18N.en.noteMetrics);
+    setText("noteNetworkHint", text.noteNetworkHint || I18N.en.noteNetworkHint);
+    setText("noteStealth", text.noteStealth || I18N.en.noteStealth);
+    setText("notePg", text.notePg || I18N.en.notePg);
+    setText("noteMongo", text.noteMongo || I18N.en.noteMongo);
+    setText("refRiskTitle", text.riskScanner || I18N.en.riskScanner);
+    setText("refNetworkTitle", text.networkScanner || I18N.en.networkScanner);
+    setText("refStealthTitle", text.stealthScanner || I18N.en.stealthScanner);
+    setText("refRiskDesc", text.refRiskDesc || I18N.en.refRiskDesc);
+    setText("refNetworkDesc", text.refNetworkDesc || I18N.en.refNetworkDesc);
+    setText("refStealthDesc", text.refStealthDesc || I18N.en.refStealthDesc);
 
     const setLabel = (selector, value) => {
         const label = document.querySelector(selector);
@@ -1363,23 +1455,38 @@ function applyLanguage(lang) {
 
     populateThemeOptions(mode, currentTheme);
 
-    document.querySelector('.menu-item[data-tab="dashboard"]').textContent = text.dashboard;
-    document.querySelector('.menu-item[data-tab="scanner"]').textContent = text.scanner;
-    document.querySelector('.menu-item[data-tab="findings"]').textContent = text.findings;
-    document.querySelector('.menu-item[data-tab="history"]').textContent = text.history;
-    document.querySelector('.menu-item[data-tab="settings"]').textContent = text.settings;
-        const navNet = document.querySelector('.menu-item[data-tab="network"]');
-        if (navNet) navNet.textContent = text.networkTab || "Network";
-        const navStealth = document.querySelector('.menu-item[data-tab="stealth"]');
-        if (navStealth) navStealth.textContent = text.stealthTab || "Stealth";
+    const navText = {
+        dashboard: text.dashboard,
+        scanner: text.scanner,
+        network: text.networkTab || "Network",
+        stealth: text.stealthTab || "Stealth",
+        findings: text.findings,
+        history: text.history,
+        settings: text.settings,
+    };
+    Object.entries(navText).forEach(([tab, label]) => {
+        const navLabel = document.querySelector(`.menu-item[data-tab="${tab}"] .menu-label`);
+        if (navLabel) {
+            navLabel.textContent = label;
+        }
+    });
     newProjectButton.textContent = text.newProject;
     projectCsvButton.textContent = text.projectCsv;
     projectPdfButton.textContent = text.projectPdf;
     reportCsvButton.textContent = text.reportCsv;
     reportPdfButton.textContent = text.reportPdf;
+    if (sidebarToggle) {
+        sidebarToggle.textContent = text.toggleMenu || I18N.en.toggleMenu || "Menu";
+    }
     findingsCsvButton.textContent = text.findingsCsv;
     refreshFindingsButton.textContent = text.refresh;
     refreshHistoryButton.textContent = text.refresh;
+    if (netScanButton && !netScanButton.disabled) {
+        netScanButton.textContent = text.scanNetworkButton || I18N.en.scanNetworkButton || "Scan Network";
+    }
+    if (stealthScanButton && !stealthScanButton.disabled) {
+        stealthScanButton.textContent = text.runStealthButton || I18N.en.runStealthButton || "Run Stealth Scan";
+    }
     if (scanButton && !scanButton.disabled) {
         scanButton.textContent = text.startScan;
     }
@@ -1398,6 +1505,12 @@ function applyMode(mode) {
     const previousTheme = localStorage.getItem("vscanner.theme") || "";
     populateThemeOptions(safeMode, previousTheme);
     applyTheme(themeSelect.value);
+}
+
+function applySidebarState(collapsed) {
+    if (!appShell) return;
+    appShell.classList.toggle("sidebar-collapsed", !!collapsed);
+    localStorage.setItem("vscanner.sidebarCollapsed", collapsed ? "1" : "0");
 }
 
 function renderIntelBlock(intelData) {
@@ -1818,16 +1931,19 @@ scanForm.addEventListener("submit", async (event) => {
     const targetForIntel = payload.target;
 
     scanButton.disabled = true;
+    scanButton.classList.add("scanning");
     scanButton.textContent = t("scanning");
+    if (scanResult) {
+        scanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Running scan pipeline...</span></div>';
+    }
 
     try {
-        const response = await fetch(endpoint, {
+        const { response, data } = await fetchJsonWithTimeout(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
-        });
+        }, 240000);
 
-        const data = await response.json();
         if (!response.ok) {
             throw new Error(data.error || "Scan failed");
         }
@@ -1842,8 +1958,12 @@ scanForm.addEventListener("submit", async (event) => {
         activateTab("dashboard");
     } catch (error) {
         showError(error.message || "Scan failed");
+        if (scanResult) {
+            scanResult.innerHTML = "";
+        }
     } finally {
         scanButton.disabled = false;
+        scanButton.classList.remove("scanning");
         const activeLanguage = localStorage.getItem("vscanner.language") || "de";
         scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
     }
@@ -1896,6 +2016,11 @@ findingsCsvButton.addEventListener("click", () => {
         "_blank",
         "noopener,noreferrer"
     );
+});
+
+sidebarToggle?.addEventListener("click", () => {
+    const isCollapsed = appShell?.classList.contains("sidebar-collapsed");
+    applySidebarState(!isCollapsed);
 });
 
 projectSelect.addEventListener("change", async () => {
@@ -2032,12 +2157,11 @@ netScanForm?.addEventListener("submit", async (event) => {
     if (netScanResult) netScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Mapping network…</span></div>';
 
     try {
-        const resp = await fetch("/api/scan", {
+        const { response: resp, data } = await fetchJsonWithTimeout("/api/scan", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId }),
-        });
-        const data = await resp.json();
+        }, 240000);
         if (!resp.ok) throw new Error(data.error || "Network scan failed");
         lastNetReportId = data.report_id;
         if (netReportPdfButton) netReportPdfButton.disabled = false;
@@ -2099,12 +2223,11 @@ async function runStealthScan(intelOnly = false) {
             const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
         } else {
-            const resp = await fetch("/api/scan", {
+            const { response: resp, data } = await fetchJsonWithTimeout("/api/scan", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ target: tgt, profile: mode, port_strategy, project_id: activeProjectId }),
-            });
-            const data = await resp.json();
+            }, 240000);
             if (!resp.ok) throw new Error(data.error || "Stealth scan failed");
             lastStealthReportId = data.report_id;
             if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
@@ -2172,6 +2295,7 @@ function restoreLastScan() {
         const savedTheme = localStorage.getItem("vscanner.theme") || "ocean";
         const savedLanguage = localStorage.getItem("vscanner.language") || "en";
         const savedTimelineMode = localStorage.getItem("vscanner.severityTimelineMode") || "percent_stacked";
+        const savedSidebarCollapsed = localStorage.getItem("vscanner.sidebarCollapsed") === "1";
         modeSelect.value = savedMode;
         themeSelect.value = savedTheme;
         languageSelect.value = savedLanguage;
@@ -2181,6 +2305,7 @@ function restoreLastScan() {
         applyMode(savedMode);
         applyTheme(savedTheme);
         applyLanguage(savedLanguage);
+        applySidebarState(savedSidebarCollapsed);
         applyScannerMode(scannerTypeSelect.value || "standard");
         activateTab(pathToTab(window.location.pathname));
         await renderNetworkHints();
@@ -2192,14 +2317,16 @@ function restoreLastScan() {
     } catch (error) {
         showError(error.message || "Initial load failed");
     }
-  // Cursor glow
-  const cursorGlow = document.getElementById('cursor-glow');
-  if (cursorGlow) {
-    document.addEventListener('mousemove', e => {
-      cursorGlow.style.left = e.clientX + 'px';
-      cursorGlow.style.top  = e.clientY + 'px';
-      cursorGlow.style.opacity = '1';
-    });
-    document.addEventListener('mouseleave', () => { cursorGlow.style.opacity = '0'; });
-  }
+        // Cursor glow
+        const cursorGlow = document.getElementById("cursor-glow");
+        if (cursorGlow) {
+                document.addEventListener("mousemove", (e) => {
+                        cursorGlow.style.left = `${e.clientX}px`;
+                        cursorGlow.style.top = `${e.clientY}px`;
+                        cursorGlow.style.opacity = "1";
+                });
+                document.addEventListener("mouseleave", () => {
+                        cursorGlow.style.opacity = "0";
+                });
+        }
 })();

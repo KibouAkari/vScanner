@@ -1,5 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" fill="none">
-  <circle cx="48" cy="48" r="44" fill="#22180b" stroke="#f59e0b" stroke-opacity="0.45"/>
-  <path d="M48 16L71 27V46C71 61 61 73 48 79C35 73 25 61 25 46V27L48 16Z" fill="#f59e0b" fill-opacity="0.22" stroke="#f59e0b" stroke-width="2"/>
-  <path d="M37 48L45 56L60 40" stroke="#fbbf24" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <defs>
+    <linearGradient id="riskBg" x1="12" y1="10" x2="82" y2="88" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2c1e0a"/>
+      <stop offset="1" stop-color="#120d06"/>
+    </linearGradient>
+    <linearGradient id="riskGlow" x1="32" y1="24" x2="66" y2="76" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="80" height="80" rx="22" fill="url(#riskBg)" stroke="#f59e0b" stroke-opacity="0.45"/>
+  <path d="M48 18L70 28V47C70 61.5 60.8 73 48 78.5C35.2 73 26 61.5 26 47V28L48 18Z" fill="#f59e0b" fill-opacity="0.18" stroke="#fbbf24" stroke-width="2"/>
+  <path d="M39 49L46 56L59 42" stroke="url(#riskGlow)" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="48" cy="48" r="34" stroke="#f59e0b" stroke-opacity="0.15"/>
 </svg>

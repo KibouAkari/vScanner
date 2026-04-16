@@ -1,7 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="112" height="72" viewBox="0 0 112 72" fill="none">
-  <rect x="1" y="1" width="110" height="70" rx="18" fill="#171026" stroke="#a78bfa" stroke-opacity="0.45"/>
-  <path d="M16 36C25 22 40 14 56 14C72 14 87 22 96 36C87 50 72 58 56 58C40 58 25 50 16 36Z" fill="#a78bfa" fill-opacity="0.12" stroke="#a78bfa" stroke-width="2"/>
-  <circle cx="56" cy="36" r="12" fill="#a78bfa" fill-opacity="0.22" stroke="#c4b5fd"/>
-  <circle cx="56" cy="36" r="5" fill="#e9d5ff"/>
-  <circle cx="60" cy="32" r="1.8" fill="#fff"/>
+  <defs>
+    <linearGradient id="stealthBg" x1="8" y1="6" x2="106" y2="68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1d1232"/>
+      <stop offset="1" stop-color="#0f0b1d"/>
+    </linearGradient>
+    <linearGradient id="stealthEye" x1="20" y1="36" x2="92" y2="36" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c4b5fd"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="110" height="70" rx="18" fill="url(#stealthBg)" stroke="#a78bfa" stroke-opacity="0.45"/>
+  <path d="M16 36C25 21.5 40.2 13 56 13C71.8 13 87 21.5 96 36C87 50.5 71.8 59 56 59C40.2 59 25 50.5 16 36Z" fill="#a78bfa" fill-opacity="0.12" stroke="url(#stealthEye)" stroke-width="2"/>
+  <circle cx="56" cy="36" r="12" fill="#a78bfa" fill-opacity="0.22" stroke="#d8ccff"/>
+  <circle cx="56" cy="36" r="5" fill="#f4edff"/>
+  <path d="M67 23L72 18" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
+  <path d="M40 49L35 54" stroke="#a78bfa" stroke-width="2" stroke-linecap="round"/>
 </svg>

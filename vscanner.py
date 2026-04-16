@@ -1526,6 +1526,12 @@ def _styled_table(data: list, col_widths: list, extra: list | None = None) -> Ta
     return t
 
 
+def _fit_col_widths(widths: list[float], total_width: float) -> list[float]:
+    vals = [max(float(w), 1.0) for w in widths]
+    base = sum(vals) or 1.0
+    return [total_width * (w / base) for w in vals]
+
+
 def _section_bar(title: str, width: float) -> Table:
     t = Table([[_p(title, _PS_SEC)]], colWidths=[width])
     t.setStyle(TableStyle([
@@ -1751,7 +1757,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     story.append(Spacer(1, 4))
     if recent_scans:
         hdr = ["Date / Time", "Target", "Profile", "Risk Level", "Score", "Findings"]
-        cw = [108, 142, 78, 72, 50, 60]
+        cw = _fit_col_widths([108, 142, 78, 72, 50, 60], W)
         rows = [hdr]
         sevs: list[str] = []
         for item in recent_scans:
@@ -1776,7 +1782,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(_section_bar("Top Exposed Assets", W))
         story.append(Spacer(1, 4))
         hdr = ["Host / Asset", "Open Ports", "Findings", "Risk Score", "Profiles", "Last Seen"]
-        cw = [152, 66, 64, 66, 84, 88]
+        cw = _fit_col_widths([152, 66, 64, 66, 84, 88], W)
         rows = [hdr]
         for item in top_assets[:30]:
             rs = item.get("risk_score", 0)
@@ -1796,7 +1802,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(_section_bar("Service Inventory", W))
         story.append(Spacer(1, 4))
         hdr = ["Service", "Product", "Version", "Host Count", "Port", "First Seen"]
-        cw = [100, 118, 80, 72, 60, 95]
+        cw = _fit_col_widths([100, 118, 80, 72, 60, 95], W)
         rows = [hdr]
         for item in service_inv[:30]:
             ports = item.get("ports") or []
@@ -1817,7 +1823,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(_section_bar("Vulnerability Intelligence", W))
         story.append(Spacer(1, 4))
         hdr = ["Severity", "Title", "CVE", "Affected Assets", "Scan Hits"]
-        cw = [70, 200, 80, 90, 90]
+        cw = _fit_col_widths([70, 200, 80, 90, 90], W)
         rows = [hdr]
         sevs = []
         for item in top_vulns[:80]:
@@ -1839,7 +1845,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(_section_bar("Aggregated Findings Detail", W))
         story.append(Spacer(1, 4))
         hdr = ["Sev", "Title", "CVE", "Type", "Assets", "Occurrences"]
-        cw = [50, 212, 76, 86, 52, 54]
+        cw = _fit_col_widths([50, 212, 76, 86, 52, 54], W)
         rows = [hdr]
         sevs = []
         for item in findings[:250]:
@@ -1947,7 +1953,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(_section_bar("Host Overview", W))
         story.append(Spacer(1, 4))
         hdr = ["Host / IP", "Open Ports", "Services", "OS / Info", "Risk"]
-        cw = [155, 72, 70, 158, 60]
+        cw = _fit_col_widths([155, 72, 70, 158, 60], W)
         rows = [hdr]
         sevs: list[str] = []
         for hdata in hosts[:40]:
@@ -1970,7 +1976,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(_section_bar("Open Ports & Services", W))
         story.append(Spacer(1, 4))
         hdr = ["Host", "Port", "Proto", "State", "Service", "Product", "Version"]
-        cw = [108, 38, 36, 40, 78, 115, 100]
+        cw = _fit_col_widths([108, 38, 36, 40, 78, 115, 100], W)
         rows = [hdr]
         for hdata in hosts[:25]:
             open_ports = hdata.get("open_ports") or [p for p in (hdata.get("ports") or []) if p.get("state") == "open"]
@@ -1994,7 +2000,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(_section_bar("Findings", W))
         story.append(Spacer(1, 4))
         hdr = ["Sev", "Host", "Title", "Evidence", "CVE", "Type"]
-        cw = [50, 92, 142, 118, 64, 54]
+        cw = _fit_col_widths([50, 92, 142, 118, 64, 54], W)
         rows = [hdr]
         sevs = []
         for item in findings[:300]:
@@ -2708,7 +2714,15 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
     ]
 
     if profile == "stealth":
-        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 636, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 9443, 25565]
+        # Low-noise, but broader than minimal footprint to improve practical discovery.
+        stealth_ports = [
+            21, 22, 25, 53, 80, 110, 111, 123, 135, 139, 143, 161, 389, 443, 445,
+            465, 587, 631, 636, 993, 995, 1080, 1433, 1521, 1883, 2049, 2375, 2376,
+            3000, 3128, 3306, 3389, 5000, 5001, 5432, 5601, 5671, 5672, 5900, 5985,
+            5986, 6379, 6443, 7001, 7443, 8080, 8081, 8088, 8090, 8161, 8443, 8500,
+            8883, 8888, 9000, 9090, 9200, 9300, 9443, 10000, 11211, 15672, 25565,
+            27017, 32400,
+        ]
         return sorted(set(stealth_ports))
 
     ranges = set(base_common)
@@ -3639,9 +3653,17 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                     "asset_criticality": finding_criticality,
                 }
             )
+        # Keep response compact for frontend stability: include open ports only.
         host_results.append(
             {
-                **host,
+                "host": host.get("host", "-"),
+                "state": host.get("state", "unknown"),
+                "hostnames": host.get("hostnames", []),
+                "reverse_dns": host.get("reverse_dns"),
+                "os_matches": host.get("os_matches", []),
+                "ports": open_ports,
+                "open_ports": open_ports,
+                "findings": host_findings,
                 "web_evidence": web_evidence,
                 "finding_count": len(host_findings),
                 "open_port_count": len(open_ports),
@@ -3708,7 +3730,18 @@ def build_v2_port_list(profile: str, port_strategy: str) -> list[int]:
     canonical = canonical_profile(profile)
 
     if canonical == "stealth":
-        return sorted(set([22, 53, 80, 110, 143, 443, 587, 636, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 9443]))
+        return sorted(
+            set(
+                [
+                    21, 22, 25, 53, 80, 110, 111, 123, 135, 139, 143, 161, 389, 443,
+                    445, 465, 587, 631, 636, 993, 995, 1080, 1433, 1521, 1883, 2049,
+                    2375, 2376, 3000, 3128, 3306, 3389, 5000, 5001, 5432, 5601, 5671,
+                    5672, 5900, 5985, 5986, 6379, 6443, 7001, 7443, 8080, 8081, 8088,
+                    8090, 8161, 8443, 8500, 8883, 8888, 9000, 9090, 9200, 9300, 9443,
+                    10000, 11211, 15672, 25565, 27017, 32400,
+                ]
+            )
+        )
 
     if canonical == "deep":
         deep_cap = 18000 if port_strategy == "aggressive" else 12000
