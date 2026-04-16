@@ -36,18 +36,10 @@ vScanner provides a full reporting flow from first scan to executive dashboard v
 
 ### Live Report Preview
 
-Fast-loading preview cards for an instant professional first impression.
+Real production screenshot (captured from https://vscanner.vercel.app) to match the actual live UI design.
 
 <p>
-  <img src="docs/media/live-preview-hero.svg" alt="vScanner animated live report preview" />
-</p>
-
-<p>
-  <img src="docs/media/report-overview-card.svg" alt="vScanner dashboard overview card" />
-</p>
-
-<p>
-  <img src="docs/media/report-findings-card.svg" alt="vScanner findings review card" />
+  <img src="docs/media/live-dashboard-real.png" alt="vScanner live dashboard preview" />
 </p>
 
 Production links:

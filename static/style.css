@@ -320,9 +320,9 @@ body {
 }
 
 .workspace {
-    padding: 0.82rem;
+    padding: 0.74rem;
     display: grid;
-    gap: 0.75rem;
+    gap: 0.62rem;
     align-content: start;
     grid-auto-rows: min-content;
 }
@@ -333,7 +333,7 @@ body {
     background: var(--panel);
     box-shadow: 0 12px 28px rgba(0, 0, 0, 0.25);
     backdrop-filter: blur(4px);
-    padding: 0.78rem;
+    padding: 0.7rem;
     transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
     animation: panelFadeIn 0.34s ease both;
 }
@@ -449,7 +449,7 @@ body {
 
 .tab.active {
     display: grid;
-    gap: 0.9rem;
+    gap: 0.72rem;
     align-content: start;
 }
 
@@ -543,6 +543,11 @@ canvas {
     align-items: start;
 }
 
+.split-grid > .panel,
+.exec-grid > .panel {
+    align-self: start;
+}
+
 .exec-grid {
     display: grid;
     grid-template-columns: 1.25fr 1fr;
@@ -550,10 +555,41 @@ canvas {
     align-items: start;
 }
 
+.split-grid-balanced {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+}
+
+.exec-grid-tight {
+    grid-template-columns: minmax(0, 1.3fr) minmax(320px, 1fr);
+}
+
+.snapshot-grid {
+    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
+}
+
 .stack-panel,
 .heatmap-panel {
     display: grid;
     gap: 0.6rem;
+}
+
+.stack-panel .chart-wrap {
+    min-height: 150px;
+    height: clamp(150px, 22vh, 220px);
+}
+
+.heatmap-panel-compact {
+    align-content: start;
+}
+
+.exposure-panel .risk-legend {
+    margin-top: 0.2rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.35rem;
+}
+
+.exposure-panel .risk-item {
+    padding: 0.42rem 0.48rem;
 }
 
 .severity-minimap-wrap {
@@ -902,7 +938,7 @@ canvas {
 .list-scroll {
     display: grid;
     gap: 0.5rem;
-    max-height: clamp(220px, 36vh, 420px);
+    max-height: clamp(180px, 30vh, 320px);
     overflow: auto;
 }
 
