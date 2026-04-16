@@ -107,30 +107,75 @@ COMMON_SERVICE_NAMES = {
     445: "microsoft-ds",
     587: "smtp-submission",
     636: "ldaps",
+    853: "dns-over-tls",
+    873: "rsync",
+    902: "vmware-auth",
+    990: "ftps",
     993: "imaps",
     995: "pop3s",
+    1080: "socks",
+    1194: "openvpn",
     1433: "mssql",
+    1434: "mssql-browser",
     1521: "oracle",
+    1883: "mqtt",
     2049: "nfs",
     2375: "docker",
+    2376: "docker-tls",
     3000: "node",
+    3128: "squid-proxy",
+    3333: "dev-alt",
     3306: "mysql",
     3389: "rdp",
+    4000: "web-dev",
+    4443: "https-alt",
+    4500: "ipsec-nat-t",
     5000: "web-alt",
+    5001: "web-alt",
+    5060: "sip",
+    5061: "sips",
     5432: "postgresql",
     5601: "kibana",
+    5671: "amqps",
+    5672: "amqp",
     5900: "vnc",
+    5985: "winrm-http",
+    5986: "winrm-https",
+    6443: "kubernetes-api",
     6379: "redis",
+    6667: "irc",
     7001: "weblogic",
+    7443: "https-alt",
     8080: "http-proxy",
     8081: "http-alt",
+    8088: "http-alt",
+    8090: "http-alt",
+    8161: "activemq-web",
     8443: "https-alt",
+    8500: "consul",
+    8600: "consul-dns",
+    8883: "mqtts",
     8888: "http-alt",
     9000: "php-fpm-or-web",
+    9001: "tor-or-web",
+    9090: "prometheus",
+    9091: "prometheus-pushgateway",
     9200: "elasticsearch",
     9300: "elasticsearch-transport",
+    9418: "git",
+    10000: "webmin",
+    10050: "zabbix-agent",
+    10051: "zabbix-trapper",
     11211: "memcached",
+    15672: "rabbitmq-management",
+    25565: "minecraft",
+    25655: "minecraft-bungee",
     27017: "mongodb",
+    27018: "mongodb-shard",
+    28017: "mongodb-web",
+    32400: "plex",
+    50000: "jenkins",
+    51820: "wireguard",
 }
 
 WEB_CANDIDATE_PORTS = {
@@ -142,15 +187,32 @@ WEB_CANDIDATE_PORTS = {
     8008,
     8080,
     8081,
+    8088,
+    8090,
+    8161,
     8443,
+    8500,
     8888,
+    9001,
+    9090,
+    9091,
+    9443,
+    10000,
+    15672,
+    50000,
     3000,
+    3333,
+    4000,
+    4443,
+    5001,
     5000,
     5601,
     7001,
     9000,
     9200,
 }
+
+TLS_CANDIDATE_PORTS = {443, 465, 636, 853, 990, 993, 995, 2376, 5061, 5671, 5986, 6443, 7443, 8443, 8883, 9443}
 
 SEVERITY_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
@@ -1422,11 +1484,23 @@ def _kpi_strip(items: list[tuple], width: float) -> Table:
     for i in range(0, len(items), cols):
         row = []
         for label, value, chex in items[i : i + cols]:
-            html = (
-                f'<font name="Helvetica" size="7" color="#9db4cc">{label}</font><br/>'
-                f'<font name="Helvetica-Bold" size="17" color="{chex}">{value or "—"}</font>'
+            label_p = _p(
+                f'<font name="Helvetica" size="7" color="#9db4cc">{label}</font>',
+                ParagraphStyle("kpi_lbl", fontName="Helvetica", fontSize=7, textColor=_PDF_MUTED, leading=9),
             )
-            row.append(_p(html))
+            value_p = _p(
+                f'<font name="Helvetica-Bold" size="17" color="{chex}">{value or "—"}</font>',
+                ParagraphStyle("kpi_val", fontName="Helvetica-Bold", fontSize=17, textColor=HexColor(chex), leading=20),
+            )
+            cell = Table([[label_p], [value_p]], colWidths=[col_w - 24])
+            cell.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, -1), _PDF_PANEL2),
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]))
+            row.append(cell)
         rows.append(row)
     t = Table(rows, colWidths=[col_w] * cols)
     t.setStyle(TableStyle([
@@ -1473,6 +1547,10 @@ def _pdf_page_frame(canv: Any, doc: Any, project_label: str, generated: str) -> 
     canv.saveState()
     w, h = A4
 
+    # Full-page fill so pages never show white paper background between sections.
+    canv.setFillColor(_PDF_BG)
+    canv.rect(0, 0, w, h, fill=1, stroke=0)
+
     # ── Header strip ──────────────────────────────────────────────
     canv.setFillColor(_PDF_BG)
     canv.rect(0, h - 44, w, 44, fill=1, stroke=0)
@@ -1508,7 +1586,7 @@ def _pdf_page_frame(canv: Any, doc: Any, project_label: str, generated: str) -> 
     canv.rect(0, 34, w, 1, fill=1, stroke=0)
     canv.setFillColor(_PDF_MUTED)
     canv.setFont("Helvetica", 7)
-    canv.drawString(14, 13, "vScanner  ·  Adaptive Security Platform  ·  Confidential & Internal Use Only")
+    canv.drawString(14, 13, "vScanner  ·  Adaptive Security Platform")
     canv.setFillColor(_PDF_PRIMARY)
     canv.setFont("Helvetica-Bold", 8)
     canv.drawRightString(w - 14, 13, f"Page {doc.page}")
@@ -1657,12 +1735,13 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         cw = [100, 118, 80, 72, 60, 95]
         rows = [hdr]
         for item in service_inv[:30]:
+            ports = item.get("ports") or []
             rows.append([
                 _p(str(item.get("service", "-")), _PS_BOLD),
                 _p(str(item.get("product", "-"))[:34], _PS_BODY),
                 _p(str(item.get("version", "-"))[:22], _PS_BODY),
-                _p(str(item.get("host_count", 0)), _PS_BODY),
-                _p(str(item.get("port", "-")), _PS_BODY),
+                _p(str(item.get("asset_count", 0)), _PS_BODY),
+                _p(str(ports[0]) if ports else "-", _PS_BODY),
                 _p(str(item.get("first_seen", "-"))[:16], _PS_MUTED),
             ])
         story.append(_styled_table(rows, cw))
@@ -1673,8 +1752,8 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(PageBreak())
         story.append(_section_bar("Vulnerability Intelligence", W))
         story.append(Spacer(1, 4))
-        hdr = ["Severity", "Title", "CVE", "Affected Assets", "Occurrences"]
-        cw = [70, 216, 80, 92, 72]
+        hdr = ["Severity", "Title", "CVE", "Affected Assets", "Scan Hits"]
+        cw = [70, 200, 80, 90, 90]
         rows = [hdr]
         sevs = []
         for item in top_vulns[:80]:
@@ -1684,7 +1763,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
                 _p(str(item.get("title", "Finding"))[:82], _PS_BODY),
                 _p(str(item.get("cve") or "-"), _PS_MUTED),
                 _p(str(item.get("affected_assets", 0)), _PS_BODY),
-                _p(str(item.get("occurrences", 0)), _PS_BODY),
+                _p(str(item.get("scan_hits", item.get("occurrences", 0))), _PS_BODY),
             ])
             sevs.append(sev)
         story.append(_styled_table(rows, cw, _sev_style_cmds(sevs)))
@@ -1808,7 +1887,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         rows = [hdr]
         sevs: list[str] = []
         for hdata in hosts[:40]:
-            open_ports = hdata.get("open_ports") or []
+            open_ports = hdata.get("open_ports") or [p for p in (hdata.get("ports") or []) if p.get("state") == "open"]
             services = list({p.get("name", "") for p in open_ports if p.get("name")})
             os_str = str(hdata.get("os") or "-")[:38]
             risk = str(hdata.get("risk_level") or "low").lower()
@@ -1830,7 +1909,8 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         cw = [108, 38, 36, 40, 78, 115, 100]
         rows = [hdr]
         for hdata in hosts[:25]:
-            for port_info in (hdata.get("open_ports") or [])[:35]:
+            open_ports = hdata.get("open_ports") or [p for p in (hdata.get("ports") or []) if p.get("state") == "open"]
+            for port_info in open_ports[:35]:
                 rows.append([
                     _p(str(hdata.get("host", "-"))[:28], _PS_MUTED),
                     _p(str(port_info.get("port", "-")), _PS_BOLD),
@@ -2051,6 +2131,14 @@ def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
         ("Apache httpd", r"apache(?:/|\s)([\w\.-]+)"),
         ("Microsoft-IIS", r"microsoft-iis/([\w\.-]+)"),
         ("vsftpd", r"vsftpd\s*([\w\.-]+)?"),
+        ("Postfix SMTP", r"postfix(?:\s|/)?([\w\.-]+)?"),
+        ("Exim SMTP", r"exim(?:\s|/)?([\w\.-]+)?"),
+        ("Dovecot", r"dovecot(?:\s|/)?([\w\.-]+)?"),
+        ("PostgreSQL", r"postgres(?:ql)?(?:\s|/)?([\w\.-]+)?"),
+        ("MySQL", r"mysql(?:\s|/)?([\w\.-]+)?"),
+        ("RabbitMQ", r"rabbitmq(?:\s|/)?([\w\.-]+)?"),
+        ("Kubernetes API", r"kubernetes"),
+        ("OpenVPN", r"openvpn(?:\s|/)?([\w\.-]+)?"),
         ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
     ]
 
@@ -2471,30 +2559,68 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         443,
         445,
         587,
+        853,
+        873,
+        902,
+        990,
         636,
         993,
         995,
+        1080,
+        1194,
         1433,
+        1434,
         1521,
+        1883,
         2049,
         2375,
+        2376,
+        3128,
         3000,
+        3333,
         3306,
         3389,
+        4000,
+        4443,
+        4500,
+        5001,
         5000,
+        5060,
+        5061,
         5432,
         5601,
+        5671,
+        5672,
         5900,
+        5985,
+        5986,
+        6443,
         6379,
+        6667,
         7001,
+        7443,
         8080,
         8081,
+        8088,
+        8090,
+        8161,
+        8500,
+        8600,
         8443,
         8888,
+        8883,
+        9001,
         9000,
+        9090,
+        9091,
         9200,
         9300,
+        9418,
+        10000,
+        10050,
+        10051,
         11211,
+        15672,
         27017,
         25565,
         25655,
@@ -2503,22 +2629,12 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         32400,
         50000,
         51820,
-        5672,
-        15672,
-        1883,
-        8883,
         6000,
-        6667,
-        10000,
-        10050,
-        10051,
-        9090,
-        9091,
         9443,
     ]
 
     if profile == "stealth":
-        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 993, 995, 3389, 8080, 8443, 9443, 25565]
+        stealth_ports = [22, 53, 80, 110, 143, 443, 587, 636, 993, 995, 3306, 3389, 5432, 6379, 8080, 8443, 9443, 25565]
         return sorted(set(stealth_ports))
 
     ranges = set(base_common)
@@ -2584,7 +2700,8 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
             host_entry["last_seen"] = max(str(host_entry["last_seen"]), report_created_at)
             host_entry["max_risk_score"] = max(float(host_entry["max_risk_score"]), risk_score)
 
-            for port in host.get("ports", []):
+            host_ports = host.get("ports") or host.get("open_ports") or []
+            for port in host_ports:
                 if str(port.get("state") or "").lower() != "open":
                     continue
                 port_no = int(port.get("port") or 0)
@@ -2609,11 +2726,23 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                         "count": 0,
                         "assets": set(),
                         "ports": set(),
+                        "products": set(),
+                        "versions": set(),
+                        "first_seen": report_created_at,
+                        "last_seen": report_created_at,
+                        "sightings": set(),
                     },
                 )
-                service_bucket["count"] += 1
+                service_bucket["first_seen"] = min(str(service_bucket["first_seen"]), report_created_at)
+                service_bucket["last_seen"] = max(str(service_bucket["last_seen"]), report_created_at)
                 service_bucket["assets"].add(host_id)
                 service_bucket["ports"].add(port_no)
+                if port.get("product"):
+                    service_bucket["products"].add(str(port.get("product")))
+                if port.get("version"):
+                    service_bucket["versions"].add(str(port.get("version")))
+                service_bucket["sightings"].add((host_id, port_no))
+                service_bucket["count"] = len(service_bucket["sightings"])
 
         for finding in payload.get("finding_items", []):
             severity = normalize_severity(str(finding.get("severity") or "low"))
@@ -2634,15 +2763,19 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                     "cve": finding.get("cve", ""),
                     "affected_assets": set(),
                     "occurrences": 0,
+                    "scan_hits": 0,
                     "last_seen": report_created_at,
+                    "seen_asset_keys": set(),
                 },
             )
             vuln_bucket["severity"] = best_severity(vuln_bucket["severity"], severity)
-            vuln_bucket["occurrences"] += 1
+            vuln_bucket["scan_hits"] += 1
             vuln_bucket["last_seen"] = max(str(vuln_bucket["last_seen"]), report_created_at)
-            vuln_bucket["affected_assets"].add(str(finding.get("host") or "-"))
-
             host_id = str(finding.get("host") or "-")
+            vuln_bucket["affected_assets"].add(host_id)
+            if host_id not in vuln_bucket["seen_asset_keys"]:
+                vuln_bucket["seen_asset_keys"].add(host_id)
+                vuln_bucket["occurrences"] += 1
             if host_id in asset_map:
                 asset_map[host_id]["finding_titles"].add(str(finding.get("title") or "Finding"))
 
@@ -2670,6 +2803,10 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                 "count": entry["count"],
                 "asset_count": len(entry["assets"]),
                 "ports": sorted(entry["ports"]),
+                "product": sorted(entry["products"])[0] if entry["products"] else "",
+                "version": sorted(entry["versions"])[0] if entry["versions"] else "",
+                "first_seen": entry["first_seen"],
+                "last_seen": entry["last_seen"],
             }
             for entry in service_map.values()
         ],
@@ -2686,6 +2823,7 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                 "cve": entry["cve"],
                 "affected_assets": len(entry["affected_assets"]),
                 "occurrences": entry["occurrences"],
+                "scan_hits": entry["scan_hits"],
                 "last_seen": entry["last_seen"],
             }
             for entry in vulnerability_map.values()
@@ -2712,6 +2850,74 @@ def _grab_http_banner(sock: socket.socket, host_or_ip: str) -> str:
     return sock.recv(320).decode(errors="ignore").strip()
 
 
+def _probe_port_banner(sock: socket.socket, host_or_ip: str, port: int) -> str:
+    if port in TLS_CANDIDATE_PORTS:
+        try:
+            import ssl
+
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            with ctx.wrap_socket(sock, server_hostname=host_or_ip) as tls_sock:
+                cert = tls_sock.getpeercert() or {}
+                tls_ver = tls_sock.version() or "TLS"
+                subj = ""
+                for group in cert.get("subject", []):
+                    for key, value in group:
+                        if str(key).lower() in {"commonname", "cn"}:
+                            subj = str(value)
+                            break
+                    if subj:
+                        break
+                return f"TLS {tls_ver}" + (f" cert={subj}" if subj else "")
+        except Exception:
+            pass
+
+    if port in WEB_CANDIDATE_PORTS:
+        try:
+            return _grab_http_banner(sock, host_or_ip)
+        except Exception:
+            pass
+
+    probes = {
+        21: b"\r\n",
+        22: b"\r\n",
+        25: b"EHLO vscanner.local\r\n",
+        110: b"CAPA\r\n",
+        143: b"a001 CAPABILITY\r\n",
+        587: b"EHLO vscanner.local\r\n",
+        6379: b"*1\r\n$4\r\nPING\r\n",
+        11211: b"stats\r\n",
+    }
+
+    try:
+        if port in {3306, 5432}:
+            data = sock.recv(256)
+            if data:
+                text = data.decode(errors="ignore").strip()
+                if text:
+                    return text
+                if port == 3306 and len(data) > 5:
+                    return "mysql-handshake"
+        probe = probes.get(port)
+        if probe:
+            sock.sendall(probe)
+            data = sock.recv(320)
+            if data:
+                return data.decode(errors="ignore").strip()
+        data = sock.recv(256)
+        if data:
+            return data.decode(errors="ignore").strip()
+        sock.sendall(b"\r\n")
+        data = sock.recv(256)
+        if data:
+            return data.decode(errors="ignore").strip()
+    except Exception:
+        pass
+
+    return ""
+
+
 def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str, Any]:
     state = "closed"
     banner = ""
@@ -2721,17 +2927,7 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
             state = "open"
             sock.settimeout(timeout_s)
             try:
-                if port in WEB_CANDIDATE_PORTS:
-                    banner = _grab_http_banner(sock, host_or_ip)
-                else:
-                    data = sock.recv(256)
-                    if data:
-                        banner = data.decode(errors="ignore").strip()
-                    else:
-                        sock.sendall(b"\r\n")
-                        data = sock.recv(256)
-                        if data:
-                            banner = data.decode(errors="ignore").strip()
+                banner = _probe_port_banner(sock, host_or_ip, port)
             except Exception:
                 banner = ""
     except Exception:
@@ -2747,6 +2943,22 @@ def _scan_single_port(host_or_ip: str, port: int, timeout_s: float) -> dict[str,
             product = inferred_product
             version = inferred_version
             service_name = service_name if service_name != "unknown" else inferred_product.lower()
+        elif service_name == "unknown":
+            banner_l = banner.lower()
+            if "http" in banner_l:
+                service_name = "http"
+            elif "ssh" in banner_l:
+                service_name = "ssh"
+            elif "smtp" in banner_l:
+                service_name = "smtp"
+            elif "redis" in banner_l:
+                service_name = "redis"
+            elif "mysql" in banner_l:
+                service_name = "mysql"
+            elif "postgres" in banner_l:
+                service_name = "postgresql"
+            elif "tls" in banner_l:
+                service_name = "tls-service"
 
     return {
         "protocol": "tcp",
@@ -2836,25 +3048,25 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
     if profile == "network":
-        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner"
+        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title"
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS -sV --version-light --top-ports 800 --script=default,safe,banner"
+        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title"
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 8000 --script=default,safe,banner"
-        return "-Pn -T4 --open -sS -sV --reason --top-ports 5000 --script=default,safe,banner"
+            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title"
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --reason -p- --script=default,safe,banner,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,vuln"
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 12000 --script=default,safe,banner,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,vuln"
 
-    return "-Pn -T4 --open -sS -sV --version-all --reason --top-ports 8000 --script=default,safe,banner,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,vuln"
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -2881,6 +3093,18 @@ def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, An
                 script_data = data.get("script") or {}
                 banner_parts = [f"{k}: {v}" for k, v in script_data.items() if isinstance(v, str) and v.strip()]
                 banner_text = " | ".join(banner_parts)[:600]
+
+                if not service_product and banner_text:
+                    inferred_product, inferred_version = infer_service_version_from_banner(banner_text)
+                    if inferred_product:
+                        service_product = inferred_product
+                        if inferred_version and not service_version:
+                            service_version = inferred_version
+
+                if service_name == "unknown":
+                    service_name = COMMON_SERVICE_NAMES.get(port, "unknown")
+                if service_name == "unknown" and service_product:
+                    service_name = service_product.lower().replace(" ", "-")
 
                 entry = {
                     "protocol": proto,
