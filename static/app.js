@@ -2192,4 +2192,14 @@ function restoreLastScan() {
     } catch (error) {
         showError(error.message || "Initial load failed");
     }
+  // Cursor glow
+  const cursorGlow = document.getElementById('cursor-glow');
+  if (cursorGlow) {
+    document.addEventListener('mousemove', e => {
+      cursorGlow.style.left = e.clientX + 'px';
+      cursorGlow.style.top  = e.clientY + 'px';
+      cursorGlow.style.opacity = '1';
+    });
+    document.addEventListener('mouseleave', () => { cursorGlow.style.opacity = '0'; });
+  }
 })();
