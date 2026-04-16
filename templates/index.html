@@ -165,39 +165,49 @@
             </section>
 
             <section class="tab" id="tab-scanner">
-                <article class="panel">
-                    <h3 id="runNewScanTitle">Run New Scan</h3>
-                    <div class="scanner-mode-grid" id="scannerModeGrid">
-                        <button type="button" class="scanner-mode-card active" data-mode="standard">
+                <article class="panel scanner-hero-panel">
+                    <div class="scanner-hero-head">
+                        <div class="scanner-hero-graphic" aria-hidden="true">
+                            <span class="scanner-orbit scanner-orbit-a"></span>
+                            <span class="scanner-orbit scanner-orbit-b"></span>
+                            <span class="scanner-core"></span>
+                        </div>
+                        <div>
+                            <h3 id="runNewScanTitle">Vulnerability Scanner</h3>
+                            <p class="scanner-hero-sub">Focused host and domain assessments with deep fingerprinting, CVE enrichment and role-based scoring.</p>
+                        </div>
+                    </div>
+                    <div class="scanner-mode-grid scanner-mode-grid-2" id="scannerModeGrid">
+                        <button type="button" class="scanner-mode-card mode-card-risk active" data-mode="standard">
+                            <div class="mode-card-head">
+                                <span class="mode-badge mode-badge-risk">Core</span>
+                                <span class="mode-chip">Host + Domain</span>
+                            </div>
                             <strong id="modeRiskTitle">Risk Scanner</strong>
-                            <span id="modeRiskDesc">Normal scanner for host/domain audits with light and deep profiles.</span>
+                            <span id="modeRiskDesc">Precise vulnerability coverage with configurable Light and Deep scanning profiles.</span>
+                            <div class="mode-card-rails" aria-hidden="true"><i></i><i></i><i></i></div>
                         </button>
-                        <button type="button" class="scanner-mode-card" data-mode="network">
-                            <strong id="modeNetworkTitle">Network Discovery</strong>
-                            <span id="modeNetworkDesc">Discovery and service mapping for authorized local/lab CIDR ranges.</span>
-                        </button>
-                        <button type="button" class="scanner-mode-card" data-mode="stealth_intel">
-                            <strong id="modeStealthTitle">Stealth & Intel</strong>
-                            <span id="modeStealthDesc">Low-noise scan plus passive metadata enrichment, no evasion behavior.</span>
-                        </button>
-                        <button type="button" class="scanner-mode-card" data-mode="advanced_v2">
+                        <button type="button" class="scanner-mode-card mode-card-v2" data-mode="advanced_v2">
+                            <div class="mode-card-head">
+                                <span class="mode-badge mode-badge-v2">Pro</span>
+                                <span class="mode-chip">Async Engine</span>
+                            </div>
                             <strong id="modeV2Title">Adaptive V2 Scanner</strong>
-                            <span id="modeV2Desc">Async scanner engine with plugin-based checks and deeper protocol fingerprinting.</span>
+                            <span id="modeV2Desc">Parallel probing engine with plugin checks, enriched service fingerprints and smarter detection depth.</span>
+                            <div class="mode-card-pulse" aria-hidden="true"></div>
                         </button>
                     </div>
                     <form id="scanForm" class="form-grid">
                         <input id="scannerType" type="hidden" value="standard" />
                         <div>
                             <label for="target">Target</label>
-                            <input id="target" class="input" type="text" placeholder="example.com, 8.8.8.8, 192.168.1.0/24" required />
+                            <input id="target" class="input" type="text" placeholder="example.com or 8.8.8.8" required />
                         </div>
                         <div id="profileFieldGroup">
                             <label for="profile">Scan Profile</label>
                             <select id="profile" class="input">
                                 <option value="light">Light Scan</option>
                                 <option value="deep">Deep Scan</option>
-                                <option value="stealth">Stealth Scan (Low Noise)</option>
-                                <option value="network">Network Discovery</option>
                             </select>
                         </div>
                         <div id="portStrategyGroup">
@@ -209,14 +219,9 @@
                         </div>
                         <div class="align-end action-stack">
                             <button id="scanButton" class="btn primary" type="submit">Start Scan</button>
-                            <button id="intelOnlyButton" class="btn ghost hidden" type="button">Intel Only</button>
                         </div>
                     </form>
-                    <div class="network-suggestions">
-                        <span id="suggestedNetworksLabel">Suggested networks:</span>
-                        <div id="networkHints" class="hint-row"></div>
-                    </div>
-                    <p id="scanModeNote" class="note">Use this scanner only for authorized assets. Stealth mode is low-noise and does not bypass SIEM/detection systems.</p>
+                    <p id="scanModeNote" class="note">Use this scanner only for authorized assets.</p>
                     <div id="scanError" class="error hidden"></div>
                 </article>
 
@@ -236,7 +241,15 @@
             <section class="tab" id="tab-network">
                 <article class="panel network-scanner-panel">
                     <div class="ns-header">
-                        <div class="ns-hero-icon">🌐</div>
+                        <div class="ns-hero-graphic" aria-hidden="true">
+                            <span class="ns-ring ns-ring-a"></span>
+                            <span class="ns-ring ns-ring-b"></span>
+                            <span class="ns-node ns-node-a"></span>
+                            <span class="ns-node ns-node-b"></span>
+                            <span class="ns-node ns-node-c"></span>
+                            <span class="ns-link ns-link-a"></span>
+                            <span class="ns-link ns-link-b"></span>
+                        </div>
                         <div>
                             <h3 id="netScanTitle">Network Discovery Scanner</h3>
                             <p class="ns-hero-sub">CIDR subnet enumeration &bull; Host discovery &bull; Service mapping &bull; Authorized networks only</p>
@@ -287,7 +300,14 @@
             <section class="tab" id="tab-stealth">
                 <article class="panel stealth-scanner-panel">
                     <div class="ss-header">
-                        <div class="ss-hero-icon">👁️</div>
+                        <div class="ss-hero-graphic" aria-hidden="true">
+                            <span class="ss-eye-shell"></span>
+                            <span class="ss-eye-iris"></span>
+                            <span class="ss-eye-pupil"></span>
+                            <span class="ss-eye-glint"></span>
+                            <span class="ss-signal ss-signal-a"></span>
+                            <span class="ss-signal ss-signal-b"></span>
+                        </div>
                         <div>
                             <h3 id="stealthScanTitle">Stealth &amp; Intel Scanner</h3>
                             <p class="ss-hero-sub">Low-noise probing &bull; Passive metadata enrichment &bull; No evasion — not a bypass tool</p>

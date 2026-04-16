@@ -1655,5 +1655,279 @@ body[data-mode="bright"] .error {
     @media (max-width: 700px) {
         .ns-stats-row { grid-template-columns: 1fr 1fr; }
     }
+
+    /* Strong scanner identity cards */
+    .scanner-mode-grid-2 {
+        grid-template-columns: repeat(2, minmax(220px, 1fr));
+        gap: 0.9rem;
+    }
+    .mode-card-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 0.45rem;
+    }
+    .mode-badge {
+        font-size: 0.68rem;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 0.16rem 0.5rem;
+        border-radius: 999px;
+        font-weight: 700;
+    }
+    .mode-chip {
+        font-size: 0.7rem;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.14rem 0.45rem;
+    }
+    .mode-badge-risk {
+        color: #f59e0b;
+        background: rgba(245, 158, 11, 0.14);
+        border: 1px solid rgba(245, 158, 11, 0.25);
+    }
+    .mode-badge-v2 {
+        color: #22d3ee;
+        background: rgba(34, 211, 238, 0.15);
+        border: 1px solid rgba(34, 211, 238, 0.28);
+    }
+    .mode-card-risk {
+        background: linear-gradient(135deg, color-mix(in srgb, var(--panel-bg) 92%, #f59e0b 8%), var(--panel-bg));
+    }
+    .mode-card-v2 {
+        background: linear-gradient(135deg, color-mix(in srgb, var(--panel-bg) 90%, #22d3ee 10%), var(--panel-bg));
+    }
+    .mode-card-risk .mode-card-rails {
+        margin-top: 0.6rem;
+        display: grid;
+        gap: 0.3rem;
+    }
+    .mode-card-risk .mode-card-rails i {
+        display: block;
+        height: 3px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(245, 158, 11, 0.85), rgba(245, 158, 11, 0.2));
+    }
+    .mode-card-risk .mode-card-rails i:nth-child(1) { width: 88%; }
+    .mode-card-risk .mode-card-rails i:nth-child(2) { width: 74%; }
+    .mode-card-risk .mode-card-rails i:nth-child(3) { width: 57%; }
+    .mode-card-v2 .mode-card-pulse {
+        margin-top: 0.7rem;
+        height: 26px;
+        border-radius: 8px;
+        background: linear-gradient(90deg, rgba(34, 211, 238, 0.12), rgba(34, 211, 238, 0.3), rgba(34, 211, 238, 0.12));
+        position: relative;
+        overflow: hidden;
+    }
+    .mode-card-v2 .mode-card-pulse::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: -36%;
+        width: 30%;
+        background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.42), transparent);
+        animation: pulseSweep 2.5s linear infinite;
+    }
+    @keyframes pulseSweep {
+        to { left: 110%; }
+    }
+
+    /* Scanner hero graphic */
+    .scanner-hero-graphic {
+        width: 84px;
+        height: 84px;
+        position: relative;
+        border-radius: 50%;
+        border: 1px solid rgba(99, 102, 241, 0.28);
+        background: radial-gradient(circle at 30% 30%, rgba(99, 102, 241, 0.23), rgba(99, 102, 241, 0.08));
+        display: grid;
+        place-items: center;
+        flex-shrink: 0;
+    }
+    .scanner-core {
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 6px rgba(99, 102, 241, 0.18), 0 0 28px rgba(99, 102, 241, 0.45);
+        z-index: 2;
+    }
+    .scanner-orbit {
+        position: absolute;
+        border-radius: 50%;
+        border: 1px dashed rgba(99, 102, 241, 0.4);
+    }
+    .scanner-orbit-a {
+        inset: 10px;
+        animation: orbitSpin 10s linear infinite;
+    }
+    .scanner-orbit-b {
+        inset: 20px;
+        animation: orbitSpinReverse 7.5s linear infinite;
+    }
+    @keyframes orbitSpin { to { transform: rotate(360deg); } }
+    @keyframes orbitSpinReverse { to { transform: rotate(-360deg); } }
+
+    /* Network hero structured glyph */
+    .ns-hero-graphic {
+        width: 86px;
+        height: 86px;
+        position: relative;
+        border-radius: 16px;
+        background: linear-gradient(160deg, rgba(0, 212, 170, 0.2), rgba(0, 212, 170, 0.06));
+        border: 1px solid rgba(0, 212, 170, 0.35);
+        flex-shrink: 0;
+    }
+    .ns-ring {
+        position: absolute;
+        inset: 14px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 212, 170, 0.35);
+    }
+    .ns-ring-b {
+        inset: 24px;
+        border-style: dashed;
+    }
+    .ns-node {
+        position: absolute;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #00d4aa;
+        box-shadow: 0 0 10px rgba(0, 212, 170, 0.65);
+    }
+    .ns-node-a { top: 14px; left: 37px; }
+    .ns-node-b { top: 50px; left: 16px; }
+    .ns-node-c { top: 50px; right: 16px; }
+    .ns-link {
+        position: absolute;
+        height: 1px;
+        background: rgba(0, 212, 170, 0.6);
+        transform-origin: left center;
+    }
+    .ns-link-a {
+        width: 28px;
+        top: 20px;
+        left: 26px;
+        transform: rotate(122deg);
+    }
+    .ns-link-b {
+        width: 28px;
+        top: 20px;
+        left: 33px;
+        transform: rotate(56deg);
+    }
+
+    /* Stealth hero structured eye glyph */
+    .ss-hero-graphic {
+        width: 96px;
+        height: 56px;
+        position: relative;
+        flex-shrink: 0;
+    }
+    .ss-eye-shell {
+        position: absolute;
+        inset: 0;
+        border: 1px solid rgba(167, 139, 250, 0.5);
+        border-radius: 56px / 34px;
+        background: radial-gradient(circle at center, rgba(167, 139, 250, 0.12), transparent 70%);
+    }
+    .ss-eye-iris {
+        position: absolute;
+        width: 30px;
+        height: 30px;
+        top: 13px;
+        left: 33px;
+        border-radius: 50%;
+        border: 1px solid rgba(167, 139, 250, 0.7);
+        background: radial-gradient(circle at 45% 35%, rgba(196, 181, 253, 0.7), rgba(109, 40, 217, 0.3));
+    }
+    .ss-eye-pupil {
+        position: absolute;
+        width: 12px;
+        height: 12px;
+        top: 22px;
+        left: 42px;
+        border-radius: 50%;
+        background: #c4b5fd;
+    }
+    .ss-eye-glint {
+        position: absolute;
+        width: 4px;
+        height: 4px;
+        top: 24px;
+        left: 46px;
+        border-radius: 50%;
+        background: #fff;
+    }
+    .ss-signal {
+        position: absolute;
+        border: 1px dashed rgba(167, 139, 250, 0.45);
+        border-radius: 999px;
+        pointer-events: none;
+    }
+    .ss-signal-a {
+        inset: -6px;
+        animation: ssPulse 2.8s ease-in-out infinite;
+    }
+    .ss-signal-b {
+        inset: -12px;
+        animation: ssPulse 2.8s ease-in-out infinite 0.7s;
+    }
+    @keyframes ssPulse {
+        0%, 100% { opacity: 0.15; transform: scale(0.98); }
+        50% { opacity: 0.5; transform: scale(1.03); }
+    }
+
+    /* Tab/page transitions + subtle UX hover elevation */
+    .tab.tab-transition-in {
+        animation: tabSlideFade 0.34s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    }
+    @keyframes tabSlideFade {
+        from {
+            opacity: 0;
+            transform: translateY(8px) scale(0.995);
+            filter: blur(2px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+            filter: blur(0);
+        }
+    }
+
+    .panel,
+    .menu-item,
+    .scanner-mode-card,
+    .btn,
+    .hint-chip,
+    .history-card,
+    .list-item {
+        will-change: transform;
+    }
+
+    .panel:hover {
+        transform: translateY(-1px);
+    }
+
+    .menu-item:hover {
+        transform: translateX(2px);
+    }
+
+    .scanner-mode-card:hover {
+        transform: translateY(-2px);
+    }
+
+    .btn:hover:not(:disabled) {
+        transform: translateY(-1px);
+    }
+
+    @media (max-width: 980px) {
+        .scanner-mode-grid-2 {
+            grid-template-columns: 1fr;
+        }
+    }
     }
 }

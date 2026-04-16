@@ -491,48 +491,18 @@ function scannerSettings(mode) {
             disableProfile: false,
             hidePortStrategy: false,
             showIntelOnly: false,
-            showNetworkHints: false,
             endpoint: "/api/scan/v2",
-        };
-    }
-
-    if (mode === "network") {
-        return {
-            profile: "network",
-            portStrategy: "aggressive",
-            placeholder: "192.168.1.0/24",
-            note: t("networkModeNote"),
-            disableProfile: true,
-            hidePortStrategy: true,
-            showIntelOnly: false,
-            showNetworkHints: true,
-            endpoint: "/api/scan",
-        };
-    }
-
-    if (mode === "stealth_intel") {
-        return {
-            profile: "stealth",
-            portStrategy: "standard",
-            placeholder: "example.com, 8.8.8.8",
-            note: t("stealthModeNote"),
-            disableProfile: true,
-            hidePortStrategy: true,
-            showIntelOnly: true,
-            showNetworkHints: false,
-            endpoint: "/api/scan",
         };
     }
 
     return {
         profile: "light",
         portStrategy: "standard",
-        placeholder: "example.com, 8.8.8.8, 192.168.1.0/24",
+        placeholder: "example.com, 8.8.8.8",
         note: t("standardModeNote"),
         disableProfile: false,
         hidePortStrategy: false,
         showIntelOnly: false,
-        showNetworkHints: false,
         endpoint: "/api/scan",
     };
 }
@@ -550,7 +520,6 @@ function applyScannerMode(mode) {
     if (portStrategyGroup) {
         portStrategyGroup.style.display = cfg.hidePortStrategy ? "none" : "block";
     }
-    document.querySelector(".network-suggestions")?.classList.toggle("hidden", !cfg.showNetworkHints);
     if (intelOnlyButton) {
         intelOnlyButton.classList.toggle("hidden", !cfg.showIntelOnly);
     }
@@ -660,7 +629,45 @@ function activateTab(tabName) {
 
     tabs.forEach((tab) => {
         tab.classList.toggle("active", tab.id === `tab-${tabName}`);
+        if (tab.id === `tab-${tabName}`) {
+            tab.classList.remove("tab-transition-in");
+            // Restart animation for each tab activation.
+            void tab.offsetWidth;
+            tab.classList.add("tab-transition-in");
+        }
     });
+
+    const targetPath = tabToPath(tabName);
+    if (window.location.pathname !== targetPath) {
+        window.history.pushState({ tab: tabName }, "", targetPath);
+    }
+}
+
+function tabToPath(tabName) {
+    const map = {
+        dashboard: "/dashboard",
+        scanner: "/scanner",
+        network: "/network",
+        stealth: "/stealth",
+        findings: "/findings",
+        history: "/history",
+        settings: "/settings",
+    };
+    return map[tabName] || "/dashboard";
+}
+
+function pathToTab(pathname) {
+    const map = {
+        "/": "dashboard",
+        "/dashboard": "dashboard",
+        "/scanner": "scanner",
+        "/network": "network",
+        "/stealth": "stealth",
+        "/findings": "findings",
+        "/history": "history",
+        "/settings": "settings",
+    };
+    return map[pathname] || "dashboard";
 }
 
 function setChipState(element, state) {
@@ -682,6 +689,22 @@ menuItems.forEach((button) => {
             loadAggregatedFindings();
         }
     });
+});
+
+window.addEventListener("popstate", () => {
+    const tab = pathToTab(window.location.pathname);
+    menuItems.forEach((button) => {
+        button.classList.toggle("active", button.dataset.tab === tab);
+    });
+    tabs.forEach((tabEl) => {
+        tabEl.classList.toggle("active", tabEl.id === `tab-${tab}`);
+    });
+    if (tab === "history") {
+        loadHistory();
+    }
+    if (tab === "findings") {
+        loadAggregatedFindings();
+    }
 });
 
 function drawTrend(points) {
@@ -1281,25 +1304,30 @@ function applyLanguage(lang) {
     setText("operationalNotesTitle", text.operationalNotes || I18N.en.operationalNotes);
     setText("scannerReferenceTitle", text.scannerReference || I18N.en.scannerReference);
 
-    document.querySelector('label[for="target"]').textContent = text.target || I18N.en.target;
-    document.querySelector('label[for="profile"]').textContent = text.scanProfile || I18N.en.scanProfile;
-    document.querySelector('label[for="portStrategy"]').textContent = text.portStrategy || I18N.en.portStrategy;
-    document.querySelector('label[for="languageSelect"]').textContent = text.language || I18N.en.language;
-    document.querySelector('label[for="modeSelect"]').textContent = text.mode || I18N.en.mode;
-    document.querySelector('label[for="themeSelect"]').textContent = text.theme || I18N.en.theme;
-    document.querySelector('label[for="windowDays"]').textContent = text.window || I18N.en.window;
-    document.querySelector('label[for="severityFilter"]').textContent = text.severity || I18N.en.severity;
-    document.querySelector('label[for="sinceDays"]').textContent = text.since || I18N.en.since;
-    document.querySelector('label[for="sortBy"]').textContent = text.sortBy || I18N.en.sortBy;
-    document.querySelector('label[for="sortDir"]').textContent = text.direction || I18N.en.direction;
-    document.querySelector('label[for="findingSearch"]').textContent = text.search || I18N.en.search;
+    const setLabel = (selector, value) => {
+        const label = document.querySelector(selector);
+        if (label) {
+            label.textContent = value;
+        }
+    };
+
+    setLabel('label[for="target"]', text.target || I18N.en.target);
+    setLabel('label[for="profile"]', text.scanProfile || I18N.en.scanProfile);
+    setLabel('label[for="portStrategy"]', text.portStrategy || I18N.en.portStrategy);
+    setLabel('label[for="languageSelect"]', text.language || I18N.en.language);
+    setLabel('label[for="modeSelect"]', text.mode || I18N.en.mode);
+    setLabel('label[for="themeSelect"]', text.theme || I18N.en.theme);
+    setLabel('label[for="windowDays"]', text.window || I18N.en.window);
+    setLabel('label[for="severityFilter"]', text.severity || I18N.en.severity);
+    setLabel('label[for="sinceDays"]', text.since || I18N.en.since);
+    setLabel('label[for="sortBy"]', text.sortBy || I18N.en.sortBy);
+    setLabel('label[for="sortDir"]', text.direction || I18N.en.direction);
+    setLabel('label[for="findingSearch"]', text.search || I18N.en.search);
 
     const profileOptions = profileSelect?.options;
-    if (profileOptions && profileOptions.length >= 4) {
+    if (profileOptions && profileOptions.length >= 2) {
         profileOptions[0].textContent = text.profileLight || I18N.en.profileLight;
         profileOptions[1].textContent = text.profileDeep || I18N.en.profileDeep;
-        profileOptions[2].textContent = text.profileStealth || I18N.en.profileStealth;
-        profileOptions[3].textContent = text.profileNetwork || I18N.en.profileNetwork;
     }
 
     const strategyOptions = portStrategySelect?.options;
@@ -1352,10 +1380,10 @@ function applyLanguage(lang) {
     findingsCsvButton.textContent = text.findingsCsv;
     refreshFindingsButton.textContent = text.refresh;
     refreshHistoryButton.textContent = text.refresh;
-    if (!scanButton.disabled) {
+    if (scanButton && !scanButton.disabled) {
         scanButton.textContent = text.startScan;
     }
-    if (!intelOnlyButton.disabled) {
+    if (intelOnlyButton && !intelOnlyButton.disabled) {
         intelOnlyButton.textContent = text.intelOnly;
     }
 
@@ -1911,7 +1939,7 @@ scannerModeCards.forEach((card) => {
     });
 });
 
-intelOnlyButton.addEventListener("click", async () => {
+intelOnlyButton?.addEventListener("click", async () => {
     clearError();
     const target = targetInput.value.trim();
     if (!target) {
@@ -2154,6 +2182,7 @@ function restoreLastScan() {
         applyTheme(savedTheme);
         applyLanguage(savedLanguage);
         applyScannerMode(scannerTypeSelect.value || "standard");
+        activateTab(pathToTab(window.location.pathname));
         await renderNetworkHints();
         await renderNetworkPageHints();
         restoreLastScan();

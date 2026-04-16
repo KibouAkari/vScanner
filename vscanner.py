@@ -3875,6 +3875,13 @@ except Exception:
 
 
 @app.route("/")
+@app.route("/dashboard")
+@app.route("/scanner")
+@app.route("/network")
+@app.route("/stealth")
+@app.route("/findings")
+@app.route("/history")
+@app.route("/settings")
 def index() -> str:
     return render_template("index.html")
 
