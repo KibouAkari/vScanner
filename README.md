@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  Live: <a href="https://vscanner.vercel.app">vscanner.vercel.app</a>
+</p>
+
+<p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" />
   <img alt="Flask" src="https://img.shields.io/badge/Flask-API%20%26%20UI-000000?logo=flask&logoColor=white" />
   <img alt="Nmap" src="https://img.shields.io/badge/Nmap-Network%20Discovery-2E8B57" />
@@ -30,11 +34,39 @@ vScanner provides a full reporting flow from first scan to executive dashboard v
 - Aggregated findings view with filtering, sorting, and asset impact context
 - One-click report exports in PDF and CSV for audits and stakeholder communication
 
-If you deploy vScanner publicly, add your links here:
+Production links:
 
-- Live UI: `https://your-domain.example`
-- Health API: `https://your-domain.example/api/health`
-- Example dashboard endpoint: `https://your-domain.example/api/projects/default/dashboard?window_days=30`
+- Live UI: `https://vscanner.vercel.app`
+- Health API: `https://vscanner.vercel.app/api/health`
+- Example dashboard endpoint: `https://vscanner.vercel.app/api/projects/default/dashboard?window_days=30`
+
+## Report Review Workflow
+
+Use this structure when reviewing a generated report with your team, teacher, or stakeholders:
+
+1. Validate scan scope
+  - Confirm target, profile, and port strategy match the approved scope.
+  - Confirm scan timestamp and environment (lab, staging, production).
+
+2. Review executive risk snapshot
+  - Start with risk distribution and trend direction.
+  - Identify whether the current state improved or regressed versus previous scans.
+
+3. Prioritize actionable findings
+  - Focus first on critical and high findings with exposed attack surface.
+  - Group repeated issues across multiple assets into one remediation workstream.
+
+4. Verify technical evidence
+  - Check open ports, service versions, banners, and plugin evidence.
+  - Confirm signal quality before assigning remediation effort.
+
+5. Define remediation plan
+  - Assign owner, priority, and due date for each accepted finding.
+  - Track status with a simple lifecycle: open, in progress, verified, closed.
+
+6. Re-scan and close loop
+  - Re-run targeted scans after fixes.
+  - Export PDF/CSV for audit trail and attach to ticketing records.
 
 ## Feature Overview
 
