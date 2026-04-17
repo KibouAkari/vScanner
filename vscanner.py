@@ -45,9 +45,12 @@ from scanner_v2.enrichment import enrich_findings_with_external_cve
 from scanner_v2.models import ScanRequest as ScanRequestV2
 from scanner_v2.profiles import DEFAULT_PORTS as V2_DEFAULT_PORTS, get_profile as get_profile_v2
 from attack_path_engine import generate_attack_paths
+from attack_graph_engine import build_attack_graph
 from correlation_engine import correlate_findings
 from cve_matcher import match_findings_with_cves
 from risk_engine import apply_advanced_risk
+from threat_intel_engine import enrich_findings_with_threat_intel, get_threat_intel_summary
+from remediation_engine import generate_remediation_plan, get_remediation_summary
 
 try:
     import psycopg
@@ -1895,6 +1898,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             "top_vulnerabilities": views["top_vulnerabilities"],
             "top_assets": views["top_assets"],
             "service_inventory": views["service_inventory"],
+            "threat_intel": get_threat_intel_summary(views.get("top_vulnerabilities") or []),
+            "remediation": get_remediation_summary(views.get("top_vulnerabilities") or []),
         }
 
     with db_connection() as connection:
@@ -1978,6 +1983,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         "top_vulnerabilities": views["top_vulnerabilities"],
         "top_assets": views["top_assets"],
         "service_inventory": views["service_inventory"],
+        "threat_intel": get_threat_intel_summary(views.get("top_vulnerabilities") or []),
+        "remediation": get_remediation_summary(views.get("top_vulnerabilities") or []),
     }
 
 
@@ -4620,11 +4627,26 @@ def build_soc_report(
         correlated_findings=correlated_findings,
     )
 
+    # ---- NEW: threat intelligence enrichment ----
+    intel_enriched_vulns = enrich_findings_with_threat_intel(vulnerabilities)
+    threat_intel_summary = get_threat_intel_summary(intel_enriched_vulns)
+
+    # ---- NEW: remediation plan ----
+    remediation_summary = get_remediation_summary(intel_enriched_vulns)
+
+    # ---- NEW: attack graph (advanced multi-hop model) ----
+    attack_graph_output = build_attack_graph(
+        services=services,
+        findings=intel_enriched_vulns,
+        assets=[],
+        max_paths=6,
+    )
+
     return {
         "mode": mode,
         "target": target,
         "services": services,
-        "vulnerabilities": vulnerabilities,
+        "vulnerabilities": intel_enriched_vulns,
         "risk_summary": {
             "total_score": int(max(0, min(100, round(float(risk_score))))),
             "attack_surface": _attack_surface_label(float(risk_score)),
@@ -4632,6 +4654,9 @@ def build_soc_report(
         },
         "insights": insights,
         "attack_paths": attack_paths,
+        "attack_graph": attack_graph_output,
+        "threat_intel": threat_intel_summary,
+        "remediation": remediation_summary,
         "top_exploitable_services": top_exploitable_services,
         "high_risk_hosts": high_risk_hosts,
         "risk_distribution": risk_distribution,
