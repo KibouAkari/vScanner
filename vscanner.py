@@ -44,6 +44,7 @@ from scanner_v2 import run_scan_sync as run_scan_v2_sync
 from scanner_v2.enrichment import enrich_findings_with_external_cve
 from scanner_v2.models import ScanRequest as ScanRequestV2
 from scanner_v2.profiles import DEFAULT_PORTS as V2_DEFAULT_PORTS, get_profile as get_profile_v2
+from attack_path_engine import generate_attack_paths
 from correlation_engine import correlate_findings
 from cve_matcher import match_findings_with_cves
 from risk_engine import apply_advanced_risk
@@ -3881,6 +3882,9 @@ def build_soc_report(
 
         vulnerabilities.append(
             {
+                "host": str(item.get("host") or "-"),
+                "port": int(item.get("port") or 0),
+                "service": str(item.get("service") or "unknown"),
                 "cve": str(item.get("cve") or ""),
                 "title": str(item.get("title") or "Finding"),
                 "cvss": round(cvss, 1),
@@ -3888,6 +3892,9 @@ def build_soc_report(
                 "severity": severity,
                 "exploit_available": exploit_available,
                 "evidence": str(item.get("evidence") or "-"),
+                "correlation_score": int(float(item.get("correlation_score") or 0.0)),
+                "correlation_type": str(item.get("correlation_type") or "single"),
+                "risk_level": str(item.get("risk_level") or ""),
                 "attack_scenario": str(item.get("attack_scenario") or _attack_scenario_from_item(item, internet_facing)),
                 "recommendation": _recommendation_from_type(item),
             }
@@ -3938,23 +3945,63 @@ def build_soc_report(
     if historical_points:
         insights.append("Historical trend available: use score deltas to validate remediation effectiveness over time.")
 
-    top_exploitable_services = [
-        {
-            "title": str(v.get("title") or ""),
-            "severity": str(v.get("severity") or "low"),
-            "risk_score": int(v.get("risk_score") or 0),
-            "cve": str(v.get("cve") or ""),
-        }
-        for v in vulnerabilities[:8]
-    ]
+    top_exploitable_services = sorted(
+        [
+            {
+                "host": str(v.get("host") or "-"),
+                "port": int(v.get("port") or 0),
+                "service": str(v.get("service") or "unknown"),
+                "title": str(v.get("title") or ""),
+                "severity": str(v.get("severity") or "low"),
+                "risk_score": int(v.get("risk_score") or 0),
+                "cve": str(v.get("cve") or ""),
+            }
+            for v in vulnerabilities
+        ],
+        key=lambda x: int(x.get("risk_score") or 0),
+        reverse=True,
+    )[:8]
 
-    attack_paths: list[str] = []
-    if any(str(v.get("severity") or "").lower() in {"critical", "high"} for v in vulnerabilities[:8]):
-        attack_paths.append("Initial access through internet-facing high-risk service, followed by privilege escalation on outdated components.")
-    if any("database" in str(v.get("title") or "").lower() for v in vulnerabilities[:12]):
-        attack_paths.append("Direct data-plane compromise path: exposed service to unauthorized data access and potential lateral movement.")
-    if any("login" in str(v.get("attack_scenario") or "").lower() for v in vulnerabilities[:12]):
-        attack_paths.append("Credential attack path: weak transport and login surface can enable session theft or credential replay.")
+    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    high_risk_host_map: dict[str, dict[str, Any]] = {}
+    for v in vulnerabilities:
+        sev = str(v.get("severity") or "low").lower()
+        if sev in risk_distribution:
+            risk_distribution[sev] += 1
+        host_value = str(v.get("host") or "-")
+        bucket = high_risk_host_map.setdefault(
+            host_value,
+            {
+                "host": host_value,
+                "max_risk_score": 0,
+                "high_or_critical_findings": 0,
+                "total_findings": 0,
+            },
+        )
+        bucket["max_risk_score"] = max(int(bucket.get("max_risk_score") or 0), int(v.get("risk_score") or 0))
+        bucket["total_findings"] = int(bucket.get("total_findings") or 0) + 1
+        if sev in {"high", "critical"}:
+            bucket["high_or_critical_findings"] = int(bucket.get("high_or_critical_findings") or 0) + 1
+
+    high_risk_hosts = sorted(
+        list(high_risk_host_map.values()),
+        key=lambda x: (
+            int(x.get("high_or_critical_findings") or 0),
+            int(x.get("max_risk_score") or 0),
+        ),
+        reverse=True,
+    )[:10]
+
+    correlated_findings = [
+        item
+        for item in findings
+        if str(item.get("type") or "") == "correlated_risk" or float(item.get("correlation_score") or 0.0) > 0.0
+    ]
+    attack_paths = generate_attack_paths(
+        services=services,
+        vulnerabilities=vulnerabilities,
+        correlated_findings=correlated_findings,
+    )
 
     return {
         "mode": mode,
@@ -3969,6 +4016,8 @@ def build_soc_report(
         "insights": insights,
         "attack_paths": attack_paths,
         "top_exploitable_services": top_exploitable_services,
+        "high_risk_hosts": high_risk_hosts,
+        "risk_distribution": risk_distribution,
         "network_summary": network_summary,
         "confidence": round(min(1.0, max(0.0, overall_conf)), 2),
     }
@@ -4028,6 +4077,8 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
 
     findings = match_findings_with_cves(findings)
 
+    internet_exposed = _infer_internet_exposed(target, target_type)
+
     correlated = correlate_findings(services=services, findings=findings)
 
     merged = findings + correlated
@@ -4037,7 +4088,7 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
         merged,
         services,
         mode=mode,
-        internet_exposed=_infer_internet_exposed(target, target_type),
+        internet_exposed=internet_exposed,
     )
 
     merged.sort(
@@ -4441,6 +4492,14 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
 
     open_ports = result_json.get("open_ports", [])
     findings = result_json.get("findings", [])
+    scan_decision_log: list[dict[str, Any]] = [
+        {
+            "phase": "phase_1",
+            "decision": "fast_scan_completed",
+            "port_count": len(open_ports),
+            "profile": profile_v2,
+        }
+    ]
 
     host_findings: list[dict[str, Any]] = []
     cve_items: list[dict[str, Any]] = []
@@ -4491,8 +4550,86 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         for entry in web_ports
         if int(entry.get("port") or 0) in {21, 22, 23, 445, 2375, 3306, 3389, 5432, 5900, 6379, 9200, 11211, 27017}
     }
+    unknown_services = [entry for entry in web_ports if str(entry.get("name") or "").lower() in {"", "unknown"}]
+    partial_fingerprints = [entry for entry in web_ports if str(entry.get("product") or "").strip() and not str(entry.get("version") or "").strip()]
+    tls_anomalies = [
+        f
+        for f in host_findings
+        if "tls" in str(f.get("title") or "").lower() and any(x in str(f.get("evidence") or "").lower() for x in ["weak", "deprecated", "anomal", "invalid"])
+    ]
+    suspicious_signals = {
+        "uncommon_ports": sorted(list(suspicious_ports))[:20],
+        "unknown_services": len(unknown_services),
+        "partial_fingerprints": len(partial_fingerprints),
+        "tls_anomalies": len(tls_anomalies),
+    }
+    needs_phase2 = bool(
+        suspicious_ports or unknown_services or partial_fingerprints or tls_anomalies
+    )
+    scan_decision_log.append(
+        {
+            "phase": "phase_1_assessment",
+            "decision": "suspicious_signals_detected" if needs_phase2 else "no_suspicious_signals",
+            "signals": suspicious_signals,
+        }
+    )
+
+    if needs_phase2:
+        # Conditional phase 2: expand targeted probing only when suspicious indicators appear.
+        phase2_pool = [
+            p for p in [
+                81, 3000, 5000, 5001, 5601, 7001, 7443, 8081, 8443, 8888, 9000, 9090, 9091, 10000,
+                11211, 12222, 15672, 18080, 2375, 2376, 27018, 28017, 32400, 50000,
+            ]
+            if p not in {int(x.get("port") or 0) for x in open_ports}
+        ]
+        phase2_limit = 24 if IS_SERVERLESS else 64
+        extra_port_entries = lightweight_port_scan(target, phase2_pool[:phase2_limit], timeout_s=0.65, max_workers=80)
+        if extra_port_entries:
+            open_ports.extend(extra_port_entries)
+            for entry in extra_port_entries:
+                product = str(entry.get("product") or entry.get("name") or "")
+                version = str(entry.get("version") or "")
+                host_findings.extend(
+                    evaluate_version_findings(
+                        product=product,
+                        version=version,
+                        port=int(entry.get("port") or 0),
+                        banner=str(entry.get("banner") or ""),
+                    )
+                )
+        scan_decision_log.append(
+            {
+                "phase": "phase_2",
+                "decision": "conditional_expansion_executed",
+                "expanded_probe_ports": len(phase2_pool[:phase2_limit]),
+                "new_open_ports": len(extra_port_entries),
+                "deeper_web_probe": True,
+                "version_detection": True,
+            }
+        )
+    else:
+        scan_decision_log.append(
+            {
+                "phase": "phase_2",
+                "decision": "skipped",
+                "reason": "no suspicious indicators",
+            }
+        )
+
+    if needs_phase2:
+        web_ports = [
+            {
+                "port": int(p.get("port") or 0),
+                "name": str(p.get("service") or "unknown"),
+                "product": str(p.get("product") or ""),
+                "banner": str(p.get("banner") or ""),
+            }
+            for p in open_ports
+        ]
+        web_port_entries = [entry for entry in web_ports if is_likely_web_port(entry)]
     if web_port_entries:
-        if suspicious_ports:
+        if needs_phase2:
             probe_limit = 3 if IS_SERVERLESS else len(web_port_entries)
         else:
             probe_limit = 1 if IS_SERVERLESS else min(2, len(web_port_entries))
@@ -4555,7 +4692,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     risk_summary = build_risk_summary(host_findings)
     risk_level = compute_risk_level(risk_summary)
     dedup_findings = deduplicate_finding_items(host_findings)
-    if suspicious_ports:
+    if needs_phase2:
         cve_query_budget = 10 if IS_SERVERLESS else (24 if port_strategy == "standard" else 40)
     else:
         cve_query_budget = 6 if IS_SERVERLESS else (14 if port_strategy == "standard" else 24)
@@ -4625,6 +4762,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             "public_mode": is_public_mode(),
             "authorization_notice": "Only scan systems you are explicitly authorized to test.",
             "stealth_note": "Stealth profile is low-noise only and does not bypass security monitoring.",
+            "scan_decision_log": scan_decision_log,
         },
         "nmap": {
             "command": f"v2-async ports={len(ports)} profile={profile_v2}",
@@ -4967,6 +5105,10 @@ def findings_csv_response(project_id: str, items: list[dict[str, Any]]) -> Any:
             "last_seen",
             "assets",
             "evidence",
+            "advanced_risk_score",
+            "correlation_score",
+            "attack_scenario",
+            "risk_level",
         ]
     )
     for item in items:
@@ -4983,6 +5125,10 @@ def findings_csv_response(project_id: str, items: list[dict[str, Any]]) -> Any:
                 item.get("last_seen", ""),
                 ", ".join(item.get("assets", [])),
                 item.get("evidence", ""),
+                item.get("advanced_risk_score", ""),
+                item.get("correlation_score", ""),
+                item.get("attack_scenario", ""),
+                item.get("risk_level", ""),
             ]
         )
 
@@ -5230,6 +5376,10 @@ def report_csv_response(report_id: str, data: dict[str, Any], download_name: str
             "title",
             "evidence",
             "cve",
+            "advanced_risk_score",
+            "correlation_score",
+            "attack_scenario",
+            "risk_level",
         ]
     )
 
@@ -5245,6 +5395,10 @@ def report_csv_response(report_id: str, data: dict[str, Any], download_name: str
                 finding.get("title", ""),
                 finding.get("evidence", ""),
                 finding.get("cve", ""),
+                finding.get("advanced_risk_score", ""),
+                finding.get("correlation_score", ""),
+                finding.get("attack_scenario", ""),
+                finding.get("risk_level", ""),
             ]
         )
 
