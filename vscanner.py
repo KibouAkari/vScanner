@@ -237,7 +237,7 @@ MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "vscanner").strip() or "vscanner"
 
 if os.getenv("VERCEL") and not DB_URL:
-    DB_PATH = "/tmp/vscanner_reports.db"
+    DB_PATH = "/tmp/vscanner_reports.db"  # nosec B108 - intentional Vercel serverless path
 else:
     DB_PATH = os.path.join(os.path.dirname(__file__), "data", "vscanner_reports.db")
 
@@ -468,7 +468,7 @@ def finding_vuln_key(finding: dict[str, Any]) -> str:
             normalize_finding_title(str(finding.get("title", "-")).strip()),
         ]
     )
-    return hashlib.sha1(joined.encode("utf-8")).hexdigest()
+    return hashlib.sha1(joined.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
 def db_connection() -> Any:
@@ -1631,13 +1631,8 @@ def upsert_findings(
             placeholders = ",".join(["?"] * len(scanned_asset_set))
             execute(
                 connection,
-                f"""
-                UPDATE findings
-                SET visibility_reduced = 1
-                WHERE project_id = ?
-                  AND asset IN ({placeholders})
-                  AND last_seen < ?
-                """,
+                                "UPDATE findings SET visibility_reduced = 1"
+                " WHERE project_id = ? AND asset IN (" + placeholders + ") AND last_seen < ?",  # nosec B608
                 (project_id, *sorted(scanned_asset_set), now),
             )
         connection.commit()
@@ -3084,14 +3079,14 @@ def discover_login_pages(base_url: str) -> list[dict[str, Any]]:
                 url,
                 headers=headers,
                 timeout=4,
-                verify=False,
+                verify=False,  # nosec B501 - scanner probes arbitrary targets; self-signed certs expected
                 allow_redirects=True,
             )
         except requests.RequestException:
             continue
 
         content = response.text.lower()[:5000]
-        is_login_like = any(
+        is_login_like = any(  # nosec B501 - scanner probes arbitrary targets; self-signed certs expected
             marker in content
             for marker in ["login", "signin", "username", "password", "admin", "auth"]
         )
@@ -3203,7 +3198,7 @@ def gather_passive_intel(target: str) -> dict[str, Any]:
                             f"{scheme}://{ip}:{port}",
                             headers=headers,
                             timeout=1,
-                            verify=False,
+                            verify=False,  # nosec B501 - scanner probes arbitrary targets; self-signed certs expected
                         )
                         if resp.status_code < 500:
                             intel["services"].append(
@@ -3247,7 +3242,7 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
                 url,
                 headers=headers,
                 timeout=http_timeout,
-                verify=False,
+                verify=False,  # nosec B501 - scanner probes arbitrary targets; self-signed certs expected
                 allow_redirects=True,
             )
         except requests.RequestException:
@@ -6329,4 +6324,4 @@ def report_host_pdf_api(report_id: str, host: str) -> Any:
 
 if __name__ == "__main__":
     debug = os.getenv("FLASK_DEBUG", "0") == "1"
-    app.run(host="0.0.0.0", port=5000, debug=debug)
+    app.run(host="127.0.0.1", port=5000, debug=debug)

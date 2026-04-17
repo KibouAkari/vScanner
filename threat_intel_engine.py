@@ -235,7 +235,7 @@ def _cache_key(finding: dict[str, Any]) -> str:
         str(finding.get("type") or ""),
         str(finding.get("service") or ""),
     ])
-    return "HASH:" + hashlib.sha1(raw.encode()).hexdigest()[:16]
+    return "HASH:" + hashlib.sha1(raw.encode(), usedforsecurity=False).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------------------

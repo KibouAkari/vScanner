@@ -22,7 +22,7 @@ from typing import Any
 
 def _node_id(kind: str, label: str) -> str:
     raw = f"{kind}::{label}"
-    return hashlib.md5(raw.encode()).hexdigest()[:12]
+    return hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()[:12]
 
 
 def _is_internet_facing(port: int, service: str) -> bool:
