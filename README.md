@@ -95,6 +95,10 @@ Use this structure when reviewing a generated report with your team, teacher, or
   - Deduplicated vulnerability tracking per asset
   - Aggregated weakness visibility across assets
   - Cleaner risk distribution (actionable findings only)
+- SOC intelligence output:
+  - Mode-aware attack-surface analysis (`risk`, `v2`, `network`, `stealth`)
+  - Correlated vulnerability scoring with exploitability and exposure context
+  - Structured SOC JSON output for dashboard pipelines (`response_format: soc_json`)
 - Reporting:
   - Single-scan PDF and CSV
   - Project findings PDF and CSV
@@ -151,6 +155,29 @@ Example scan request (`POST /api/scan` or `POST /api/scan/v2`):
   "port_strategy": "standard",
   "project_id": "default"
 }
+
+Optional strict SOC intelligence response:
+
+```json
+{
+  "target": "example.com",
+  "profile": "deep",
+  "port_strategy": "aggressive",
+  "project_id": "default",
+  "response_format": "soc_json"
+}
+```
+
+When `response_format` is `soc_json`, the API returns a strict SOC-oriented object with:
+
+- `mode`
+- `target`
+- `services[]`
+- `vulnerabilities[]`
+- `risk_summary`
+- `insights[]`
+- `network_summary`
+- `confidence`
 ```
 
 ## Deployment (Vercel)

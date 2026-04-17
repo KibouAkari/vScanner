@@ -2980,7 +2980,7 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
 
     if port_strategy == "aggressive":
         if profile == "deep":
-            ranges.update(range(8193, 16385))
+            ranges.update(range(8193, 65536))
         else:
             ranges.update(range(4097, 8193))
         ranges.update([4443, 5001, 6443, 7000, 7443, 10000, 15672, 25565, 25655, 32400, 50000])
@@ -3735,6 +3735,218 @@ def compute_true_risk_score(
     return round(score, 1)
 
 
+def _service_confidence(entry: dict[str, Any]) -> float:
+    score = 0.35
+    if str(entry.get("name") or "").strip() and str(entry.get("name") or "") != "unknown":
+        score += 0.2
+    if str(entry.get("product") or "").strip():
+        score += 0.2
+    if str(entry.get("version") or "").strip():
+        score += 0.15
+    if str(entry.get("banner") or "").strip():
+        score += 0.1
+    return round(min(1.0, score), 2)
+
+
+def _scan_mode_modifier(mode: str, confidence: float) -> float:
+    mode_l = (mode or "risk").lower()
+    if mode_l == "risk":
+        return 1.08
+    if mode_l == "v2":
+        return 1.04
+    if mode_l == "stealth":
+        return 0.95 + (confidence * 0.08)
+    if mode_l == "network":
+        return 1.0
+    return 1.0
+
+
+def _attack_surface_label(score: float) -> str:
+    if score >= 85:
+        return "critical"
+    if score >= 65:
+        return "high"
+    if score >= 40:
+        return "elevated"
+    return "moderate"
+
+
+def _default_cvss_for_severity(severity: str) -> float:
+    sev = normalize_severity(severity)
+    if sev == "critical":
+        return 9.3
+    if sev == "high":
+        return 8.0
+    if sev == "medium":
+        return 6.0
+    if sev == "low":
+        return 3.6
+    return 1.8
+
+
+def _recommendation_from_type(item: dict[str, Any]) -> str:
+    ftype = str(item.get("type") or "").lower()
+    title = str(item.get("title") or "").lower()
+    if "http_hardening" in ftype or "header" in title or "hsts" in title:
+        return "Apply secure HTTP headers (CSP, X-Content-Type-Options, anti-clickjacking, HSTS) and retest."
+    if "open_port" in ftype or "exposed" in ftype:
+        return "Restrict network exposure with firewall ACLs, limit source ranges, and enforce strong authentication."
+    if "outdated" in ftype or "version" in title:
+        return "Patch the affected service to a maintained release and verify configuration hardening."
+    if "cve" in ftype or str(item.get("cve") or "").upper().startswith("CVE-"):
+        return "Prioritize remediation by exploitability and exposure, then validate with targeted rescans."
+    return "Validate exposure, reduce reachable attack surface, and apply service-specific hardening controls."
+
+
+def _attack_scenario_from_item(item: dict[str, Any], internet_facing: bool) -> str:
+    title = str(item.get("title") or "finding")
+    if internet_facing:
+        return f"An external attacker can target this condition directly from the internet: {title}."
+    return f"An internal or pivoting attacker can exploit this condition for lateral movement: {title}."
+
+
+def build_soc_report(
+    *,
+    mode: str,
+    target: str,
+    target_type: str,
+    hosts: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+    cve_items: list[dict[str, Any]],
+    risk_score: float,
+    historical_points: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    services: list[dict[str, Any]] = []
+    for host in hosts:
+        for entry in host.get("ports", []) or []:
+            if str(entry.get("state") or "").lower() != "open":
+                continue
+            services.append(
+                {
+                    "port": int(entry.get("port") or 0),
+                    "service": str(entry.get("name") or "unknown"),
+                    "product": str(entry.get("product") or ""),
+                    "version": str(entry.get("version") or ""),
+                    "confidence": _service_confidence(entry),
+                }
+            )
+    services.sort(key=lambda item: int(item.get("port") or 0))
+
+    internet_facing = True
+    if target_type in {"host", "domain"}:
+        ips = resolve_target_ips(target, target_type)
+        if ips:
+            internet_facing = any(not is_non_public_ip(ip_s) for ip_s in ips)
+
+    vulnerabilities: list[dict[str, Any]] = []
+    for item in findings:
+        severity = normalize_severity(str(item.get("severity") or "low"))
+        if severity == "info" and str(item.get("type") or "") == "open_port":
+            continue
+
+        cvss = float(item.get("cvss") or 0.0)
+        if cvss <= 0:
+            cvss = _default_cvss_for_severity(severity)
+
+        confidence = normalize_confidence(str(item.get("confidence") or "medium"))
+        confidence_factor = {"low": 0.84, "medium": 0.92, "high": 1.0, "verified": 1.08}[confidence]
+        exploit_available = bool(
+            str(item.get("cve") or "").upper().startswith("CVE-")
+            or "exposed" in str(item.get("title") or "").lower()
+            or severity in {"critical", "high"}
+        )
+        exploit_score = 100.0 if exploit_available else 45.0
+        exposure_score = 92.0 if internet_facing else 55.0
+        service_criticality = normalize_asset_criticality(str(item.get("asset_criticality") or "normal"))
+        criticality_score = {"low": 35.0, "normal": 55.0, "high": 75.0, "critical": 92.0}[service_criticality]
+        attack_surface_context = min(100.0, 25.0 + (len(services) * 3.0))
+        mode_modifier = _scan_mode_modifier(mode, {"low": 0.6, "medium": 0.75, "high": 0.9, "verified": 0.98}[confidence])
+
+        risk = (
+            (cvss * 10.0) * 0.35
+            + exposure_score * 0.2
+            + exploit_score * 0.15
+            + criticality_score * 0.15
+            + attack_surface_context * 0.1
+            + (mode_modifier * 100.0) * 0.05
+        )
+        risk *= confidence_factor
+
+        vulnerabilities.append(
+            {
+                "cve": str(item.get("cve") or ""),
+                "title": str(item.get("title") or "Finding"),
+                "cvss": round(cvss, 1),
+                "risk_score": int(max(1, min(100, round(risk)))),
+                "severity": severity,
+                "exploit_available": exploit_available,
+                "evidence": str(item.get("evidence") or "-"),
+                "attack_scenario": _attack_scenario_from_item(item, internet_facing),
+                "recommendation": _recommendation_from_type(item),
+            }
+        )
+
+    vulnerabilities.sort(key=lambda x: int(x.get("risk_score") or 0), reverse=True)
+
+    key_risks = [str(v.get("title") or "") for v in vulnerabilities[:6]]
+    insights: list[str] = []
+    if internet_facing and vulnerabilities:
+        insights.append("Internet-facing exposure increases exploit likelihood and shortens attacker time-to-impact.")
+    if any((v.get("exploit_available") is True) for v in vulnerabilities[:10]):
+        insights.append("Top findings include likely exploitable paths and should be prioritized for immediate containment.")
+    if len(services) >= 12:
+        insights.append("Broad exposed service surface suggests elevated attack paths and stronger segmentation requirements.")
+    if any("Missing Content-Security-Policy header" == str(v.get("title") or "") for v in vulnerabilities):
+        insights.append("Missing CSP enables common client-side injection attack chains on web-facing applications.")
+    if any(str(v.get("cve") or "").upper().startswith("CVE-") for v in vulnerabilities[:12]):
+        insights.append("CVE-backed findings indicate known exploit paths that should be patched before broadening exposure.")
+
+    if not insights:
+        insights.append("Current evidence indicates moderate exposure; continue iterative rescans after remediation changes.")
+
+    network_summary: dict[str, Any] = {}
+    if mode == "network":
+        port_counter: dict[int, int] = {}
+        service_counter: dict[str, int] = {}
+        for service in services:
+            p = int(service.get("port") or 0)
+            s = str(service.get("service") or "unknown")
+            port_counter[p] = port_counter.get(p, 0) + 1
+            service_counter[s] = service_counter.get(s, 0) + 1
+
+        top_ports = sorted(port_counter.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        network_summary = {
+            "hosts_scanned": len(hosts),
+            "service_distribution": [{"service": k, "count": v} for k, v in sorted(service_counter.items(), key=lambda kv: kv[1], reverse=True)[:12]],
+            "top_ports": [{"port": k, "count": v} for k, v in top_ports],
+            "segmentation_weakness": bool(len(service_counter) <= 3 and len(services) >= 10),
+        }
+
+    overall_conf = 0.0
+    if services:
+        overall_conf = sum(float(s.get("confidence") or 0.0) for s in services) / len(services)
+    elif vulnerabilities:
+        overall_conf = 0.66
+
+    if historical_points:
+        insights.append("Historical trend available: use score deltas to validate remediation effectiveness over time.")
+
+    return {
+        "mode": mode,
+        "target": target,
+        "services": services,
+        "vulnerabilities": vulnerabilities,
+        "risk_summary": {
+            "total_score": int(max(0, min(100, round(float(risk_score))))),
+            "attack_surface": _attack_surface_label(float(risk_score)),
+            "key_risks": key_risks,
+        },
+        "insights": insights,
+        "network_summary": network_summary,
+        "confidence": round(min(1.0, max(0.0, overall_conf)), 2),
+    }
+
+
 def enforce_rate_limit(client_ip: str) -> None:
     window_s = 60
     max_calls = 8
@@ -4258,6 +4470,15 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     }
 
 
+def _mode_from_classic_profile(profile: str) -> str:
+    canonical = canonical_profile(profile)
+    if canonical == "network":
+        return "network"
+    if canonical == "stealth":
+        return "stealth"
+    return "risk"
+
+
 @app.after_request
 def set_security_headers(response: Any) -> Any:
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -4663,6 +4884,7 @@ def scan_api() -> Any:
     target = payload.get("target", "")
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
+    response_format = str(payload.get("response_format") or "legacy").strip().lower()
     project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
 
     if profile not in VALID_PROFILES:
@@ -4683,6 +4905,21 @@ def scan_api() -> Any:
         result = orchestrate_scan(target, profile, port_strategy)
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]
+
+        soc_report = build_soc_report(
+            mode=_mode_from_classic_profile(profile),
+            target=str(result.get("meta", {}).get("target") or target),
+            target_type=str(result.get("meta", {}).get("target_type") or "host"),
+            hosts=list(result.get("hosts") or []),
+            findings=list(result.get("finding_items") or []),
+            cve_items=list(result.get("cve_items") or []),
+            risk_score=float(result.get("true_risk_score") or 0.0),
+            historical_points=None,
+        )
+        result["soc_report"] = soc_report
+
+        if response_format == "soc_json":
+            return jsonify(soc_report)
 
         try:
             report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
@@ -4712,6 +4949,7 @@ def scan_api_v2() -> Any:
     target = payload.get("target", "")
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
+    response_format = str(payload.get("response_format") or "legacy").strip().lower()
     project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
 
     if profile not in VALID_PROFILES:
@@ -4732,6 +4970,21 @@ def scan_api_v2() -> Any:
         result = orchestrate_scan_v2(target, profile, port_strategy)
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]
+
+        soc_report = build_soc_report(
+            mode="v2",
+            target=str(result.get("meta", {}).get("target") or target),
+            target_type=str(result.get("meta", {}).get("target_type") or "host"),
+            hosts=list(result.get("hosts") or []),
+            findings=list(result.get("finding_items") or []),
+            cve_items=list(result.get("cve_items") or []),
+            risk_score=float(result.get("true_risk_score") or 0.0),
+            historical_points=None,
+        )
+        result["soc_report"] = soc_report
+
+        if response_format == "soc_json":
+            return jsonify(soc_report)
 
         try:
             report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
