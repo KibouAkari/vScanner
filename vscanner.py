@@ -2911,16 +2911,16 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     story: list = []
 
     # ── Cover block ───────────────────────────────────
-    avg_risk = float(totals.get("avg_risk", 0))
+    risk_score = float(totals.get("risk_score", totals.get("avg_risk", 0)))
     cover = Table(
         [
             [_p("EXECUTIVE SECURITY REPORT", ParagraphStyle("ec1", fontName="Helvetica-Bold", fontSize=9, textColor=_PDF_PRIMARY, leading=13))],
             [_p(proj_name, ParagraphStyle("ec2", fontName="Helvetica-Bold", fontSize=22, textColor=_PDF_TEXT, leading=28))],
             [_p(f"Report Period: Last {window_days} days  ·  Generated: {generated}", _PS_MUTED)],
             [_p(
-                f'Risk Score: <font name="Helvetica-Bold" color="{_risk_hex(avg_risk)}">{avg_risk}</font>'
+                f'Risk Score: <font name="Helvetica-Bold" color="{_risk_hex(risk_score)}">{risk_score}</font>'
                 f'  ·  Scans: <font name="Helvetica-Bold" color="#64b2ff">{totals.get("scans", 0)}</font>'
-                f'  ·  Findings: <font name="Helvetica-Bold" color="#ecf4ff">{totals.get("findings", 0)}</font>',
+                f'  ·  Active Vulnerabilities: <font name="Helvetica-Bold" color="#ecf4ff">{totals.get("active_vulnerabilities", totals.get("findings", 0))}</font>',
                 _PS_BODY,
             )],
         ],
@@ -2945,11 +2945,12 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     story.append(Spacer(1, 6))
     story.append(_kpi_strip([
         ("Total Scans", str(totals.get("scans", 0)), "#64b2ff"),
-        ("Avg Risk Score", str(avg_risk), _risk_hex(avg_risk)),
-        ("Total Findings", str(totals.get("findings", 0)), "#ecf4ff"),
+        ("Risk Score", str(risk_score), _risk_hex(risk_score)),
+        ("Active Vulnerabilities", str(totals.get("active_vulnerabilities", totals.get("findings", 0))), "#ecf4ff"),
+        ("Affected Assets", str(totals.get("affected_assets", 0)), "#67b9ff"),
+        ("Critical Assets", str(totals.get("critical_assets", 0)), "#ff5d73"),
         ("Open Ports", str(totals.get("open_ports", 0)), "#ffc35c"),
-        ("Exposed Services", str(totals.get("exposed_services", 0)), "#67b9ff"),
-        ("CVE Candidates", str(totals.get("cve_count", 0)), "#ff5d73"),
+        ("Exposed Services", str(totals.get("exposed_services", 0)), "#64b2ff"),
     ], W))
     story.append(Spacer(1, 16))
 
@@ -2988,17 +2989,17 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     if top_assets:
         story.append(_section_bar("Top Exposed Assets", W))
         story.append(Spacer(1, 4))
-        hdr = ["Host / Asset", "Open Ports", "Findings", "Risk Score", "Profiles", "Last Seen"]
-        cw = _fit_col_widths([152, 66, 64, 66, 84, 88], W)
+        hdr = ["Host / Asset", "Criticality", "Findings", "Risk Score", "Exposure", "Last Seen"]
+        cw = _fit_col_widths([152, 72, 64, 66, 78, 88], W)
         rows = [hdr]
         for item in top_assets[:30]:
             rs = item.get("risk_score", 0)
             rows.append([
                 _p(str(item.get("host", "-"))[:42], _PS_BOLD),
-                _p(str(item.get("open_ports", 0)), _PS_BODY),
+                _p(str(item.get("criticality", "medium")), _PS_BODY),
                 _p(str(item.get("findings", 0)), _PS_BODY),
                 _p(str(rs), ParagraphStyle("rsc", fontName="Helvetica", fontSize=8, textColor=HexColor(_risk_hex(rs)), leading=11)),
-                _p(", ".join(item.get("profiles", []))[:28] or "-", _PS_MUTED),
+                _p(str(item.get("public_exposure", 0)), _PS_MUTED),
                 _p(str(item.get("last_seen", "-"))[:16], _PS_MUTED),
             ])
         story.append(_styled_table(rows, cw))
@@ -3448,6 +3449,7 @@ def infer_cve_candidates(product: str, version: str, port: int) -> list[dict[str
         if version_tuple and version_tuple <= rule["max_version"]:
             candidates.append(
                 {
+                    "port": int(port or 0),
                     "type": "cve_candidate",
                     "severity": rule["severity"],
                     "title": rule["title"],
@@ -3459,6 +3461,7 @@ def infer_cve_candidates(product: str, version: str, port: int) -> list[dict[str
     if port in {6379, 11211, 27017, 9200, 2375}:
         candidates.append(
             {
+                "port": int(port or 0),
                 "type": "cve_candidate",
                 "severity": "high",
                 "title": "Internet-exposed service likely vulnerable without hardening",
@@ -3483,6 +3486,7 @@ def evaluate_version_findings(
 
     findings.append(
         {
+            "port": int(port or 0),
             "type": "open_port",
             "severity": "info",
             "title": f"Open port {port} ({service_hint})",
@@ -3494,6 +3498,7 @@ def evaluate_version_findings(
         msg, severity = RISKY_PORTS[port]
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "exposed_port",
                 "severity": severity,
                 "title": msg,
@@ -3507,6 +3512,7 @@ def evaluate_version_findings(
     if port >= 49152 and port not in COMMON_SERVICE_NAMES:
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "high_port_exposure",
                 "severity": "medium",
                 "title": "High ephemeral port externally reachable",
@@ -3517,6 +3523,7 @@ def evaluate_version_findings(
     if port in {21, 23, 110, 143}:
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "plaintext_protocol",
                 "severity": "high" if port in {21, 23} else "medium",
                 "title": "Potential plaintext protocol exposure",
@@ -3527,6 +3534,7 @@ def evaluate_version_findings(
     if "openssh" in product_l and version_tuple and version_tuple < (8, 8, 0):
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "outdated_service",
                 "severity": "medium",
                 "title": "OpenSSH version appears outdated",
@@ -3536,6 +3544,7 @@ def evaluate_version_findings(
     elif "nginx" in product_l and version_tuple and version_tuple < (1, 20, 0):
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "outdated_service",
                 "severity": "medium",
                 "title": "Nginx version appears outdated",
@@ -3545,6 +3554,7 @@ def evaluate_version_findings(
     elif "apache" in product_l and version_tuple and version_tuple < (2, 4, 57):
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "outdated_service",
                 "severity": "medium",
                 "title": "Apache HTTPD version appears outdated",
@@ -3556,6 +3566,7 @@ def evaluate_version_findings(
     if "docker" in banner_l and port in {2375, 2376}:
         findings.append(
             {
+                "port": int(port or 0),
                 "type": "misconfiguration",
                 "severity": "critical",
                 "title": "Docker API may be exposed",
@@ -3586,6 +3597,7 @@ def build_service_version_observations(host: str, port_entries: list[dict[str, A
         out.append(
             {
                 "host": host,
+                "port": int(port or 0),
                 "severity": severity,
                 "title": f"Service fingerprint identified: {product}",
                 "evidence": evidence,
@@ -3786,11 +3798,14 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
 
         server = response.headers.get("Server")
         powered_by = response.headers.get("X-Powered-By")
+        service_name = "https" if scheme == "https" else "http"
 
         findings: list[dict[str, Any]] = []
         if powered_by:
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "information_leak",
                     "severity": "low",
                     "title": "X-Powered-By header exposed",
@@ -3801,6 +3816,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if server and re.search(r"\d", server):
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "version_disclosure",
                     "severity": "low",
                     "title": "Server header discloses version",
@@ -3811,6 +3828,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if response.headers.get("Strict-Transport-Security") is None and scheme == "https":
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "core.http_hardening",
                     "severity": "low",
                     "title": "Missing HSTS on HTTPS endpoint",
@@ -3822,6 +3841,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if not csp_header:
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "core.http_hardening",
                     "severity": "medium",
                     "title": "Missing Content-Security-Policy header",
@@ -3833,6 +3854,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if xcto != "nosniff":
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "core.http_hardening",
                     "severity": "low",
                     "title": "Missing X-Content-Type-Options header",
@@ -3845,6 +3868,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if not xfo_header and not has_frame_ancestors:
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "core.http_hardening",
                     "severity": "low",
                     "title": "Missing anti-clickjacking header",
@@ -3856,6 +3881,8 @@ def probe_http_service(host_or_ip: str, port: int) -> dict[str, Any] | None:
         if logins:
             findings.append(
                 {
+                    "port": int(port or 0),
+                    "service_name": service_name,
                     "type": "login_surface",
                     "severity": "info",
                     "title": "Login endpoints discovered",
@@ -4903,7 +4930,7 @@ def compute_true_risk_score(
 
     if findings:
         sev_weight = {"critical": 12.0, "high": 7.0, "medium": 3.5, "low": 1.4, "info": 0.4}
-        crit_factor = {"low": 0.85, "normal": 1.0, "high": 1.22, "critical": 1.45}
+        crit_factor = {"low": 0.85, "medium": 1.0, "high": 1.22, "normal": 1.0, "critical": 1.22}
         conf_factor = {"low": 0.78, "medium": 1.0, "high": 1.16, "verified": 1.28}
 
         for item in findings:
@@ -5038,8 +5065,8 @@ def build_soc_report(
         )
         exploit_score = 100.0 if exploit_available else 45.0
         exposure_score = 92.0 if internet_facing else 55.0
-        service_criticality = normalize_asset_criticality(str(item.get("asset_criticality") or "normal"))
-        criticality_score = {"low": 35.0, "normal": 55.0, "high": 75.0, "critical": 92.0}[service_criticality]
+        service_criticality = normalize_asset_criticality(str(item.get("asset_criticality") or "medium"))
+        criticality_score = {"low": 35.0, "medium": 55.0, "high": 75.0, "normal": 55.0, "critical": 75.0}[service_criticality]
         attack_surface_context = min(100.0, 25.0 + (len(services) * 3.0))
         mode_modifier = _scan_mode_modifier(mode, {"low": 0.6, "medium": 0.75, "high": 0.9, "verified": 0.98}[confidence])
 
@@ -5057,7 +5084,7 @@ def build_soc_report(
             {
                 "host": str(item.get("host") or "-"),
                 "port": int(item.get("port") or 0),
-                "service": str(item.get("service") or "unknown"),
+                "service": str(item.get("service_name") or item.get("service") or "unknown"),
                 "cve": str(item.get("cve") or ""),
                 "title": str(item.get("title") or "Finding"),
                 "cvss": round(cvss, 1),
@@ -5488,13 +5515,21 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
             if finding.get("type") == "exposed_port":
                 exposed_services += 1
 
+            finding_port = int(finding.get("port") or 0)
+            service_name, service_confidence, service_source = infer_service_identity(
+                port=finding_port,
+                name=str(finding.get("service_name") or finding.get("service") or ""),
+                product=str(finding.get("product") or ""),
+                banner=str(finding.get("banner") or finding.get("evidence") or ""),
+            )
+
             finding_confidence = infer_finding_confidence(
                 evidence=str(finding.get("evidence", "")),
                 cve=str(finding.get("cve", "")),
             )
             finding_criticality = infer_asset_criticality(
                 host=str(host.get("host", "-")),
-                port=int(finding.get("port") or 0),
+                port=finding_port,
                 finding_type=str(finding.get("type", "-")),
                 title=str(finding.get("title", "")),
             )
@@ -5503,25 +5538,32 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
                 cve_items.append(
                     {
                         "host": host.get("host", "-"),
+                        "port": finding_port,
                         "cve": finding.get("cve", "CVE-check-recommended"),
                         "title": finding.get("title", "Potential CVE"),
                         "evidence": finding.get("evidence", "-"),
                         "severity": normalize_severity(str(finding.get("severity", "medium"))),
                         "confidence": finding_confidence,
                         "asset_criticality": finding_criticality,
+                        "service_name": service_name,
+                        "service_confidence": service_confidence,
+                        "service_source": service_source,
                     }
                 )
             finding_items.append(
                 {
                     "host": host.get("host", "-"),
-                        "port": int(finding.get("port") or 0),
-                        "severity": normalize_severity(str(finding.get("severity", "low"))),
+                    "port": finding_port,
+                    "severity": normalize_severity(str(finding.get("severity", "low"))),
                     "title": finding.get("title", "Finding"),
                     "evidence": finding.get("evidence", "-"),
                     "type": finding.get("type", "-"),
                     "cve": finding.get("cve", ""),
                     "confidence": finding_confidence,
                     "asset_criticality": finding_criticality,
+                    "service_name": service_name,
+                    "service_confidence": service_confidence,
+                    "service_source": service_source,
                 }
             )
         # Keep response compact for frontend stability: include open ports only.
@@ -6146,8 +6188,13 @@ def dashboard_csv_response(project_id: str, dashboard: dict[str, Any]) -> Any:
 
     writer.writerow(["metric", "value"])
     writer.writerow(["scans", totals.get("scans", 0)])
+    writer.writerow(["risk_score", totals.get("risk_score", totals.get("avg_risk", 0))])
     writer.writerow(["avg_risk", totals.get("avg_risk", 0)])
+    writer.writerow(["active_vulnerabilities", totals.get("active_vulnerabilities", totals.get("findings", 0))])
     writer.writerow(["findings", totals.get("findings", 0)])
+    writer.writerow(["affected_assets", totals.get("affected_assets", 0)])
+    writer.writerow(["critical_assets", totals.get("critical_assets", 0)])
+    writer.writerow(["stale_vulnerabilities", totals.get("stale_vulnerabilities", 0)])
     writer.writerow(["open_ports", totals.get("open_ports", 0)])
     writer.writerow(["exposed_services", totals.get("exposed_services", 0)])
     writer.writerow(["cve_count", totals.get("cve_count", 0)])
@@ -6191,6 +6238,19 @@ def dashboard_csv_response(project_id: str, dashboard: dict[str, Any]) -> Any:
                 row.get("type", ""),
                 row.get("cve", ""),
                 row.get("affected_assets", 0),
+            ]
+        )
+
+    writer.writerow([])
+    writer.writerow(["top_asset", "criticality", "findings", "risk_score", "public_exposure"])
+    for row in dashboard.get("top_assets", []):
+        writer.writerow(
+            [
+                row.get("host", ""),
+                row.get("criticality", ""),
+                row.get("findings", 0),
+                row.get("risk_score", 0),
+                row.get("public_exposure", 0),
             ]
         )
 
@@ -6783,7 +6843,7 @@ def report_csv_response(report_id: str, data: dict[str, Any], download_name: str
             [
                 finding.get("host", ""),
                 finding.get("port", ""),
-                finding.get("service", ""),
+                finding.get("service_name", finding.get("service", "")),
                 finding.get("version", ""),
                 finding.get("type", ""),
                 finding.get("severity", ""),

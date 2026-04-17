@@ -195,6 +195,7 @@ def correlate_findings(
             correlated.append(
                 {
                     "host": host,
+                    "port": 0,
                     "severity": "high",
                     "title": "High-risk host aggregate",
                     "evidence": f"Host accumulates {len(high_or_critical)} high/critical issues across its exposed services.",
@@ -202,6 +203,8 @@ def correlate_findings(
                     "cve": "",
                     "confidence": "medium",
                     "asset_criticality": "high",
+                    "service_name": "host",
+                    "service_source": "correlation",
                     "correlation_score": score,
                     "correlation_type": "multi",
                     "attack_scenario": "Attacker can choose among several severe weaknesses to gain and stabilize host compromise.",
@@ -219,6 +222,7 @@ def correlate_findings(
             correlated.append(
                 {
                     "host": host,
+                    "port": 0,
                     "severity": "high",
                     "title": "Multi-exposure host",
                     "evidence": f"Host exposes {open_service_count} services with diverse issue types ({len(issue_types)}), increasing attack-path optionality.",
@@ -226,6 +230,8 @@ def correlate_findings(
                     "cve": "",
                     "confidence": "medium",
                     "asset_criticality": "high",
+                    "service_name": "host",
+                    "service_source": "correlation",
                     "correlation_score": score,
                     "correlation_type": "multi",
                     "attack_scenario": "Attacker can chain weaker findings across multiple services for lateral movement and persistence.",
