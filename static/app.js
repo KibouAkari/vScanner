@@ -84,6 +84,7 @@ const COLORS = {
 
 let activeProjectId = "default";
 let lastReportId = null;
+let lastScannerScope = "standard";
 let trendChartInstance = null;
 let riskChartInstance = null;
 let severityStackChartInstance = null;
@@ -2115,6 +2116,7 @@ scanForm.addEventListener("submit", async (event) => {
     clearError();
 
     const scannerMode = scannerTypeSelect.value || "standard";
+    const exportScope = scannerMode === "v2" ? "v2" : "standard";
     const modeCfg = scannerSettings(scannerMode);
     const selectedProfile = modeCfg.disableProfile ? modeCfg.profile : profileSelect.value;
     const endpoint = modeCfg.endpoint || "/api/scan";
@@ -2145,12 +2147,13 @@ scanForm.addEventListener("submit", async (event) => {
             throw new Error(data.error || "Scan failed");
         }
 
-        lastReportId = data.report_id;
+        lastReportId = data.report_id || null;
+        lastScannerScope = exportScope;
         reportPdfButton.disabled = false;
         reportCsvButton.disabled = false;
 
     renderScanResult(data);
-    saveLastScan("standard", data);
+    saveLastScan(exportScope, data);
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
         activateTab("dashboard");
     } catch (error) {
@@ -2168,18 +2171,26 @@ scanForm.addEventListener("submit", async (event) => {
 
 reportPdfButton.addEventListener("click", () => {
     if (!lastReportId) {
-        showError("No report available for PDF export.");
-        return;
+        window.open(
+            `/api/reports/latest/${encodeURIComponent(lastScannerScope)}/pdf?project_id=${encodeURIComponent(activeProjectId)}`,
+            "_blank",
+            "noopener,noreferrer"
+        );
+    } else {
+        window.open(`/api/reports/${encodeURIComponent(lastReportId)}/pdf`, "_blank", "noopener,noreferrer");
     }
-    window.open(`/api/reports/${encodeURIComponent(lastReportId)}/pdf`, "_blank", "noopener,noreferrer");
 });
 
 reportCsvButton.addEventListener("click", () => {
     if (!lastReportId) {
-        showError("No report available for CSV export.");
-        return;
+        window.open(
+            `/api/reports/latest/${encodeURIComponent(lastScannerScope)}/csv?project_id=${encodeURIComponent(activeProjectId)}`,
+            "_blank",
+            "noopener,noreferrer"
+        );
+    } else {
+        window.open(`/api/reports/${encodeURIComponent(lastReportId)}/csv`, "_blank", "noopener,noreferrer");
     }
-    window.open(`/api/reports/${encodeURIComponent(lastReportId)}/csv`, "_blank", "noopener,noreferrer");
 });
 
 projectPdfButton.addEventListener("click", () => {
@@ -2437,10 +2448,26 @@ netScanForm?.addEventListener("submit", async (event) => {
 });
 
 netReportPdfButton?.addEventListener("click", () => {
-    if (lastNetReportId) window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/pdf`, "_blank", "noopener,noreferrer");
+    if (lastNetReportId) {
+        window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/pdf`, "_blank", "noopener,noreferrer");
+        return;
+    }
+    window.open(
+        `/api/reports/latest/network/pdf?project_id=${encodeURIComponent(activeProjectId)}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
 });
 netReportCsvButton?.addEventListener("click", () => {
-    if (lastNetReportId) window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/csv`, "_blank", "noopener,noreferrer");
+    if (lastNetReportId) {
+        window.open(`/api/reports/${encodeURIComponent(lastNetReportId)}/csv`, "_blank", "noopener,noreferrer");
+        return;
+    }
+    window.open(
+        `/api/reports/latest/network/csv?project_id=${encodeURIComponent(activeProjectId)}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
 });
 
 // ─── Stealth Scanner ───────────────────────────────────────────────────────
@@ -2509,10 +2536,26 @@ async function runStealthScan(intelOnly = false) {
 stealthScanForm?.addEventListener("submit", (e) => { e.preventDefault(); runStealthScan(false); });
 stealthIntelButton?.addEventListener("click", () => runStealthScan(true));
 stealthReportPdfButton?.addEventListener("click", () => {
-    if (lastStealthReportId) window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/pdf`, "_blank", "noopener,noreferrer");
+    if (lastStealthReportId) {
+        window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/pdf`, "_blank", "noopener,noreferrer");
+        return;
+    }
+    window.open(
+        `/api/reports/latest/stealth/pdf?project_id=${encodeURIComponent(activeProjectId)}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
 });
 stealthReportCsvButton?.addEventListener("click", () => {
-    if (lastStealthReportId) window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/csv`, "_blank", "noopener,noreferrer");
+    if (lastStealthReportId) {
+        window.open(`/api/reports/${encodeURIComponent(lastStealthReportId)}/csv`, "_blank", "noopener,noreferrer");
+        return;
+    }
+    window.open(
+        `/api/reports/latest/stealth/csv?project_id=${encodeURIComponent(activeProjectId)}`,
+        "_blank",
+        "noopener,noreferrer"
+    );
 });
 
 // ─── 24h Last Scan Persistence ─────────────────────────────────────────────
@@ -2541,8 +2584,9 @@ function restoreLastScan() {
             stealthScanResult.innerHTML = buildScanResultMarkup(data);
             if (stealthReportPdfButton && data.report_id) { stealthReportPdfButton.disabled = false; lastStealthReportId = data.report_id; }
             if (stealthReportCsvButton && data.report_id) { stealthReportCsvButton.disabled = false; }
-        } else if (scope === "standard" && scanResult) {
+        } else if ((scope === "standard" || scope === "v2") && scanResult) {
             renderScanResult(data);
+            lastScannerScope = scope;
             if (reportPdfButton && data.report_id) { reportPdfButton.disabled = false; lastReportId = data.report_id; }
             if (reportCsvButton && data.report_id) { reportCsvButton.disabled = false; }
         }

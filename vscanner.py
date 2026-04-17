@@ -227,6 +227,7 @@ TLS_CANDIDATE_PORTS = {443, 465, 636, 853, 990, 993, 995, 2376, 5061, 5671, 5986
 
 SEVERITY_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
+LATEST_SCAN_EXPORT_CACHE: dict[str, dict[str, Any]] = {}
 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
@@ -2857,6 +2858,42 @@ def canonical_profile(profile: str) -> str:
     return mapping.get((profile or "").lower(), "light")
 
 
+def export_scope_from_profile(profile: str) -> str:
+    canonical = canonical_profile(profile)
+    if canonical == "network":
+        return "network"
+    if canonical == "stealth":
+        return "stealth"
+    return "standard"
+
+
+def _latest_scan_cache_key(project_id: str, scope: str) -> str:
+    return f"{project_id}:{scope}"
+
+
+def cache_latest_scan_for_export(project_id: str, scope: str, result: dict[str, Any]) -> None:
+    now = time.time()
+    # Keep cache bounded and short-lived for ad-hoc export fallbacks.
+    for key, value in list(LATEST_SCAN_EXPORT_CACHE.items()):
+        if now - float(value.get("ts") or 0.0) > 7200:
+            LATEST_SCAN_EXPORT_CACHE.pop(key, None)
+    LATEST_SCAN_EXPORT_CACHE[_latest_scan_cache_key(project_id, scope)] = {
+        "ts": now,
+        "data": result,
+    }
+
+
+def get_latest_scan_for_export(project_id: str, scope: str) -> dict[str, Any] | None:
+    payload = LATEST_SCAN_EXPORT_CACHE.get(_latest_scan_cache_key(project_id, scope))
+    if not payload:
+        return None
+    ts = float(payload.get("ts") or 0.0)
+    if time.time() - ts > 7200:
+        return None
+    data = payload.get("data")
+    return data if isinstance(data, dict) else None
+
+
 def build_port_list(profile: str, port_strategy: str) -> list[int]:
     base_common = [
         20,
@@ -5240,6 +5277,9 @@ def scan_api() -> Any:
             historical_points=None,
         )
         result["soc_report"] = soc_report
+        result["meta"]["export_scope"] = export_scope_from_profile(profile)
+
+        cache_latest_scan_for_export(project["id"], str(result["meta"].get("export_scope") or "standard"), result)
 
         if response_format == "soc_json":
             return jsonify(soc_report)
@@ -5306,6 +5346,9 @@ def scan_api_v2() -> Any:
             historical_points=None,
         )
         result["soc_report"] = soc_report
+        result["meta"]["export_scope"] = "v2"
+
+        cache_latest_scan_for_export(project["id"], "v2", result)
 
         if response_format == "soc_json":
             return jsonify(soc_report)
@@ -5432,6 +5475,25 @@ def report_host_csv_api(report_id: str, host: str) -> Any:
     return report_csv_response(report_id, filtered, download_name=f"vscanner-report-{report_id[:8]}-{host[:40]}.csv")
 
 
+@app.route("/api/reports/latest/<scope>/csv")
+def report_latest_csv_api(scope: str) -> Any:
+    normalized_scope = (scope or "").strip().lower()
+    if normalized_scope not in {"standard", "v2", "network", "stealth"}:
+        return jsonify({"error": "Invalid export scope."}), 400
+
+    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    data = get_latest_scan_for_export(project_id, normalized_scope)
+    if not data:
+        return jsonify({"error": "No recent scan available for export."}), 404
+
+    pseudo_id = f"latest-{normalized_scope}"
+    return report_csv_response(
+        pseudo_id,
+        data,
+        download_name=f"vscanner-{normalized_scope}-latest-{project_id[:8]}.csv",
+    )
+
+
 @app.route("/api/reports/<report_id>/pdf")
 def report_pdf_api(report_id: str) -> Any:
     data = get_report_entry(report_id)
@@ -5444,6 +5506,26 @@ def report_pdf_api(report_id: str) -> Any:
         mimetype="application/pdf",
         as_attachment=True,
         download_name=f"vscanner-report-{report_id[:8]}.pdf",
+    )
+
+
+@app.route("/api/reports/latest/<scope>/pdf")
+def report_latest_pdf_api(scope: str) -> Any:
+    normalized_scope = (scope or "").strip().lower()
+    if normalized_scope not in {"standard", "v2", "network", "stealth"}:
+        return jsonify({"error": "Invalid export scope."}), 400
+
+    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    data = get_latest_scan_for_export(project_id, normalized_scope)
+    if not data:
+        return jsonify({"error": "No recent scan available for export."}), 404
+
+    pdf_buffer = build_report_pdf(data)
+    return send_file(
+        pdf_buffer,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=f"vscanner-{normalized_scope}-latest-{project_id[:8]}.pdf",
     )
 
 
