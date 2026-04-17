@@ -1488,6 +1488,8 @@ def upsert_findings(
     unique_scan_items: dict[tuple[str, str], dict[str, Any]] = {}
     for item in finding_items:
         asset = str(item.get("host") or "-").strip().lower()
+        if not asset or asset == "-":
+            continue  # skip findings that have no identifiable host
         vuln_key = finding_vuln_key(item)
         try:
             port_value = int(item.get("port") or 0)
@@ -3386,14 +3388,33 @@ def cache_latest_scan_for_export(project_id: str, scope: str, result: dict[str, 
 
 
 def get_latest_scan_for_export(project_id: str, scope: str) -> dict[str, Any] | None:
+    # 1. Try in-memory cache first (populated right after a live scan).
     payload = LATEST_SCAN_EXPORT_CACHE.get(_latest_scan_cache_key(project_id, scope))
-    if not payload:
+    if payload:
+        ts = float(payload.get("ts") or 0.0)
+        if time.time() - ts <= 7200:
+            data = payload.get("data")
+            if isinstance(data, dict):
+                return data
+
+    # 2. Cache miss or stale: fall back to the most recent persisted report in DB.
+    if not DB_READY:
         return None
-    ts = float(payload.get("ts") or 0.0)
-    if time.time() - ts > 7200:
-        return None
-    data = payload.get("data")
-    return data if isinstance(data, dict) else None
+    try:
+        entries = list_report_entries(limit=1, project_id=project_id)
+        if not entries:
+            return None
+        report_id = str(entries[0].get("id") or "")
+        if not report_id:
+            return None
+        report_data = get_report_entry(report_id)
+        if isinstance(report_data, dict):
+            # Populate the cache so the next call is fast.
+            cache_latest_scan_for_export(project_id, scope, report_data)
+            return report_data
+    except Exception:
+        pass
+    return None
 
 
 def build_port_list(profile: str, port_strategy: str) -> list[int]:
@@ -3635,7 +3656,9 @@ def build_dashboard_exposure_views(
             },
         )
         bucket["severity"] = best_severity(str(bucket.get("severity") or "low"), severity)
-        bucket["affected_assets"].add(str(finding.get("asset") or finding.get("host") or "-"))
+        _asset_val = str(finding.get("asset") or finding.get("host") or "").strip()
+        if _asset_val and _asset_val != "-":
+            bucket["affected_assets"].add(_asset_val)
         bucket["occurrences"] += int(finding.get("occurrence_count") or 1)
         bucket["scan_hits"] += 1
         bucket["first_seen"] = min(str(bucket.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
@@ -4960,7 +4983,8 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
             finding_items.append(
                 {
                     "host": host.get("host", "-"),
-                    "severity": normalize_severity(str(finding.get("severity", "low"))),
+                        "port": int(finding.get("port") or 0),
+                        "severity": normalize_severity(str(finding.get("severity", "low"))),
                     "title": finding.get("title", "Finding"),
                     "evidence": finding.get("evidence", "-"),
                     "type": finding.get("type", "-"),
