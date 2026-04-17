@@ -377,9 +377,17 @@ def asset_criticality_rank(raw: str) -> int:
 
 def normalize_finding_status(raw: str) -> str:
     value = (raw or "").strip().lower()
-    if value in {"open", "stale", "resolved"}:
-        return value
-    return "open"
+    if value in {"active", "open"}:
+        return "active"
+    if value == "stale":
+        return "stale"
+    if value == "resolved":
+        return "resolved"
+    return "active"
+
+
+def is_active_finding_status(raw: str) -> bool:
+    return normalize_finding_status(raw) == "active"
 
 
 def profile_confidence_score(profile: str) -> float:
@@ -422,7 +430,7 @@ def weighted_finding_score(finding: dict[str, Any]) -> float:
         severity_weight(str(finding.get("severity") or "low")) * 10.0,
     )
     confidence = float(finding.get("confidence_score") or 0.0) or 0.8
-    status = normalize_finding_status(str(finding.get("status") or "open"))
+    status = normalize_finding_status(str(finding.get("status") or "active"))
     if status == "stale":
         confidence *= 0.45
     elif status == "resolved":
@@ -897,7 +905,7 @@ def init_report_store() -> None:
                 threat_score REAL NOT NULL DEFAULT 0,
                 confidence_score REAL NOT NULL DEFAULT 0.8,
                 exploit_known INTEGER NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'open',
+                status TEXT NOT NULL DEFAULT 'active',
                 service_name TEXT NOT NULL DEFAULT 'unknown',
                 service_confidence REAL NOT NULL DEFAULT 0,
                 service_source TEXT NOT NULL DEFAULT 'heuristic',
@@ -963,7 +971,7 @@ def init_report_store() -> None:
             ("findings", "threat_score", "REAL NOT NULL DEFAULT 0"),
             ("findings", "confidence_score", "REAL NOT NULL DEFAULT 0.8"),
             ("findings", "exploit_known", "INTEGER NOT NULL DEFAULT 0"),
-            ("findings", "status", "TEXT NOT NULL DEFAULT 'open'"),
+            ("findings", "status", "TEXT NOT NULL DEFAULT 'active'"),
             ("findings", "service_name", "TEXT NOT NULL DEFAULT 'unknown'"),
             ("findings", "service_confidence", "REAL NOT NULL DEFAULT 0"),
             ("findings", "service_source", "TEXT NOT NULL DEFAULT 'heuristic'"),
@@ -1133,9 +1141,14 @@ def backfill_soc_state() -> None:
             )
             execute(
                 connection,
-                "UPDATE findings SET asset_id = ?, host = ?, asset = ?, port = ?, dedup_key = ?, service_name = ?, service_confidence = ?, service_source = ?, status = CASE WHEN TRIM(COALESCE(status, '')) = '' THEN 'open' ELSE status END WHERE id = ?",
+                "UPDATE findings SET asset_id = ?, host = ?, asset = ?, port = ?, dedup_key = ?, service_name = ?, service_confidence = ?, service_source = ?, status = CASE WHEN LOWER(TRIM(COALESCE(status, ''))) IN ('', 'open', 'active') THEN 'active' WHEN LOWER(TRIM(COALESCE(status, ''))) = 'stale' THEN 'stale' ELSE 'resolved' END WHERE id = ?",
                 (str(asset_row.get("id") or ""), host_value, host_value, port_value, dedup_key, service_name, float(service_confidence), service_source, str(row.get("id") or "")),
             )
+
+        execute(
+            connection,
+            "UPDATE findings SET status = 'active' WHERE LOWER(TRIM(COALESCE(status, ''))) = 'open'",
+        )
 
         projects = fetchall(connection, "SELECT id FROM projects")
         for row in projects:
@@ -1322,9 +1335,66 @@ def list_assets(project_id: str, tags: list[str] | None = None) -> list[dict[str
                 {"_id": 0, "id": 1, "project_id": 1, "value": 1, "tags": 1, "criticality": 1, "created_at": 1},
             ).sort("created_at", ASCENDING)
         )
+        finding_rows = list(
+            db.findings.find(
+                {"project_id": project_id, "status": {"$in": ["active", "open", "stale"]}},
+                {
+                    "_id": 0,
+                    "asset_id": 1,
+                    "status": 1,
+                    "first_seen": 1,
+                    "last_seen": 1,
+                    "risk_score": 1,
+                    "threat_score": 1,
+                    "port": 1,
+                    "service_name": 1,
+                },
+            )
+        )
+        metrics_by_asset: dict[str, dict[str, Any]] = {}
+        for finding in finding_rows:
+            asset_id = str(finding.get("asset_id") or "")
+            if not asset_id:
+                continue
+            status = normalize_finding_status(str(finding.get("status") or "active"))
+            metric = metrics_by_asset.setdefault(
+                asset_id,
+                {
+                    "first_seen": str(finding.get("first_seen") or utc_now()),
+                    "last_seen": str(finding.get("last_seen") or utc_now()),
+                    "risk_score": 0.0,
+                    "open_ports": set(),
+                    "services": set(),
+                    "findings": 0,
+                },
+            )
+            metric["first_seen"] = min(str(metric.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
+            metric["last_seen"] = max(str(metric.get("last_seen") or utc_now()), str(finding.get("last_seen") or utc_now()))
+            if status == "active":
+                metric["findings"] += 1
+                metric["risk_score"] = max(
+                    float(metric.get("risk_score") or 0.0),
+                    float(finding.get("threat_score") or 0.0),
+                    float(finding.get("risk_score") or 0.0),
+                )
+                port_value = int(finding.get("port") or 0)
+                service_name = str(finding.get("service_name") or "unknown").strip().lower()
+                if port_value > 0:
+                    metric["open_ports"].add(port_value)
+                if port_value > 0 and service_name not in {"", "unknown", "-", "host"}:
+                    metric["services"].add(f"{service_name}:{port_value}")
+
         for row in rows:
             row["tags"] = sorted({str(tag).strip().lower() for tag in (row.get("tags") or []) if str(tag).strip()})
             row["criticality"] = normalize_asset_criticality(str(row.get("criticality") or "medium"))
+            metric = metrics_by_asset.get(str(row.get("id") or ""), {})
+            row["host"] = str(row.get("value") or "")
+            row["first_seen"] = str(metric.get("first_seen") or row.get("created_at") or utc_now())
+            row["last_seen"] = str(metric.get("last_seen") or row.get("created_at") or utc_now())
+            row["risk_score"] = round(float(metric.get("risk_score") or 0.0), 1)
+            row["open_ports"] = len(metric.get("open_ports") or set())
+            row["findings"] = int(metric.get("findings") or 0)
+            row["services"] = sorted(metric.get("services") or set())
         return rows
 
     with db_connection() as connection:
@@ -1333,6 +1403,55 @@ def list_assets(project_id: str, tags: list[str] | None = None) -> list[dict[str
             "SELECT id, project_id, value, tags_json, criticality, created_at FROM assets WHERE project_id = ? ORDER BY created_at ASC",
             (project_id,),
         )
+
+    metrics_rows: list[dict[str, Any]] = []
+    with db_connection() as connection:
+        metrics_rows = fetchall(
+            connection,
+            """
+            SELECT
+                asset_id,
+                MIN(first_seen) AS first_seen,
+                MAX(last_seen) AS last_seen,
+                COUNT(CASE WHEN status IN ('active', 'open') THEN 1 END) AS findings,
+                MAX(CASE WHEN status IN ('active', 'open') THEN CASE WHEN threat_score > risk_score THEN threat_score ELSE risk_score END ELSE 0 END) AS risk_score,
+                COUNT(DISTINCT CASE WHEN status IN ('active', 'open') AND port > 0 THEN port END) AS open_ports
+            FROM findings
+            WHERE project_id = ? AND status IN ('active', 'open', 'stale')
+            GROUP BY asset_id
+            """,
+            (project_id,),
+        )
+        service_rows = fetchall(
+            connection,
+            """
+            SELECT asset_id, service_name, port
+            FROM findings
+            WHERE project_id = ?
+              AND status IN ('active', 'open')
+              AND port > 0
+              AND TRIM(COALESCE(service_name, '')) NOT IN ('', '-', 'unknown', 'host')
+            """,
+            (project_id,),
+        )
+
+    metrics_by_asset = {
+        str(row.get("asset_id") or ""): {
+            "first_seen": str(row.get("first_seen") or ""),
+            "last_seen": str(row.get("last_seen") or ""),
+            "findings": int(row.get("findings") or 0),
+            "risk_score": round(float(row.get("risk_score") or 0.0), 1),
+            "open_ports": int(row.get("open_ports") or 0),
+            "services": set(),
+        }
+        for row in metrics_rows
+    }
+    for row in service_rows:
+        asset_id = str(row.get("asset_id") or "")
+        if not asset_id:
+            continue
+        metric = metrics_by_asset.setdefault(asset_id, {"first_seen": "", "last_seen": "", "findings": 0, "risk_score": 0.0, "open_ports": 0, "services": set()})
+        metric["services"].add(f"{str(row.get('service_name') or '').strip().lower()}:{int(row.get('port') or 0)}")
 
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -1343,14 +1462,22 @@ def list_assets(project_id: str, tags: list[str] | None = None) -> list[dict[str
         row_tags = sorted({str(tag).strip().lower() for tag in (row_tags or []) if str(tag).strip()})
         if normalized_tags and not set(row_tags).intersection(normalized_tags):
             continue
+        metric = metrics_by_asset.get(str(row.get("id") or ""), {})
         out.append(
             {
                 "id": str(row.get("id") or ""),
                 "project_id": str(row.get("project_id") or project_id),
                 "value": str(row.get("value") or ""),
+                "host": str(row.get("value") or ""),
                 "tags": row_tags,
                 "criticality": normalize_asset_criticality(str(row.get("criticality") or "medium")),
                 "created_at": str(row.get("created_at") or utc_now()),
+                "first_seen": str(metric.get("first_seen") or row.get("created_at") or utc_now()),
+                "last_seen": str(metric.get("last_seen") or row.get("created_at") or utc_now()),
+                "risk_score": round(float(metric.get("risk_score") or 0.0), 1),
+                "open_ports": int(metric.get("open_ports") or 0),
+                "findings": int(metric.get("findings") or 0),
+                "services": sorted(metric.get("services") or set()),
             }
         )
     return out
@@ -1788,8 +1915,10 @@ def upsert_findings(
 
     for item in enriched_findings:
         host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+        host_level = False
         if not host_value or host_value == "-":
-            continue
+            host_value = "unknown.local"
+            host_level = True
 
         try:
             port_value = int(item.get("port") or 0)
@@ -1806,6 +1935,14 @@ def upsert_findings(
 
         title_raw = str(item.get("title") or "Finding")
         finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
+        if host_level and finding_type not in {"correlated_risk", "host_correlation"}:
+            finding_type = "host_correlation"
+            port_value = 0
+        if port_value <= 0 and finding_type not in {"correlated_risk", "host_correlation"}:
+            port_value = int(infer_port_from_legacy_finding(item) or 0)
+            if port_value <= 0:
+                finding_type = "host_correlation"
+                port_value = 0
         vuln_key = finding_vuln_key({**item, "host": host_value, "type": finding_type, "port": port_value})
         dedup_key = build_finding_dedup_key(host_value, port_value, title_raw, finding_type)
         service_name, service_confidence, service_source = infer_service_identity(
@@ -1814,6 +1951,10 @@ def upsert_findings(
             product=str(item.get("product") or ""),
             banner=str(item.get("banner") or item.get("evidence") or ""),
         )
+        if port_value == 0 and finding_type in {"correlated_risk", "host_correlation"}:
+            service_name = "host"
+            service_confidence = 1.0
+            service_source = "correlation"
         risk_value = max(
             float(item.get("advanced_risk_score") or 0.0),
             float(item.get("risk_score") or 0.0),
@@ -1846,7 +1987,7 @@ def upsert_findings(
                 "threat_score": threat_value,
                 "confidence_score": confidence_value,
                 "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
-                "status": "open",
+                "status": "active",
                 "service_name": service_name,
                 "service_confidence": service_confidence,
                 "service_source": service_source,
@@ -1920,7 +2061,7 @@ def upsert_findings(
                         "threat_score": max(float(existing.get("threat_score") or 0.0), float(item.get("threat_score") or 0.0)),
                         "confidence_score": float(item.get("confidence_score") or profile_confidence),
                         "exploit_known": bool(item.get("exploit_known")),
-                        "status": "open",
+                        "status": "active",
                         "service_name": item["service_name"],
                         "service_confidence": float(item.get("service_confidence") or 0.0),
                         "service_source": item["service_source"],
@@ -1980,7 +2121,7 @@ def upsert_findings(
                     threat_score = CASE WHEN excluded.threat_score > findings.threat_score THEN excluded.threat_score ELSE findings.threat_score END,
                     confidence_score = excluded.confidence_score,
                     exploit_known = CASE WHEN excluded.exploit_known > findings.exploit_known THEN excluded.exploit_known ELSE findings.exploit_known END,
-                    status = 'open',
+                    status = 'active',
                     service_name = excluded.service_name,
                     service_confidence = excluded.service_confidence,
                     service_source = excluded.service_source,
@@ -2010,7 +2151,7 @@ def upsert_findings(
                     float(item.get("threat_score") or 0.0),
                     float(item.get("confidence_score") or profile_confidence),
                     int(item.get("exploit_known") or 0),
-                    "open",
+                    "active",
                     item["service_name"],
                     float(item.get("service_confidence") or 0.0),
                     item["service_source"],
@@ -2209,37 +2350,33 @@ def _dashboard_cache_key(project_id: str, window_days: int) -> str:
 
 
 def _get_cached_dashboard(project_id: str, window_days: int) -> dict[str, Any] | None:
-    payload = DASHBOARD_CACHE.get(_dashboard_cache_key(project_id, window_days))
-    if not payload:
-        return None
-    if time.time() - float(payload.get("ts") or 0.0) > DASHBOARD_CACHE_TTL_SECONDS:
-        DASHBOARD_CACHE.pop(_dashboard_cache_key(project_id, window_days), None)
-        return None
-    data = payload.get("data")
-    return data if isinstance(data, dict) else None
+    # Integrity-first mode: always recompute from persisted findings/assets state.
+    return None
 
 
 def _set_cached_dashboard(project_id: str, window_days: int, data: dict[str, Any]) -> None:
-    DASHBOARD_CACHE[_dashboard_cache_key(project_id, window_days)] = {"ts": time.time(), "data": data}
+    # Integrity-first mode: no-op to avoid serving stale in-memory dashboard state.
+    return None
 
 
 def build_soc_dashboard_views(
     assets: list[dict[str, Any]],
     findings: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    active_findings = [finding for finding in findings if normalize_finding_status(str(finding.get("status") or "open")) in {"open", "stale"}]
-    open_findings = [finding for finding in active_findings if normalize_finding_status(str(finding.get("status") or "open")) == "open"]
+    all_findings = [finding for finding in findings if normalize_finding_status(str(finding.get("status") or "active")) in {"active", "stale"}]
+    active_findings = [finding for finding in all_findings if is_active_finding_status(str(finding.get("status") or "active"))]
     assets_by_id = {str(asset.get("id") or ""): asset for asset in assets}
     findings_by_asset: dict[str, list[dict[str, Any]]] = {}
     risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     vulnerability_buckets: dict[tuple[str, str, str], dict[str, Any]] = {}
     service_buckets: dict[tuple[str, int], dict[str, Any]] = {}
 
-    for finding in active_findings:
+    for finding in all_findings:
         asset_id = str(finding.get("asset_id") or "")
-        findings_by_asset.setdefault(asset_id, []).append(finding)
+        if is_active_finding_status(str(finding.get("status") or "active")):
+            findings_by_asset.setdefault(asset_id, []).append(finding)
         severity = normalize_severity(str(finding.get("severity") or "low"))
-        if severity != "info":
+        if severity != "info" and is_active_finding_status(str(finding.get("status") or "active")):
             risk_distribution[severity] += 1
 
         bucket_key = (
@@ -2259,7 +2396,7 @@ def build_soc_dashboard_views(
                 "weighted_confidence": 0.0,
                 "first_seen": str(finding.get("first_seen") or utc_now()),
                 "last_seen": str(finding.get("last_seen") or utc_now()),
-                "status_counts": {"open": 0, "stale": 0},
+                "status_counts": {"active": 0, "stale": 0},
             },
         )
         bucket["severity"] = best_severity(str(bucket.get("severity") or "low"), severity)
@@ -2268,36 +2405,42 @@ def build_soc_dashboard_views(
         bucket["weighted_confidence"] += float(finding.get("confidence_score") or 0.0)
         bucket["first_seen"] = min(str(bucket.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
         bucket["last_seen"] = max(str(bucket.get("last_seen") or utc_now()), str(finding.get("last_seen") or utc_now()))
-        bucket["status_counts"][normalize_finding_status(str(finding.get("status") or "open"))] += 1
+        bucket["status_counts"][normalize_finding_status(str(finding.get("status") or "active"))] += 1
 
-        if str(finding.get("finding_type") or "") == "exposed_port":
-            port_value = int(finding.get("port") or 0)
-            if port_value <= 0:
-                continue
-            if str(finding.get("service_name") or "unknown").strip().lower() == "unknown":
-                continue
-            service_key = (str(finding.get("service_name") or "unknown"), port_value)
-            service_bucket = service_buckets.setdefault(
-                service_key,
-                {
-                    "service": str(finding.get("service_name") or "unknown"),
-                    "version": str(finding.get("version") or ""),
-                    "count": 0,
-                    "asset_set": set(),
-                    "ports": set(),
-                    "product": str(finding.get("product") or ""),
-                    "first_seen": str(finding.get("first_seen") or utc_now()),
-                    "last_seen": str(finding.get("last_seen") or utc_now()),
-                    "confidence": 0.0,
-                    "source": str(finding.get("service_source") or "heuristic"),
-                },
-            )
-            service_bucket["count"] += 1
-            service_bucket["asset_set"].add(str(finding.get("host") or ""))
-            service_bucket["ports"].add(port_value)
-            service_bucket["confidence"] = max(float(service_bucket.get("confidence") or 0.0), float(finding.get("service_confidence") or 0.0))
-            service_bucket["first_seen"] = min(str(service_bucket.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
-            service_bucket["last_seen"] = max(str(service_bucket.get("last_seen") or utc_now()), str(finding.get("last_seen") or utc_now()))
+        if not is_active_finding_status(str(finding.get("status") or "active")):
+            continue
+        port_value = int(finding.get("port") or 0)
+        service_name = str(finding.get("service_name") or "unknown").strip().lower()
+        finding_type = str(finding.get("finding_type") or finding.get("type") or "").strip().lower()
+        if port_value <= 0 and finding_type != "host_correlation":
+            continue
+        if port_value <= 0:
+            continue
+        if service_name in {"", "unknown", "-", "host"}:
+            continue
+
+        service_key = (service_name, port_value)
+        service_bucket = service_buckets.setdefault(
+            service_key,
+            {
+                "service": service_name,
+                "version": str(finding.get("version") or ""),
+                "count": 0,
+                "asset_set": set(),
+                "ports": set(),
+                "product": str(finding.get("product") or ""),
+                "first_seen": str(finding.get("first_seen") or utc_now()),
+                "last_seen": str(finding.get("last_seen") or utc_now()),
+                "confidence": 0.0,
+                "source": str(finding.get("service_source") or "heuristic"),
+            },
+        )
+        service_bucket["count"] += 1
+        service_bucket["asset_set"].add(str(finding.get("host") or ""))
+        service_bucket["ports"].add(port_value)
+        service_bucket["confidence"] = max(float(service_bucket.get("confidence") or 0.0), float(finding.get("service_confidence") or 0.0))
+        service_bucket["first_seen"] = min(str(service_bucket.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
+        service_bucket["last_seen"] = max(str(service_bucket.get("last_seen") or utc_now()), str(finding.get("last_seen") or utc_now()))
 
     top_assets: list[dict[str, Any]] = []
     for asset in assets:
@@ -2379,7 +2522,7 @@ def build_soc_dashboard_views(
                 "weighted_confidence": round(float(bucket["weighted_confidence"] or 0.0), 2),
                 "first_seen": bucket["first_seen"],
                 "last_seen": bucket["last_seen"],
-                "open_count": int(bucket["status_counts"].get("open") or 0),
+                "open_count": int(bucket["status_counts"].get("active") or 0),
                 "stale_count": int(bucket["status_counts"].get("stale") or 0),
             }
             for bucket in vulnerability_buckets.values()
@@ -2395,16 +2538,23 @@ def build_soc_dashboard_views(
         1,
     ) if top_assets else 0.0
 
+    active_dedup_keys = {
+        str(finding.get("dedup_key") or finding.get("vuln_key") or "")
+        for finding in active_findings
+        if str(finding.get("dedup_key") or finding.get("vuln_key") or "")
+    }
+    affected_asset_ids = {str(finding.get("asset_id") or "") for finding in active_findings if str(finding.get("asset_id") or "")}
+
     return {
         "totals": {
-            "active_vulnerabilities": len(open_findings),
-            "findings": len(open_findings),
-            "stale_vulnerabilities": len([finding for finding in active_findings if normalize_finding_status(str(finding.get("status") or "open")) == "stale"]),
-            "affected_assets": affected_assets,
+            "active_vulnerabilities": len(active_dedup_keys),
+            "findings": len(active_dedup_keys),
+            "stale_vulnerabilities": len([finding for finding in all_findings if normalize_finding_status(str(finding.get("status") or "active")) == "stale"]),
+            "affected_assets": len(affected_asset_ids) if affected_asset_ids else affected_assets,
             "critical_assets": critical_assets,
             "risk_score": average_asset_risk,
             "avg_risk": average_asset_risk,
-            "open_ports": sum(1 for finding in open_findings if str(finding.get("finding_type") or "") == "exposed_port"),
+            "open_ports": len({int(finding.get("port") or 0) for finding in active_findings if int(finding.get("port") or 0) > 0}),
             "exposed_services": len(service_inventory),
             "cve_count": sum(1 for finding in active_findings if str(finding.get("cve") or "").strip()),
         },
@@ -2458,7 +2608,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         severity_timeline = severity_timeline_from_rows(trend_source_rows)
         recent_rows = list(db.reports.find({"project_id": project_id}, {"_id": 0, "id": 1, "created_at": 1, "target": 1, "profile": 1, "risk_level": 1, "true_risk_score": 1, "total_findings": 1}).sort("created_at", DESCENDING).limit(12))
         assets = list(db.assets.find({"project_id": project_id}, {"_id": 0, "id": 1, "value": 1, "tags": 1, "criticality": 1, "created_at": 1}))
-        findings = list(db.findings.find({"project_id": project_id, "status": {"$in": ["open", "stale"]}}, {"_id": 0}))
+        findings = list(db.findings.find({"project_id": project_id, "status": {"$in": ["active", "open", "stale"]}}, {"_id": 0}))
     else:
         with db_connection() as connection:
             project = fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (project_id,))
@@ -2469,7 +2619,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             severity_timeline = severity_timeline_from_rows(trend_source_rows)
             recent_rows = fetchall(connection, "SELECT id, created_at, target, profile, risk_level, true_risk_score, total_findings FROM reports WHERE project_id = ? ORDER BY created_at DESC LIMIT 12", (project_id,))
             assets = fetchall(connection, "SELECT id, value, tags_json, criticality, created_at FROM assets WHERE project_id = ? ORDER BY created_at ASC", (project_id,))
-            findings = fetchall(connection, "SELECT * FROM findings WHERE project_id = ? AND status IN ('open', 'stale')", (project_id,))
+            findings = fetchall(connection, "SELECT * FROM findings WHERE project_id = ? AND status IN ('active', 'open', 'stale')", (project_id,))
         for asset in assets:
             try:
                 asset["tags"] = json.loads(str(asset.get("tags_json") or "[]"))
@@ -2530,7 +2680,7 @@ def get_project_findings(
             db.findings.find(
                 {
                     "project_id": project_id,
-                    "status": {"$in": ["open", "stale"]},
+                    "status": {"$in": ["active", "open", "stale"]},
                     "last_seen": {"$gte": since},
                 },
                 {"_id": 0},
@@ -2543,7 +2693,7 @@ def get_project_findings(
                 """
                   SELECT *
                 FROM findings
-                  WHERE project_id = ? AND status IN ('open', 'stale') AND last_seen >= ?
+                  WHERE project_id = ? AND status IN ('active', 'open', 'stale') AND last_seen >= ?
                 """,
                 (project_id, since),
             )
@@ -2581,7 +2731,7 @@ def get_project_findings(
                 "advanced_risk_score": float(row.get("risk_score") or 0.0),
                 "threat_score": float(row.get("threat_score") or 0.0),
                 "risk_level": "low",
-                "status": normalize_finding_status(str(row.get("status") or "open")),
+                "status": normalize_finding_status(str(row.get("status") or "active")),
                 "weighted_confidence": float(row.get("confidence_score") or 0.0),
                 "confidence": "high" if float(row.get("confidence_score") or 0.0) >= 0.9 else "medium" if float(row.get("confidence_score") or 0.0) >= 0.7 else "low",
                 "asset_criticality": "medium",
@@ -2605,7 +2755,7 @@ def get_project_findings(
         bucket["threat_score"] = max(float(bucket.get("threat_score") or 0.0), float(row.get("threat_score") or 0.0))
         bucket["weighted_confidence"] = max(float(bucket.get("weighted_confidence") or 0.0), float(row.get("confidence_score") or 0.0))
         bucket["exploit_known"] = bool(bucket.get("exploit_known")) or bool(row.get("exploit_known"))
-        bucket["status"] = "open" if normalize_finding_status(str(row.get("status") or "open")) == "open" else str(bucket.get("status") or "stale")
+        bucket["status"] = "active" if normalize_finding_status(str(row.get("status") or "active")) == "active" else str(bucket.get("status") or "stale")
         bucket["remediation_priority"] = "immediate" if str(row.get("remediation_priority") or "scheduled") == "immediate" else str(bucket.get("remediation_priority") or "scheduled")
         if str(row.get("remediation_text") or ""):
             bucket["remediation_text"] = str(row.get("remediation_text") or "")
@@ -3961,9 +4111,37 @@ def get_latest_scan_for_export(project_id: str, scope: str) -> dict[str, Any] | 
         report_id = get_project_last_scan_id(project_id)
         if not report_id:
             entries = list_report_entries(limit=1, project_id=project_id)
-            if not entries:
-                return None
-            report_id = str(entries[0].get("id") or "")
+            if entries:
+                report_id = str(entries[0].get("id") or "")
+        if not report_id:
+            if use_mongodb():
+                db = get_mongo_db()
+                row = db.findings.find_one(
+                    {
+                        "project_id": project_id,
+                        "status": {"$in": ["active", "open", "stale"]},
+                        "scan_id": {"$nin": [None, ""]},
+                    },
+                    {"_id": 0, "scan_id": 1},
+                    sort=[("last_seen", DESCENDING)],
+                ) or {}
+                report_id = str(row.get("scan_id") or "")
+            else:
+                with db_connection() as connection:
+                    row = fetchone(
+                        connection,
+                        """
+                        SELECT scan_id
+                        FROM findings
+                        WHERE project_id = ?
+                          AND status IN ('active', 'open', 'stale')
+                          AND TRIM(COALESCE(scan_id, '')) != ''
+                        ORDER BY last_seen DESC
+                        LIMIT 1
+                        """,
+                        (project_id,),
+                    ) or {}
+                report_id = str(row.get("scan_id") or "")
         if not report_id:
             return None
         report_data = get_report_entry(report_id)
@@ -6287,6 +6465,124 @@ def project_assets_api(project_id: str) -> Any:
         if not get_project(project_id):
             return jsonify({"error": "Project not found."}), 404
         return jsonify({"items": list_assets(project_id, tags=tags)})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>/assets/<asset_id>")
+def project_asset_detail_api(project_id: str, asset_id: str) -> Any:
+    try:
+        project = get_project(project_id)
+        if not project:
+            return jsonify({"error": "Project not found."}), 404
+
+        if use_mongodb():
+            db = get_mongo_db()
+            asset = db.assets.find_one({"id": asset_id, "project_id": project_id}, {"_id": 0})
+            if not asset:
+                return jsonify({"error": "Asset not found."}), 404
+            findings_rows = list(
+                db.findings.find(
+                    {"project_id": project_id, "asset_id": asset_id, "status": {"$in": ["active", "open", "stale"]}},
+                    {"_id": 0},
+                )
+            )
+        else:
+            with db_connection() as connection:
+                asset = fetchone(
+                    connection,
+                    "SELECT id, project_id, value, tags_json, criticality, created_at FROM assets WHERE id = ? AND project_id = ?",
+                    (asset_id, project_id),
+                )
+                if not asset:
+                    return jsonify({"error": "Asset not found."}), 404
+                findings_rows = fetchall(
+                    connection,
+                    "SELECT * FROM findings WHERE project_id = ? AND asset_id = ? AND status IN ('active', 'open', 'stale') ORDER BY last_seen DESC",
+                    (project_id, asset_id),
+                )
+            try:
+                asset["tags"] = json.loads(str(asset.get("tags_json") or "[]"))
+            except Exception:
+                asset["tags"] = []
+
+        normalized_findings: list[dict[str, Any]] = []
+        port_buckets: dict[tuple[str, int], dict[str, Any]] = {}
+        services: set[str] = set()
+        risk_score = 0.0
+        first_seen = str(asset.get("created_at") or utc_now())
+        last_seen = str(asset.get("created_at") or utc_now())
+
+        for row in findings_rows:
+            status = normalize_finding_status(str(row.get("status") or "active"))
+            row_port = int(row.get("port") or 0)
+            row_service = str(row.get("service_name") or "unknown").strip().lower()
+            row_risk = max(float(row.get("risk_score") or 0.0), float(row.get("threat_score") or 0.0))
+            first_seen = min(first_seen, str(row.get("first_seen") or first_seen))
+            last_seen = max(last_seen, str(row.get("last_seen") or last_seen))
+
+            if status == "active":
+                risk_score = max(risk_score, row_risk)
+                if row_port > 0 and row_service not in {"", "unknown", "-", "host"}:
+                    services.add(f"{row_service}:{row_port}")
+                    key = (row_service, row_port)
+                    bucket = port_buckets.setdefault(
+                        key,
+                        {
+                            "port": row_port,
+                            "service_name": row_service,
+                            "count": 0,
+                            "highest_severity": "low",
+                            "risk_score": 0.0,
+                        },
+                    )
+                    bucket["count"] += 1
+                    bucket["highest_severity"] = best_severity(str(bucket.get("highest_severity") or "low"), str(row.get("severity") or "low"))
+                    bucket["risk_score"] = max(float(bucket.get("risk_score") or 0.0), row_risk)
+
+            normalized_findings.append(
+                {
+                    "id": str(row.get("id") or ""),
+                    "title": str(row.get("title") or "Finding"),
+                    "severity": normalize_severity(str(row.get("severity") or "low")),
+                    "status": status,
+                    "type": str(row.get("finding_type") or row.get("type") or "-"),
+                    "host": str(row.get("host") or row.get("asset") or ""),
+                    "port": row_port,
+                    "service_name": row_service,
+                    "cve": str(row.get("cve") or ""),
+                    "evidence": str(row.get("evidence") or "-"),
+                    "risk_score": round(float(row.get("risk_score") or 0.0), 1),
+                    "threat_score": round(float(row.get("threat_score") or 0.0), 1),
+                    "last_seen": str(row.get("last_seen") or ""),
+                    "remediation_text": str(row.get("remediation_text") or ""),
+                    "remediation_priority": str(row.get("remediation_priority") or "scheduled"),
+                }
+            )
+
+        payload_asset = {
+            "id": str(asset.get("id") or asset_id),
+            "project_id": str(asset.get("project_id") or project_id),
+            "value": str(asset.get("value") or ""),
+            "host": str(asset.get("value") or ""),
+            "tags": sorted({str(tag).strip().lower() for tag in (asset.get("tags") or []) if str(tag).strip()}),
+            "criticality": normalize_asset_criticality(str(asset.get("criticality") or "medium")),
+            "created_at": str(asset.get("created_at") or utc_now()),
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "risk_score": round(risk_score, 1),
+            "open_ports": len({int(item.get("port") or 0) for item in normalized_findings if item.get("status") == "active" and int(item.get("port") or 0) > 0}),
+            "findings": len([item for item in normalized_findings if item.get("status") == "active"]),
+            "services": sorted(services),
+        }
+
+        return jsonify(
+            {
+                "asset": payload_asset,
+                "findings": normalized_findings,
+                "ports": sorted(port_buckets.values(), key=lambda item: (int(item.get("port") or 0), str(item.get("service_name") or ""))),
+            }
+        )
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
 
