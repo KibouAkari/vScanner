@@ -401,12 +401,68 @@ def infer_finding_confidence(evidence: str, cve: str, banner: str = "") -> str:
     return "low"
 
 
+def normalize_finding_title(title: str) -> str:
+    value = re.sub(r"\s+", " ", str(title or "").strip().lower())
+    value = re.sub(r"\bport\s+\d+\b", "port", value)
+    value = re.sub(r"\b\d+\.\d+(?:\.\d+)?\b", "<ver>", value)
+    return value or "finding"
+
+
+def infer_service_identity(port: int, name: str = "", product: str = "", banner: str = "") -> tuple[str, float, str]:
+    raw_name = str(name or "").strip().lower()
+    raw_product = str(product or "").strip().lower()
+    raw_banner = str(banner or "").strip().lower()
+
+    if raw_name and raw_name not in {"unknown", "-"}:
+        return raw_name, 0.95, "fingerprint"
+
+    product_markers = [
+        ("nginx", "http"),
+        ("apache", "http"),
+        ("iis", "http"),
+        ("openssh", "ssh"),
+        ("postgres", "postgresql"),
+        ("mysql", "mysql"),
+        ("mongo", "mongodb"),
+        ("redis", "redis"),
+        ("elasticsearch", "elasticsearch"),
+    ]
+    for marker, resolved in product_markers:
+        if marker in raw_product:
+            return resolved, 0.9, "product"
+
+    banner_markers = [
+        ("http/", "http"),
+        ("server:", "http"),
+        ("ssh-", "ssh"),
+        ("smtp", "smtp"),
+        ("imap", "imap"),
+        ("pop3", "pop3"),
+        ("mysql", "mysql"),
+        ("postgres", "postgresql"),
+        ("redis", "redis"),
+        ("mongo", "mongodb"),
+    ]
+    for marker, resolved in banner_markers:
+        if marker in raw_banner:
+            return resolved, 0.82, "banner"
+
+    default_name = str(COMMON_SERVICE_NAMES.get(int(port or 0), "unknown") or "unknown").strip().lower()
+    if default_name != "unknown":
+        return default_name, 0.68, "default"
+    return "unknown", 0.45, "heuristic"
+
+
 def finding_vuln_key(finding: dict[str, Any]) -> str:
+    try:
+        port_value = int(finding.get("port") or 0)
+    except Exception:
+        port_value = 0
     joined = "|".join(
         [
+            str(port_value),
             str(finding.get("type", "-")).strip().lower(),
-            str(finding.get("title", "-")).strip().lower(),
-            str(finding.get("cve", "")).strip().upper(),
+            normalize_finding_title(str(finding.get("title", "-")).strip()),
         ]
     )
     return hashlib.sha1(joined.encode("utf-8")).hexdigest()
@@ -512,6 +568,14 @@ def ensure_mongo_indexes() -> None:
     )
     db.findings.create_index([("project_id", ASCENDING), ("last_seen", DESCENDING)])
     db.findings.create_index([("project_id", ASCENDING), ("severity", ASCENDING)])
+    db.findings.create_index([("project_id", ASCENDING), ("asset", ASCENDING), ("port", ASCENDING)])
+    db.findings.create_index([("project_id", ASCENDING), ("title_norm", ASCENDING)])
+
+    db.assets.create_index([("id", ASCENDING)], unique=True)
+    db.assets.create_index([("project_id", ASCENDING), ("value", ASCENDING)], unique=True)
+    db.assets.create_index([("project_id", ASCENDING), ("tags", ASCENDING)])
+
+    db.project_settings.create_index([("project_id", ASCENDING)], unique=True)
 
 
 def migrate_sql_reports_to_mongo(
@@ -697,6 +761,21 @@ def init_report_store() -> None:
             },
             upsert=True,
         )
+        db.project_settings.update_one(
+            {"project_id": DEFAULT_PROJECT_ID},
+            {
+                "$setOnInsert": {
+                    "project_id": DEFAULT_PROJECT_ID,
+                    "settings": {
+                        "asset_profiles": {},
+                        "tag_filters": [],
+                        "schedules": [],
+                    },
+                    "updated_at": utc_now(),
+                }
+            },
+            upsert=True,
+        )
         DB_READY = True
         return
 
@@ -739,11 +818,15 @@ def init_report_store() -> None:
                 project_id TEXT NOT NULL,
                 asset TEXT NOT NULL,
                 vuln_key TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 0,
+                title_norm TEXT NOT NULL DEFAULT '',
                 severity TEXT NOT NULL,
                 title TEXT NOT NULL,
                 evidence TEXT NOT NULL,
                 finding_type TEXT NOT NULL,
                 cve TEXT NOT NULL,
+                risk_score REAL NOT NULL DEFAULT 0,
+                visibility_reduced INTEGER NOT NULL DEFAULT 0,
                 first_seen TEXT NOT NULL,
                 last_seen TEXT NOT NULL,
                 occurrence_count INTEGER NOT NULL DEFAULT 1,
@@ -755,11 +838,67 @@ def init_report_store() -> None:
         execute(
             connection,
             """
+            CREATE TABLE IF NOT EXISTS assets (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                value TEXT NOT NULL,
+                tags_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                UNIQUE(project_id, value)
+            )
+            """,
+        )
+
+        execute(
+            connection,
+            """
+            CREATE TABLE IF NOT EXISTS project_settings (
+                project_id TEXT PRIMARY KEY,
+                settings_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        )
+
+        # Additive migrations for existing deployments.
+        additive_columns = [
+            ("findings", "port", "INTEGER NOT NULL DEFAULT 0"),
+            ("findings", "title_norm", "TEXT NOT NULL DEFAULT ''"),
+            ("findings", "risk_score", "REAL NOT NULL DEFAULT 0"),
+            ("findings", "visibility_reduced", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        for table_name, col_name, col_def in additive_columns:
+            try:
+                execute(connection, f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_def}")
+            except Exception:
+                pass
+
+        execute(
+            connection,
+            """
             INSERT INTO projects (id, name, created_at)
             VALUES (?, ?, ?)
             ON CONFLICT(id) DO NOTHING
             """,
             (DEFAULT_PROJECT_ID, DEFAULT_PROJECT_NAME, utc_now()),
+        )
+
+        execute(
+            connection,
+            """
+            INSERT INTO project_settings (project_id, settings_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(project_id) DO NOTHING
+            """,
+            (
+                DEFAULT_PROJECT_ID,
+                json.dumps({
+                    "asset_profiles": {},
+                    "tag_filters": [],
+                    "schedules": [],
+                }),
+                utc_now(),
+            ),
         )
 
         connection.commit()
@@ -880,6 +1019,204 @@ def create_project(name: str) -> dict[str, Any]:
     return {"id": project_id, "name": clean_name, "created_at": now}
 
 
+def list_assets(project_id: str, tags: list[str] | None = None) -> list[dict[str, Any]]:
+    if not DB_READY:
+        return []
+
+    normalized_tags = sorted({str(tag).strip().lower() for tag in (tags or []) if str(tag).strip()})
+
+    if use_mongodb():
+        db = get_mongo_db()
+        query: dict[str, Any] = {"project_id": project_id}
+        if normalized_tags:
+            query["tags"] = {"$in": normalized_tags}
+        rows = list(
+            db.assets.find(
+                query,
+                {"_id": 0, "id": 1, "project_id": 1, "value": 1, "tags": 1, "created_at": 1},
+            ).sort("created_at", ASCENDING)
+        )
+        for row in rows:
+            row["tags"] = sorted({str(tag).strip().lower() for tag in (row.get("tags") or []) if str(tag).strip()})
+        return rows
+
+    with db_connection() as connection:
+        rows = fetchall(
+            connection,
+            "SELECT id, project_id, value, tags_json, created_at FROM assets WHERE project_id = ? ORDER BY created_at ASC",
+            (project_id,),
+        )
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            row_tags = json.loads(str(row.get("tags_json") or "[]"))
+        except Exception:
+            row_tags = []
+        row_tags = sorted({str(tag).strip().lower() for tag in (row_tags or []) if str(tag).strip()})
+        if normalized_tags and not set(row_tags).intersection(normalized_tags):
+            continue
+        out.append(
+            {
+                "id": str(row.get("id") or ""),
+                "project_id": str(row.get("project_id") or project_id),
+                "value": str(row.get("value") or ""),
+                "tags": row_tags,
+                "created_at": str(row.get("created_at") or utc_now()),
+            }
+        )
+    return out
+
+
+def add_asset(project_id: str, value: str, tags: list[str] | None = None) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Storage is currently unavailable.")
+
+    asset_value = str(value or "").strip()
+    if not asset_value:
+        raise ScanInputError("Asset value is required.")
+
+    normalized_tags = sorted({str(tag).strip().lower() for tag in (tags or []) if str(tag).strip()})
+    now = utc_now()
+    asset_id = str(uuid.uuid4())
+
+    if use_mongodb():
+        db = get_mongo_db()
+        existing = db.assets.find_one({"project_id": project_id, "value": asset_value}, {"_id": 0, "id": 1})
+        if existing:
+            raise ScanInputError("Asset already exists in project.")
+        db.assets.insert_one(
+            {
+                "id": asset_id,
+                "project_id": project_id,
+                "value": asset_value,
+                "tags": normalized_tags,
+                "created_at": now,
+            }
+        )
+        return {"id": asset_id, "project_id": project_id, "value": asset_value, "tags": normalized_tags, "created_at": now}
+
+    with db_connection() as connection:
+        try:
+            execute(
+                connection,
+                "INSERT INTO assets (id, project_id, value, tags_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                (asset_id, project_id, asset_value, json.dumps(normalized_tags), now),
+            )
+            connection.commit()
+        except Exception as exc:
+            if "unique" in str(exc).lower() or "duplicate" in str(exc).lower():
+                raise ScanInputError("Asset already exists in project.")
+            raise
+    return {"id": asset_id, "project_id": project_id, "value": asset_value, "tags": normalized_tags, "created_at": now}
+
+
+def update_asset_tags(project_id: str, asset_id: str, tags: list[str]) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Storage is currently unavailable.")
+
+    normalized_tags = sorted({str(tag).strip().lower() for tag in (tags or []) if str(tag).strip()})
+
+    if use_mongodb():
+        db = get_mongo_db()
+        result = db.assets.find_one_and_update(
+            {"id": asset_id, "project_id": project_id},
+            {"$set": {"tags": normalized_tags}},
+            return_document=True,
+            projection={"_id": 0, "id": 1, "project_id": 1, "value": 1, "tags": 1, "created_at": 1},
+        )
+        if not result:
+            raise ScanInputError("Asset not found.")
+        return {
+            "id": str(result.get("id") or asset_id),
+            "project_id": str(result.get("project_id") or project_id),
+            "value": str(result.get("value") or ""),
+            "tags": normalized_tags,
+            "created_at": str(result.get("created_at") or utc_now()),
+        }
+
+    with db_connection() as connection:
+        existing = fetchone(connection, "SELECT id, project_id, value, created_at FROM assets WHERE id = ? AND project_id = ?", (asset_id, project_id))
+        if not existing:
+            raise ScanInputError("Asset not found.")
+        execute(connection, "UPDATE assets SET tags_json = ? WHERE id = ? AND project_id = ?", (json.dumps(normalized_tags), asset_id, project_id))
+        connection.commit()
+    return {
+        "id": str(existing.get("id") or asset_id),
+        "project_id": str(existing.get("project_id") or project_id),
+        "value": str(existing.get("value") or ""),
+        "tags": normalized_tags,
+        "created_at": str(existing.get("created_at") or utc_now()),
+    }
+
+
+def get_project_settings(project_id: str) -> dict[str, Any]:
+    default_settings = {
+        "asset_profiles": {},
+        "tag_filters": [],
+        "schedules": [],
+    }
+    if not DB_READY:
+        return default_settings
+
+    if use_mongodb():
+        db = get_mongo_db()
+        row = db.project_settings.find_one({"project_id": project_id}, {"_id": 0, "settings": 1})
+        if row and isinstance(row.get("settings"), dict):
+            return row.get("settings")
+        return default_settings
+
+    with db_connection() as connection:
+        row = fetchone(connection, "SELECT settings_json FROM project_settings WHERE project_id = ?", (project_id,))
+    if not row:
+        return default_settings
+    try:
+        parsed = json.loads(str(row.get("settings_json") or "{}"))
+    except Exception:
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    return {
+        "asset_profiles": parsed.get("asset_profiles") or {},
+        "tag_filters": parsed.get("tag_filters") or [],
+        "schedules": parsed.get("schedules") or [],
+    }
+
+
+def update_project_settings(project_id: str, settings: dict[str, Any]) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Storage is currently unavailable.")
+
+    normalized = {
+        "asset_profiles": dict(settings.get("asset_profiles") or {}),
+        "tag_filters": [str(x).strip().lower() for x in (settings.get("tag_filters") or []) if str(x).strip()],
+        "schedules": list(settings.get("schedules") or []),
+    }
+    now = utc_now()
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.project_settings.update_one(
+            {"project_id": project_id},
+            {"$set": {"settings": normalized, "updated_at": now}},
+            upsert=True,
+        )
+        return normalized
+
+    with db_connection() as connection:
+        execute(
+            connection,
+            """
+            INSERT INTO project_settings (project_id, settings_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(project_id) DO UPDATE SET settings_json = excluded.settings_json, updated_at = excluded.updated_at
+            """,
+            (project_id, json.dumps(normalized), now),
+        )
+        connection.commit()
+    return normalized
+
+
 def reset_project_data(project_id: str) -> dict[str, int]:
     if not DB_READY:
         raise ScanInputError("Storage is currently unavailable.")
@@ -964,7 +1301,13 @@ def rebuild_project_findings(project_id: str) -> None:
             connection.commit()
 
     for payload in _iter_project_report_payloads(project_id):
-        upsert_findings(project_id, payload.get("finding_items", []))
+        scanned_assets = [str(h.get("host") or "-").strip().lower() for h in (payload.get("hosts") or [])]
+        upsert_findings(
+            project_id,
+            payload.get("finding_items", []),
+            profile=str(payload.get("meta", {}).get("profile") or "light"),
+            scanned_assets=scanned_assets,
+        )
 
 
 def delete_report_entry(report_id: str) -> dict[str, Any]:
@@ -1129,7 +1472,13 @@ def get_report_entry(report_id: str) -> dict[str, Any] | None:
     return payload
 
 
-def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> None:
+def upsert_findings(
+    project_id: str,
+    finding_items: list[dict[str, Any]],
+    *,
+    profile: str = "light",
+    scanned_assets: list[str] | None = None,
+) -> None:
     if not DB_READY:
         return
 
@@ -1137,20 +1486,31 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
     for item in finding_items:
         asset = str(item.get("host") or "-").strip().lower()
         vuln_key = finding_vuln_key(item)
+        try:
+            port_value = int(item.get("port") or 0)
+        except Exception:
+            port_value = 0
+        risk_value = float(item.get("advanced_risk_score") or 0.0)
+        title_raw = str(item.get("title") or "Finding")
         unique_scan_items[(asset, vuln_key)] = {
             "asset": asset,
             "vuln_key": vuln_key,
+            "port": port_value,
+            "title_norm": normalize_finding_title(title_raw),
             "severity": normalize_severity(str(item.get("severity", "low"))),
-            "title": str(item.get("title") or "Finding"),
+            "title": title_raw,
             "evidence": str(item.get("evidence") or "-"),
             "finding_type": str(item.get("type") or "-").lower(),
             "cve": str(item.get("cve") or "").upper(),
+            "risk_score": risk_value,
         }
 
     if not unique_scan_items:
         return
 
     now = utc_now()
+    normalized_profile = canonical_profile(profile)
+    scanned_asset_set = {str(a or "-").strip().lower() for a in (scanned_assets or []) if str(a or "").strip()}
 
     if use_mongodb():
         db = get_mongo_db()
@@ -1161,11 +1521,13 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                     "asset": item["asset"],
                     "vuln_key": item["vuln_key"],
                 },
-                {"_id": 0, "severity": 1},
+                {"_id": 0, "severity": 1, "risk_score": 1},
             )
             merged_severity = item["severity"]
+            merged_risk = float(item.get("risk_score") or 0.0)
             if existing:
                 merged_severity = best_severity(str(existing.get("severity", "low")), merged_severity)
+                merged_risk = max(float(existing.get("risk_score") or 0.0), merged_risk)
 
             db.findings.update_one(
                 {
@@ -1179,6 +1541,8 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                         "project_id": project_id,
                         "asset": item["asset"],
                         "vuln_key": item["vuln_key"],
+                        "port": int(item.get("port") or 0),
+                        "title_norm": str(item.get("title_norm") or "finding"),
                         "first_seen": now,
                         "occurrence_count": 0,
                     },
@@ -1188,11 +1552,27 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                         "evidence": item["evidence"],
                         "finding_type": item["finding_type"],
                         "cve": item["cve"],
+                        "risk_score": merged_risk,
+                        "visibility_reduced": False,
                         "last_seen": now,
                     },
                     "$inc": {"occurrence_count": 1},
                 },
                 upsert=True,
+            )
+
+        # Stealth scans should not implicitly clear previously known findings.
+        if normalized_profile == "stealth" and scanned_asset_set:
+            db.findings.update_many(
+                {
+                    "project_id": project_id,
+                    "asset": {"$in": sorted(scanned_asset_set)},
+                    "$or": [
+                        {"last_seen": {"$lt": now}},
+                        {"last_seen": {"$exists": False}},
+                    ],
+                },
+                {"$set": {"visibility_reduced": True}},
             )
         return
 
@@ -1202,9 +1582,9 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                 connection,
                 """
                 INSERT INTO findings (
-                    id, project_id, asset, vuln_key, severity, title, evidence, finding_type, cve,
-                    first_seen, last_seen, occurrence_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    id, project_id, asset, vuln_key, port, title_norm, severity, title, evidence, finding_type, cve,
+                    risk_score, visibility_reduced, first_seen, last_seen, occurrence_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)
                 ON CONFLICT(project_id, asset, vuln_key)
                 DO UPDATE SET
                     severity = CASE
@@ -1221,6 +1601,8 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                     evidence = excluded.evidence,
                     finding_type = excluded.finding_type,
                     cve = excluded.cve,
+                    risk_score = CASE WHEN excluded.risk_score > findings.risk_score THEN excluded.risk_score ELSE findings.risk_score END,
+                    visibility_reduced = 0,
                     last_seen = excluded.last_seen,
                     occurrence_count = findings.occurrence_count + 1
                 """,
@@ -1229,14 +1611,80 @@ def upsert_findings(project_id: str, finding_items: list[dict[str, Any]]) -> Non
                     project_id,
                     item["asset"],
                     item["vuln_key"],
+                    int(item.get("port") or 0),
+                    str(item.get("title_norm") or "finding"),
                     item["severity"],
                     item["title"],
                     item["evidence"],
                     item["finding_type"],
                     item["cve"],
+                    float(item.get("risk_score") or 0.0),
                     now,
                     now,
                 ),
+            )
+
+        if normalized_profile == "stealth" and scanned_asset_set:
+            placeholders = ",".join(["?"] * len(scanned_asset_set))
+            execute(
+                connection,
+                f"""
+                UPDATE findings
+                SET visibility_reduced = 1
+                WHERE project_id = ?
+                  AND asset IN ({placeholders})
+                  AND last_seen < ?
+                """,
+                (project_id, *sorted(scanned_asset_set), now),
+            )
+        connection.commit()
+
+
+def sync_assets_from_scan(project_id: str, result: dict[str, Any]) -> None:
+    if not DB_READY:
+        return
+
+    values: set[str] = set()
+    target_value = str(result.get("meta", {}).get("target") or "").strip()
+    if target_value and "," not in target_value:
+        values.add(target_value)
+    for host in result.get("hosts") or []:
+        host_value = str(host.get("host") or "").strip()
+        if host_value:
+            values.add(host_value)
+
+    if not values:
+        return
+
+    now = utc_now()
+    if use_mongodb():
+        db = get_mongo_db()
+        for value in sorted(values):
+            db.assets.update_one(
+                {"project_id": project_id, "value": value},
+                {
+                    "$setOnInsert": {
+                        "id": str(uuid.uuid4()),
+                        "project_id": project_id,
+                        "value": value,
+                        "tags": [],
+                        "created_at": now,
+                    }
+                },
+                upsert=True,
+            )
+        return
+
+    with db_connection() as connection:
+        for value in sorted(values):
+            execute(
+                connection,
+                """
+                INSERT INTO assets (id, project_id, value, tags_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, value) DO NOTHING
+                """,
+                (str(uuid.uuid4()), project_id, value, "[]", now),
             )
         connection.commit()
 
@@ -1248,6 +1696,7 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
 
     metrics = result.get("metrics", {})
     created_at = utc_now()
+    sync_assets_from_scan(project_id, result)
 
     if use_mongodb():
         db = get_mongo_db()
@@ -1268,7 +1717,12 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
                 "data_json": result,
             }
         )
-        upsert_findings(project_id, result.get("finding_items", []))
+        upsert_findings(
+            project_id,
+            result.get("finding_items", []),
+            profile=str(result.get("meta", {}).get("profile") or "light"),
+            scanned_assets=[str(h.get("host") or "-").strip().lower() for h in (result.get("hosts") or [])],
+        )
         return report_id
 
     with db_connection() as connection:
@@ -1298,7 +1752,12 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
         )
         connection.commit()
 
-    upsert_findings(project_id, result.get("finding_items", []))
+    upsert_findings(
+        project_id,
+        result.get("finding_items", []),
+        profile=str(result.get("meta", {}).get("profile") or "light"),
+        scanned_assets=[str(h.get("host") or "-").strip().lower() for h in (result.get("hosts") or [])],
+    )
     return report_id
 
 
@@ -1373,9 +1832,9 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             .limit(12)
         )
 
-        window_report_rows = list(
+        all_report_rows = list(
             db.reports.find(
-                {"project_id": project_id, "created_at": {"$gte": since}},
+                {"project_id": project_id},
                 {
                     "_id": 0,
                     "created_at": 1,
@@ -1391,26 +1850,39 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             )
         )
 
-        views = build_dashboard_exposure_views(window_report_rows)
+        current_findings = list(
+            db.findings.find(
+                {"project_id": project_id},
+                {
+                    "_id": 0,
+                    "asset": 1,
+                    "vuln_key": 1,
+                    "port": 1,
+                    "title_norm": 1,
+                    "severity": 1,
+                    "title": 1,
+                    "evidence": 1,
+                    "finding_type": 1,
+                    "cve": 1,
+                    "risk_score": 1,
+                    "visibility_reduced": 1,
+                    "first_seen": 1,
+                    "last_seen": 1,
+                    "occurrence_count": 1,
+                },
+            )
+        )
+
+        views = build_dashboard_exposure_views(all_report_rows, current_findings=current_findings)
 
         mongo_totals: dict[str, Any] = {
             "scans": len(trend_rows),
-            "avg_risk": 0,
-            "findings": 0,
-            "open_ports": 0,
-            "exposed_services": 0,
-            "cve_count": 0,
+            "avg_risk": float(views.get("current_asset_risk_avg") or 0.0),
+            "findings": int(views.get("current_findings_count") or 0),
+            "open_ports": len(views["unique_open_ports"]),
+            "exposed_services": len(views["service_inventory"]),
+            "cve_count": int(views.get("cve_count") or 0),
         }
-        if trend_rows:
-            mongo_totals["avg_risk"] = round(
-                sum(float(row.get("true_risk_score", 0)) for row in trend_rows) / len(trend_rows),
-                1,
-            )
-
-        mongo_totals["findings"] = sum(int(row.get("total_findings", 0) or 0) for row in window_report_rows)
-        mongo_totals["open_ports"] = len(views["unique_open_ports"])
-        mongo_totals["exposed_services"] = len(views["service_inventory"])
-        mongo_totals["cve_count"] = sum(1 for item in views["top_vulnerabilities"] if str(item.get("cve") or "").strip())
 
         return {
             "project": project,
@@ -1429,21 +1901,6 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         project = fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (project_id,))
         if not project:
             raise ScanInputError("Project not found.")
-
-        totals = fetchone(
-            connection,
-            """
-            SELECT COUNT(*) AS scans,
-                   COALESCE(ROUND(AVG(true_risk_score), 1), 0) AS avg_risk,
-                   COALESCE(SUM(total_findings), 0) AS findings,
-                   COALESCE(SUM(open_ports), 0) AS open_ports,
-                   COALESCE(SUM(exposed_services), 0) AS exposed_services,
-                   COALESCE(SUM(cve_count), 0) AS cve_count
-            FROM reports
-            WHERE project_id = ? AND created_at >= ?
-            """,
-            (project_id, since),
-        )
 
         trend_source_rows = fetchall(
             connection,
@@ -1479,21 +1936,36 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             (project_id,),
         )
 
-        window_report_rows = fetchall(
+        all_report_rows = fetchall(
             connection,
             """
             SELECT created_at, target, profile, true_risk_score, total_findings, open_ports, exposed_services, cve_count, data_json
             FROM reports
-            WHERE project_id = ? AND created_at >= ?
+            WHERE project_id = ?
             """,
-            (project_id, since),
+            (project_id,),
         )
 
-    views = build_dashboard_exposure_views(window_report_rows)
-    totals = totals or {}
-    totals["open_ports"] = len(views["unique_open_ports"])
-    totals["exposed_services"] = len(views["service_inventory"])
-    totals["cve_count"] = sum(1 for item in views["top_vulnerabilities"] if str(item.get("cve") or "").strip())
+        current_findings = fetchall(
+            connection,
+            """
+            SELECT asset, vuln_key, port, title_norm, severity, title, evidence, finding_type, cve,
+                   risk_score, visibility_reduced, first_seen, last_seen, occurrence_count
+            FROM findings
+            WHERE project_id = ?
+            """,
+            (project_id,),
+        )
+
+    views = build_dashboard_exposure_views(all_report_rows, current_findings=current_findings)
+    totals = {
+        "scans": len(trend_rows),
+        "avg_risk": float(views.get("current_asset_risk_avg") or 0.0),
+        "findings": int(views.get("current_findings_count") or 0),
+        "open_ports": len(views["unique_open_ports"]),
+        "exposed_services": len(views["service_inventory"]),
+        "cve_count": int(views.get("cve_count") or 0),
+    }
 
     return {
         "project": project,
@@ -1526,16 +1998,26 @@ def get_project_findings(
         db = get_mongo_db()
         rows = list(
             db.findings.find(
-                {"project_id": project_id, "last_seen": {"$gte": since}},
+                {
+                    "project_id": project_id,
+                    "$or": [
+                        {"last_seen": {"$gte": since}},
+                        {"visibility_reduced": True},
+                    ],
+                },
                 {
                     "_id": 0,
                     "asset": 1,
                     "vuln_key": 1,
+                    "port": 1,
+                    "title_norm": 1,
                     "severity": 1,
                     "title": 1,
                     "evidence": 1,
                     "finding_type": 1,
                     "cve": 1,
+                    "risk_score": 1,
+                    "visibility_reduced": 1,
                     "first_seen": 1,
                     "last_seen": 1,
                     "occurrence_count": 1,
@@ -1547,10 +2029,10 @@ def get_project_findings(
             rows = fetchall(
                 connection,
                 """
-                SELECT asset, vuln_key, severity, title, evidence, finding_type, cve,
-                       first_seen, last_seen, occurrence_count
+                  SELECT asset, vuln_key, port, title_norm, severity, title, evidence, finding_type, cve,
+                      risk_score, visibility_reduced, first_seen, last_seen, occurrence_count
                 FROM findings
-                WHERE project_id = ? AND last_seen >= ?
+                  WHERE project_id = ? AND (last_seen >= ? OR visibility_reduced = 1)
                 """,
                 (project_id, since),
             )
@@ -1582,6 +2064,13 @@ def get_project_findings(
                 "evidence": row.get("evidence", "-"),
                 "type": row.get("finding_type", "-"),
                 "cve": row.get("cve", ""),
+                "port": int(row.get("port") or 0),
+                "title_norm": str(row.get("title_norm") or ""),
+                "advanced_risk_score": float(row.get("risk_score") or 0.0),
+                "risk_level": "low",
+                "correlation_score": 0,
+                "attack_scenario": "",
+                "visibility_reduced": bool(row.get("visibility_reduced")),
                 "assets": [],
                 "asset_count": 0,
                 "occurrence_count": 0,
@@ -1594,12 +2083,23 @@ def get_project_findings(
         bucket["assets"].append(row.get("asset", "-"))
         bucket["asset_count"] += 1
         bucket["occurrence_count"] += int(row.get("occurrence_count") or 1)
+        bucket["advanced_risk_score"] = max(float(bucket.get("advanced_risk_score") or 0.0), float(row.get("risk_score") or 0.0))
+        bucket["visibility_reduced"] = bool(bucket.get("visibility_reduced")) or bool(row.get("visibility_reduced"))
         bucket["first_seen"] = min(str(bucket["first_seen"]), str(row.get("first_seen")))
         bucket["last_seen"] = max(str(bucket["last_seen"]), str(row.get("last_seen")))
 
     items = list(buckets.values())
     for item in items:
         item["assets"] = sorted(set(item["assets"]))[:60]
+        score_val = float(item.get("advanced_risk_score") or 0.0)
+        if score_val >= 85:
+            item["risk_level"] = "critical"
+        elif score_val >= 70:
+            item["risk_level"] = "high"
+        elif score_val >= 45:
+            item["risk_level"] = "medium"
+        else:
+            item["risk_level"] = "low"
 
     reverse = sort_dir.lower() != "asc"
     if sort_by == "assets":
@@ -3044,157 +3544,227 @@ def parse_report_payload(row: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[str, Any]:
-    unique_open_ports: dict[tuple[str, int, str], dict[str, Any]] = {}
-    asset_map: dict[str, dict[str, Any]] = {}
-    service_map: dict[str, dict[str, Any]] = {}
-    vulnerability_map: dict[tuple[str, str, str], dict[str, Any]] = {}
-    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
-    counted_risk_keys: set[tuple[str, str, str, str]] = set()
-    ignored_risk_types = {"open_port", "host_fingerprint"}
+def build_latest_asset_snapshots(report_rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    latest_by_asset: dict[str, dict[str, Any]] = {}
+    ordered_rows = sorted(report_rows, key=lambda x: str(x.get("created_at") or ""))
 
-    for row in report_rows:
+    for row in ordered_rows:
         payload = parse_report_payload(row)
         report_created_at = str(row.get("created_at") or payload.get("report_created_at") or utc_now())
-        risk_score = float(row.get("true_risk_score") or payload.get("true_risk_score") or 0)
-        profile = str(row.get("profile") or payload.get("meta", {}).get("profile") or "-")
-        target = str(row.get("target") or payload.get("meta", {}).get("target") or "-")
+        report_risk = float(row.get("true_risk_score") or payload.get("true_risk_score") or 0.0)
+        report_profile = str(row.get("profile") or payload.get("meta", {}).get("profile") or "-")
+        report_target = str(row.get("target") or payload.get("meta", {}).get("target") or "-")
 
-        for host in payload.get("hosts", []):
-            host_id = str(host.get("host") or "-")
-            host_entry = asset_map.setdefault(
-                host_id,
-                {
-                    "host": host_id,
-                    "profiles": set(),
-                    "targets": set(),
-                    "open_port_keys": set(),
-                    "finding_titles": set(),
-                    "last_seen": report_created_at,
-                    "max_risk_score": risk_score,
-                },
-            )
-            host_entry["profiles"].add(profile)
-            host_entry["targets"].add(target)
-            host_entry["last_seen"] = max(str(host_entry["last_seen"]), report_created_at)
-            host_entry["max_risk_score"] = max(float(host_entry["max_risk_score"]), risk_score)
-
-            host_ports = host.get("ports") or host.get("open_ports") or []
-            for port in host_ports:
-                if str(port.get("state") or "").lower() != "open":
+        for host in payload.get("hosts", []) or []:
+            host_value = str(host.get("host") or "-").strip()
+            asset_key = host_value.lower()
+            open_ports: list[dict[str, Any]] = []
+            for p in host.get("ports") or host.get("open_ports") or []:
+                if str(p.get("state") or "").lower() != "open":
                     continue
-                port_no = int(port.get("port") or 0)
-                protocol = str(port.get("protocol") or "tcp")
-                key = (host_id, port_no, protocol)
-                unique_open_ports[key] = {
-                    "host": host_id,
-                    "port": port_no,
-                    "protocol": protocol,
-                    "service": str(port.get("name") or COMMON_SERVICE_NAMES.get(port_no, "unknown")),
-                    "product": str(port.get("product") or ""),
-                    "version": str(port.get("version") or ""),
-                    "last_seen": report_created_at,
-                }
-                host_entry["open_port_keys"].add(key)
-
-                service_label = str(port.get("product") or port.get("name") or COMMON_SERVICE_NAMES.get(port_no, "unknown")).strip() or "unknown"
-                service_bucket = service_map.setdefault(
-                    service_label.lower(),
-                    {
-                        "service": service_label,
-                        "count": 0,
-                        "assets": set(),
-                        "ports": set(),
-                        "products": set(),
-                        "versions": set(),
-                        "first_seen": report_created_at,
-                        "last_seen": report_created_at,
-                        "sightings": set(),
-                    },
+                try:
+                    port_no = int(p.get("port") or 0)
+                except Exception:
+                    port_no = 0
+                protocol = str(p.get("protocol") or "tcp")
+                inferred, conf, source = infer_service_identity(
+                    port=port_no,
+                    name=str(p.get("name") or ""),
+                    product=str(p.get("product") or ""),
+                    banner=str(p.get("banner") or ""),
                 )
-                service_bucket["first_seen"] = min(str(service_bucket["first_seen"]), report_created_at)
-                service_bucket["last_seen"] = max(str(service_bucket["last_seen"]), report_created_at)
-                service_bucket["assets"].add(host_id)
-                service_bucket["ports"].add(port_no)
-                if port.get("product"):
-                    service_bucket["products"].add(str(port.get("product")))
-                if port.get("version"):
-                    service_bucket["versions"].add(str(port.get("version")))
-                service_bucket["sightings"].add((host_id, port_no))
-                service_bucket["count"] = len(service_bucket["sightings"])
+                open_ports.append(
+                    {
+                        "port": port_no,
+                        "protocol": protocol,
+                        "service": inferred,
+                        "version": str(p.get("version") or ""),
+                        "product": str(p.get("product") or ""),
+                        "service_confidence": float(p.get("service_confidence") or conf),
+                        "service_source": source,
+                    }
+                )
 
-        for finding in payload.get("finding_items", []):
-            host_id = str(finding.get("host") or "-")
-            finding_type = str(finding.get("type") or "-").strip().lower()
-            severity = normalize_severity(str(finding.get("severity") or "low"))
+            latest_by_asset[asset_key] = {
+                "host": host_value,
+                "asset": asset_key,
+                "created_at": report_created_at,
+                "profile": report_profile,
+                "target": report_target,
+                "risk_score": report_risk,
+                "open_ports": open_ports,
+            }
 
-            vuln_key = (
-                str(finding.get("title") or "Finding").strip().lower(),
-                str(finding.get("type") or "-").strip().lower(),
-                str(finding.get("cve") or "").strip().upper(),
-            )
+    return latest_by_asset
 
-            # Risk distribution should represent unique actionable weaknesses, not raw scan repetitions.
-            if severity in risk_distribution and severity != "info" and finding_type not in ignored_risk_types:
-                risk_key = (host_id, vuln_key[0], vuln_key[1], vuln_key[2])
-                if risk_key not in counted_risk_keys:
-                    counted_risk_keys.add(risk_key)
-                    risk_distribution[severity] += 1
 
-            vuln_bucket = vulnerability_map.setdefault(
-                vuln_key,
+def build_dashboard_exposure_views(
+    report_rows: list[dict[str, Any]],
+    current_findings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    latest_assets = build_latest_asset_snapshots(report_rows)
+    findings = list(current_findings or [])
+
+    risk_distribution = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    vulnerability_map: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for finding in findings:
+        severity = normalize_severity(str(finding.get("severity") or "low"))
+        if severity in risk_distribution and severity != "info":
+            risk_distribution[severity] += 1
+
+        v_key = (
+            normalize_finding_title(str(finding.get("title") or "Finding")),
+            str(finding.get("finding_type") or finding.get("type") or "-").strip().lower(),
+            str(finding.get("cve") or "").strip().upper(),
+        )
+        bucket = vulnerability_map.setdefault(
+            v_key,
+            {
+                "severity": severity,
+                "title": str(finding.get("title") or "Finding"),
+                "type": str(finding.get("finding_type") or finding.get("type") or "-"),
+                "cve": str(finding.get("cve") or ""),
+                "affected_assets": set(),
+                "occurrences": 0,
+                "scan_hits": 0,
+                "first_seen": str(finding.get("first_seen") or utc_now()),
+                "last_seen": str(finding.get("last_seen") or utc_now()),
+            },
+        )
+        bucket["severity"] = best_severity(str(bucket.get("severity") or "low"), severity)
+        bucket["affected_assets"].add(str(finding.get("asset") or finding.get("host") or "-"))
+        bucket["occurrences"] += int(finding.get("occurrence_count") or 1)
+        bucket["scan_hits"] += 1
+        bucket["first_seen"] = min(str(bucket.get("first_seen") or utc_now()), str(finding.get("first_seen") or utc_now()))
+        bucket["last_seen"] = max(str(bucket.get("last_seen") or utc_now()), str(finding.get("last_seen") or utc_now()))
+
+    findings_by_asset: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        asset_value = str(finding.get("asset") or finding.get("host") or "-").strip().lower()
+        findings_by_asset.setdefault(asset_value, []).append(finding)
+
+    unique_open_ports: dict[tuple[str, int, str], dict[str, Any]] = {}
+    service_version_map: dict[tuple[str, str], dict[str, Any]] = {}
+    top_assets: list[dict[str, Any]] = []
+
+    for asset_key, snap in latest_assets.items():
+        host_value = str(snap.get("host") or asset_key)
+        ports = list(snap.get("open_ports") or [])
+        asset_findings = findings_by_asset.get(asset_key, [])
+
+        max_adv_risk = max([float(f.get("risk_score") or f.get("advanced_risk_score") or 0.0) for f in asset_findings] or [float(snap.get("risk_score") or 0.0)])
+        critical_count = sum(1 for f in asset_findings if normalize_severity(str(f.get("severity") or "low")) == "critical")
+        high_count = sum(1 for f in asset_findings if normalize_severity(str(f.get("severity") or "low")) == "high")
+        public_exposure = sum(1 for p in ports if int(p.get("port") or 0) in {21, 22, 23, 80, 443, 445, 1433, 2375, 27017, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9200})
+        visibility_reduced_count = sum(1 for f in asset_findings if bool(f.get("visibility_reduced")))
+
+        asset_risk_score = min(
+            100.0,
+            (max_adv_risk * 0.72)
+            + (critical_count * 9.0)
+            + (high_count * 3.0)
+            + (public_exposure * 2.2),
+        )
+
+        for p in ports:
+            port_no = int(p.get("port") or 0)
+            protocol = str(p.get("protocol") or "tcp")
+            unique_open_ports[(asset_key, port_no, protocol)] = {
+                "host": host_value,
+                "port": port_no,
+                "protocol": protocol,
+                "service": str(p.get("service") or "unknown"),
+                "product": str(p.get("product") or ""),
+                "version": str(p.get("version") or ""),
+                "service_confidence": float(p.get("service_confidence") or 0.0),
+                "service_source": str(p.get("service_source") or "heuristic"),
+                "last_seen": str(snap.get("created_at") or utc_now()),
+            }
+
+            svc = str(p.get("service") or "unknown").strip().lower() or "unknown"
+            ver = str(p.get("version") or "").strip()
+            svc_key = (svc, ver)
+            svc_bucket = service_version_map.setdefault(
+                svc_key,
                 {
-                    "severity": severity,
-                    "title": finding.get("title", "Finding"),
-                    "type": finding.get("type", "-"),
-                    "cve": finding.get("cve", ""),
-                    "affected_assets": set(),
-                    "occurrences": 0,
-                    "scan_hits": 0,
-                    "last_seen": report_created_at,
-                    "seen_asset_keys": set(),
+                    "service": svc,
+                    "version": ver,
+                    "count": 0,
+                    "asset_set": set(),
+                    "ports": set(),
+                    "product": str(p.get("product") or ""),
+                    "first_seen": str(snap.get("created_at") or utc_now()),
+                    "last_seen": str(snap.get("created_at") or utc_now()),
                 },
             )
-            vuln_bucket["severity"] = best_severity(vuln_bucket["severity"], severity)
-            vuln_bucket["scan_hits"] += 1
-            vuln_bucket["last_seen"] = max(str(vuln_bucket["last_seen"]), report_created_at)
-            vuln_bucket["affected_assets"].add(host_id)
-            if host_id not in vuln_bucket["seen_asset_keys"]:
-                vuln_bucket["seen_asset_keys"].add(host_id)
-                vuln_bucket["occurrences"] += 1
-            if host_id in asset_map:
-                asset_map[host_id]["finding_titles"].add(str(finding.get("title") or "Finding"))
+            svc_bucket["asset_set"].add(asset_key)
+            svc_bucket["ports"].add(port_no)
+            svc_bucket["count"] += 1
+            svc_bucket["first_seen"] = min(str(svc_bucket.get("first_seen") or utc_now()), str(snap.get("created_at") or utc_now()))
+            svc_bucket["last_seen"] = max(str(svc_bucket.get("last_seen") or utc_now()), str(snap.get("created_at") or utc_now()))
 
-    top_assets = sorted(
-        [
+        top_assets.append(
             {
-                "host": host,
-                "open_ports": len(entry["open_port_keys"]),
-                "findings": len(entry["finding_titles"]),
-                "profiles": sorted(entry["profiles"]),
-                "targets": sorted(entry["targets"]),
-                "last_seen": entry["last_seen"],
-                "risk_score": round(float(entry["max_risk_score"]), 1),
+                "host": host_value,
+                "open_ports": len(ports),
+                "findings": len(asset_findings),
+                "profiles": [str(snap.get("profile") or "-")],
+                "targets": [str(snap.get("target") or host_value)],
+                "last_seen": str(snap.get("created_at") or utc_now()),
+                "risk_score": round(asset_risk_score, 1),
+                "max_advanced_risk": round(max_adv_risk, 1),
+                "critical_findings": critical_count,
+                "public_exposure": public_exposure,
+                "visibility_reduced_findings": visibility_reduced_count,
             }
-            for host, entry in asset_map.items()
-        ],
-        key=lambda item: (int(item["open_ports"]), int(item["findings"]), float(item["risk_score"])),
+        )
+
+    for asset_key, asset_findings in findings_by_asset.items():
+        if asset_key in latest_assets:
+            continue
+        max_adv_risk = max([float(f.get("risk_score") or f.get("advanced_risk_score") or 0.0) for f in asset_findings] or [0.0])
+        critical_count = sum(1 for f in asset_findings if normalize_severity(str(f.get("severity") or "low")) == "critical")
+        high_count = sum(1 for f in asset_findings if normalize_severity(str(f.get("severity") or "low")) == "high")
+        asset_risk_score = min(100.0, (max_adv_risk * 0.78) + (critical_count * 9.0) + (high_count * 3.0))
+        top_assets.append(
+            {
+                "host": asset_key,
+                "open_ports": 0,
+                "findings": len(asset_findings),
+                "profiles": ["state-only"],
+                "targets": [asset_key],
+                "last_seen": max(str(f.get("last_seen") or utc_now()) for f in asset_findings),
+                "risk_score": round(asset_risk_score, 1),
+                "max_advanced_risk": round(max_adv_risk, 1),
+                "critical_findings": critical_count,
+                "public_exposure": 0,
+                "visibility_reduced_findings": sum(1 for f in asset_findings if bool(f.get("visibility_reduced"))),
+            }
+        )
+
+    top_assets.sort(
+        key=lambda item: (
+            float(item.get("risk_score") or 0.0),
+            int(item.get("critical_findings") or 0),
+            int(item.get("public_exposure") or 0),
+        ),
         reverse=True,
-    )[:16]
+    )
 
     service_inventory = sorted(
         [
             {
                 "service": entry["service"],
-                "count": entry["count"],
-                "asset_count": len(entry["assets"]),
+                "version": entry["version"],
+                "count": int(entry["count"]),
+                "asset_count": len(entry["asset_set"]),
                 "ports": sorted(entry["ports"]),
-                "product": sorted(entry["products"])[0] if entry["products"] else "",
-                "version": sorted(entry["versions"])[0] if entry["versions"] else "",
-                "first_seen": entry["first_seen"],
-                "last_seen": entry["last_seen"],
+                "product": entry.get("product") or "",
+                "first_seen": entry.get("first_seen") or utc_now(),
+                "last_seen": entry.get("last_seen") or utc_now(),
             }
-            for entry in service_map.values()
+            for entry in service_version_map.values()
         ],
         key=lambda item: (int(item["asset_count"]), int(item["count"])),
         reverse=True,
@@ -3208,8 +3778,9 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
                 "type": entry["type"],
                 "cve": entry["cve"],
                 "affected_assets": len(entry["affected_assets"]),
-                "occurrences": entry["occurrences"],
-                "scan_hits": entry["scan_hits"],
+                "occurrences": int(entry["occurrences"]),
+                "scan_hits": int(entry["scan_hits"]),
+                "first_seen": entry["first_seen"],
                 "last_seen": entry["last_seen"],
             }
             for entry in vulnerability_map.values()
@@ -3218,12 +3789,21 @@ def build_dashboard_exposure_views(report_rows: list[dict[str, Any]]) -> dict[st
         reverse=True,
     )[:18]
 
+    current_asset_risk_avg = round(
+        sum(float(item.get("risk_score") or 0.0) for item in top_assets) / len(top_assets),
+        1,
+    ) if top_assets else 0.0
+
     return {
+        "latest_assets": top_assets,
+        "current_asset_risk_avg": current_asset_risk_avg,
         "unique_open_ports": list(unique_open_ports.values()),
-        "top_assets": top_assets,
+        "top_assets": top_assets[:16],
         "service_inventory": service_inventory,
         "top_vulnerabilities": top_vulnerabilities,
         "risk_distribution": risk_distribution,
+        "current_findings_count": len(findings),
+        "cve_count": sum(1 for f in findings if str(f.get("cve") or "").strip()),
     }
 
 
@@ -4373,7 +4953,17 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         open_ports_enriched = []
         for entry in open_ports:
             port_entry = dict(entry)
-            port_entry["service_confidence"] = _service_confidence(port_entry)
+            inferred_name, inferred_conf, inferred_source = infer_service_identity(
+                port=int(port_entry.get("port") or 0),
+                name=str(port_entry.get("name") or ""),
+                product=str(port_entry.get("product") or ""),
+                banner=str(port_entry.get("banner") or ""),
+            )
+            if str(port_entry.get("name") or "").strip().lower() in {"", "unknown", "-"}:
+                port_entry["name"] = inferred_name
+            port_entry["inferred_service"] = inferred_name
+            port_entry["service_source"] = inferred_source
+            port_entry["service_confidence"] = float(port_entry.get("service_confidence") or inferred_conf)
             open_ports_enriched.append(port_entry)
 
         host_results.append(
@@ -4750,7 +5340,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         "reverse_dns": safe_reverse_dns(target) if target_type == "host" else None,
         "os_matches": [],
         "ports": sorted([
-            {
+            ({
                 "protocol": p.get("protocol", "tcp"),
                 "port": p.get("port", 0),
                 "state": p.get("state", "open"),
@@ -4761,15 +5351,25 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
                 "cpe": "",
                 "banner": p.get("banner", ""),
                 "metadata": p.get("metadata", {}),
-                "service_confidence": _service_confidence(
-                    {
-                        "name": p.get("service", "unknown"),
-                        "product": p.get("product", ""),
-                        "version": p.get("version", ""),
-                        "banner": p.get("banner", ""),
-                    }
-                ),
-            }
+                "inferred_service": infer_service_identity(
+                    int(p.get("port") or 0),
+                    str(p.get("service", "unknown")),
+                    str(p.get("product", "")),
+                    str(p.get("banner", "")),
+                )[0],
+                "service_source": infer_service_identity(
+                    int(p.get("port") or 0),
+                    str(p.get("service", "unknown")),
+                    str(p.get("product", "")),
+                    str(p.get("banner", "")),
+                )[2],
+                "service_confidence": infer_service_identity(
+                    int(p.get("port") or 0),
+                    str(p.get("service", "unknown")),
+                    str(p.get("product", "")),
+                    str(p.get("banner", "")),
+                )[1],
+            })
             for p in open_ports
         ], key=lambda item: int(item.get("port") or 0)),
         "findings": sorted(
@@ -5043,6 +5643,62 @@ def project_dashboard_csv_api(project_id: str) -> Any:
     return dashboard_csv_response(project_id, dashboard)
 
 
+@app.route("/api/projects/<project_id>/assets")
+def project_assets_api(project_id: str) -> Any:
+    tags_raw = (request.args.get("tags") or "").strip()
+    tags = [seg.strip().lower() for seg in tags_raw.split(",") if seg.strip()] if tags_raw else []
+    try:
+        if not get_project(project_id):
+            return jsonify({"error": "Project not found."}), 404
+        return jsonify({"items": list_assets(project_id, tags=tags)})
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>/assets", methods=["POST"])
+def project_assets_create_api(project_id: str) -> Any:
+    payload = request.get_json(silent=True) or {}
+    value = str(payload.get("value") or "").strip()
+    tags = payload.get("tags") or []
+    try:
+        if not get_project(project_id):
+            return jsonify({"error": "Project not found."}), 404
+        item = add_asset(project_id, value=value, tags=tags)
+        return jsonify(item), 201
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>/assets/<asset_id>/tags", methods=["PUT", "PATCH"])
+def project_assets_tags_api(project_id: str, asset_id: str) -> Any:
+    payload = request.get_json(silent=True) or {}
+    tags = payload.get("tags") or []
+    try:
+        item = update_asset_tags(project_id, asset_id, tags=tags)
+        return jsonify(item)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.route("/api/projects/<project_id>/settings")
+def project_settings_api(project_id: str) -> Any:
+    if not get_project(project_id):
+        return jsonify({"error": "Project not found."}), 404
+    return jsonify(get_project_settings(project_id))
+
+
+@app.route("/api/projects/<project_id>/settings", methods=["PUT", "PATCH"])
+def project_settings_update_api(project_id: str) -> Any:
+    payload = request.get_json(silent=True) or {}
+    try:
+        if not get_project(project_id):
+            return jsonify({"error": "Project not found."}), 404
+        settings = update_project_settings(project_id, payload)
+        return jsonify(settings)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @app.route("/api/admin/migrate-sql-to-mongo", methods=["POST"])
 def migrate_sql_to_mongo_api() -> Any:
     payload = request.get_json(silent=True) or {}
@@ -5237,10 +5893,99 @@ def intel_api() -> Any:
         return jsonify({"error": "Intel gathering failed.", "details": str(exc)}), 500
 
 
+def resolve_scan_targets(payload: dict[str, Any], project_id: str) -> list[str]:
+    targets_raw = payload.get("targets")
+    if isinstance(targets_raw, list):
+        values = [str(x or "").strip() for x in targets_raw]
+        deduped = []
+        for v in values:
+            if v and v not in deduped:
+                deduped.append(v)
+        if deduped:
+            return deduped
+
+    tag_filters_raw = payload.get("tag_filters")
+    if isinstance(tag_filters_raw, list) and tag_filters_raw:
+        tags = [str(x or "").strip().lower() for x in tag_filters_raw if str(x or "").strip()]
+        assets = list_assets(project_id, tags=tags)
+        targets = [str(a.get("value") or "").strip() for a in assets if str(a.get("value") or "").strip()]
+        deduped = []
+        for v in targets:
+            if v and v not in deduped:
+                deduped.append(v)
+        if deduped:
+            return deduped
+
+    single_target = str(payload.get("target") or "").strip()
+    if single_target:
+        return [single_target]
+    raise ScanInputError("Please provide target, targets[], or tag_filters.")
+
+
+def merge_scan_results(results: list[dict[str, Any]], profile: str, port_strategy: str) -> dict[str, Any]:
+    if not results:
+        raise ScanInputError("No scan results available.")
+    if len(results) == 1:
+        return results[0]
+
+    merged_hosts: list[dict[str, Any]] = []
+    merged_findings: list[dict[str, Any]] = []
+    merged_cves: list[dict[str, Any]] = []
+    merged_open_ports = 0
+
+    started_at = min(str(r.get("meta", {}).get("started_at") or utc_now()) for r in results)
+    finished_at = max(str(r.get("meta", {}).get("finished_at") or utc_now()) for r in results)
+
+    for result in results:
+        merged_hosts.extend(list(result.get("hosts") or []))
+        merged_findings.extend(list(result.get("finding_items") or []))
+        merged_cves.extend(list(result.get("cve_items") or []))
+        merged_open_ports += int(result.get("metrics", {}).get("open_ports") or 0)
+
+    dedup_findings = deduplicate_finding_items(merged_findings)
+    dedup_cves = deduplicate_cves(merged_cves)
+    risk_summary = build_risk_summary(dedup_findings)
+    risk_level = compute_risk_level(risk_summary)
+    risk_score = compute_true_risk_score(risk_summary, merged_open_ports, len(dedup_cves), findings=dedup_findings)
+
+    return {
+        "meta": {
+            "scanner": "vScanner 3.0",
+            "engine": str(results[0].get("meta", {}).get("engine") or "merged"),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "target": ", ".join(sorted({str(r.get("meta", {}).get("target") or "-") for r in results})),
+            "target_type": "multi",
+            "profile": canonical_profile(profile),
+            "port_strategy": port_strategy,
+            "risk_level": risk_level,
+            "public_mode": is_public_mode(),
+            "authorization_notice": "Only scan systems you are explicitly authorized to test.",
+            "stealth_note": "Stealth profile is low-noise only and does not bypass security monitoring.",
+        },
+        "nmap": {
+            "command": "merged-multi-target",
+            "summary": {"targets": len(results)},
+        },
+        "hosts": merged_hosts,
+        "finding_items": dedup_findings,
+        "cve_items": dedup_cves,
+        "risk_summary": risk_summary,
+        "true_risk_score": risk_score,
+        "metrics": {
+            "open_ports": merged_open_ports,
+            "exposed_services": sum(1 for f in dedup_findings if str(f.get("type") or "").lower() == "exposed_port"),
+            "cve_candidates": len(dedup_cves),
+            "hosts_scanned": len(merged_hosts),
+        },
+        "intel": None,
+        "total_findings": len(dedup_findings),
+    }
+
+
 @app.route("/api/scan", methods=["POST"])
 def scan_api() -> Any:
     payload = request.get_json(silent=True) or {}
-    target = payload.get("target", "")
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
     response_format = str(payload.get("response_format") or "legacy").strip().lower()
@@ -5260,15 +6005,20 @@ def scan_api() -> Any:
         if not project:
             raise ScanInputError("Project not found.")
 
+        targets = resolve_scan_targets(payload, project["id"])
         enforce_rate_limit(client_ip_value)
-        result = orchestrate_scan(target, profile, port_strategy)
+        if len(targets) == 1:
+            result = orchestrate_scan(targets[0], profile, port_strategy)
+        else:
+            partial_results = [orchestrate_scan(target_value, profile, port_strategy) for target_value in targets]
+            result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]
         result = _apply_intelligence_pipeline(result, mode=_mode_from_classic_profile(profile))
 
         soc_report = build_soc_report(
             mode=_mode_from_classic_profile(profile),
-            target=str(result.get("meta", {}).get("target") or target),
+            target=str(result.get("meta", {}).get("target") or ", ".join(targets)),
             target_type=str(result.get("meta", {}).get("target_type") or "host"),
             hosts=list(result.get("hosts") or []),
             findings=list(result.get("finding_items") or []),
@@ -5309,7 +6059,6 @@ def scan_api() -> Any:
 @app.route("/api/scan/v2", methods=["POST"])
 def scan_api_v2() -> Any:
     payload = request.get_json(silent=True) or {}
-    target = payload.get("target", "")
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
     response_format = str(payload.get("response_format") or "legacy").strip().lower()
@@ -5329,15 +6078,20 @@ def scan_api_v2() -> Any:
         if not project:
             raise ScanInputError("Project not found.")
 
+        targets = resolve_scan_targets(payload, project["id"])
         enforce_rate_limit(client_ip_value)
-        result = orchestrate_scan_v2(target, profile, port_strategy)
+        if len(targets) == 1:
+            result = orchestrate_scan_v2(targets[0], profile, port_strategy)
+        else:
+            partial_results = [orchestrate_scan_v2(target_value, profile, port_strategy) for target_value in targets]
+            result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
         result["meta"]["project_id"] = project["id"]
         result["meta"]["project_name"] = project["name"]
         result = _apply_intelligence_pipeline(result, mode="v2")
 
         soc_report = build_soc_report(
             mode="v2",
-            target=str(result.get("meta", {}).get("target") or target),
+            target=str(result.get("meta", {}).get("target") or ", ".join(targets)),
             target_type=str(result.get("meta", {}).get("target_type") or "host"),
             hosts=list(result.get("hosts") or []),
             findings=list(result.get("finding_items") or []),
