@@ -1366,10 +1366,10 @@ function renderExposureSummary(totals) {
     }
 
     const cards = [
-        { label: t("openPorts"), value: totals.open_ports || 0 },
-        { label: t("exposedServices"), value: totals.exposed_services || 0 },
-        { label: t("cveCandidates"), value: totals.cve_count || 0 },
-        { label: t("totalFindings"), value: totals.findings || 0 },
+        { label: t("openPorts"), value: totals.open_ports },
+        { label: t("exposedServices"), value: totals.exposed_services },
+        { label: t("cveCandidates"), value: totals.cve_count },
+        { label: t("totalFindings"), value: totals.active_vulnerabilities },
     ];
     exposureSummary.innerHTML = cards
         .map((item) => `<div class="risk-item"><span>${esc(item.label)}</span><strong>${esc(item.value)}</strong></div>`)
@@ -1914,8 +1914,8 @@ function renderAssetsSummary(items, totals) {
     const highCriticality = (items || []).filter((item) => String(item.criticality || "medium") === "high").length;
     assetsSummary.innerHTML = [
         `<span>Assets <strong>${esc((items || []).length)}</strong></span>`,
-        `<span>Critical assets <strong>${esc(totals.critical_assets || highCriticality || 0)}</strong></span>`,
-        `<span>Affected assets <strong>${esc(totals.affected_assets || 0)}</strong></span>`,
+        `<span>Critical assets <strong>${esc(totals.critical_assets ?? highCriticality)}</strong></span>`,
+        `<span>Affected assets <strong>${esc(totals.affected_assets)}</strong></span>`,
     ].join("");
 }
 
@@ -2035,17 +2035,19 @@ async function loadProjects() {
 
 async function loadDashboard() {
     const days = Number(windowDays.value || 30);
-    const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/dashboard?window_days=${days}`);
+    const response = await fetch(`/api/dashboard?project_id=${encodeURIComponent(activeProjectId)}&window_days=${days}`);
     const data = await response.json();
+    console.log("DASHBOARD RAW:", data);
+    console.log("DASHBOARD RESPONSE:", response);
     if (!response.ok) {
         throw new Error(data.error || "Dashboard unavailable");
     }
 
-    const totals = data.totals || {};
-    kpiAvgRisk.textContent = String(totals.risk_score || totals.avg_risk || 0);
-    kpiScans.textContent = String(totals.scans || 0);
-    kpiUnique.textContent = String(totals.active_vulnerabilities || totals.findings || 0);
-    kpiAssets.textContent = String(totals.affected_assets || 0);
+    const totals = data.totals ? data.totals : data;
+    kpiAvgRisk.textContent = String(totals.risk_score);
+    kpiScans.textContent = String(totals.scans);
+    kpiUnique.textContent = String(totals.active_vulnerabilities);
+    kpiAssets.textContent = String(totals.affected_assets);
 
     drawTrend(data.trend || []);
     drawRiskBars(data.risk_distribution || {});
@@ -2054,11 +2056,11 @@ async function loadDashboard() {
     renderSeverityHeatmap(data.top_vulnerabilities || []);
     renderTopVulns(data.top_vulnerabilities || []);
     renderRecentScans(data.recent_scans || []);
-    renderExposureSummary(data.totals || {});
+    renderExposureSummary(totals);
     renderTopAssets(data.top_assets || []);
     renderServiceInventory(data.service_inventory || []);
     renderPortIntelligence(data.service_inventory || []);
-    renderAssetsSummary(data.assets || [], data.totals || {});
+    renderAssetsSummary(data.assets || [], totals);
 }
 
 async function loadAggregatedFindings() {
