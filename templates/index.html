@@ -27,15 +27,15 @@
 
             <nav class="menu-list">
                 <button class="menu-item active" data-tab="dashboard">
-                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg></span>
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="16.5" x2="16" y2="16.5"/><rect x="4" y="10.5" width="2.5" height="6" rx="0.8"/><rect x="8.75" y="7.5" width="2.5" height="9" rx="0.8"/><rect x="13.5" y="4.5" width="2.5" height="12" rx="0.8"/></svg></span>
                     <span class="menu-label">Dashboard</span>
                 </button>
                 <button class="menu-item" data-tab="scanner">
-                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="7.5"/><circle cx="10" cy="10" r="3"/><line x1="10" y1="1.5" x2="10" y2="5"/><line x1="10" y1="15" x2="10" y2="18.5"/><line x1="1.5" y1="10" x2="5" y2="10"/><line x1="15" y1="10" x2="18.5" y2="10"/></svg></span>
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="8.5" cy="8.5" r="5.5"/><line x1="12.5" y1="12.5" x2="17" y2="17"/></svg></span>
                     <span class="menu-label">Scanner</span>
                 </button>
                 <button class="menu-item nav-item-network" data-tab="network">
-                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="3.5" r="2"/><circle cx="3.5" cy="16" r="2"/><circle cx="16.5" cy="16" r="2"/><line x1="10" y1="5.5" x2="3.5" y2="14"/><line x1="10" y1="5.5" x2="16.5" y2="14"/><line x1="5.5" y1="16" x2="14.5" y2="16"/></svg></span>
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.2"/><path d="M2.8 10h14.4"/><path d="M10 2.8c2.1 2 3.2 4.5 3.2 7.2S12.1 15.2 10 17.2C7.9 15.2 6.8 12.7 6.8 10S7.9 4.8 10 2.8z"/></svg></span>
                     <span class="menu-label">Network</span>
                 </button>
                 <button class="menu-item nav-item-stealth" data-tab="stealth">
@@ -43,8 +43,12 @@
                     <span class="menu-label">Stealth</span>
                 </button>
                 <button class="menu-item" data-tab="findings">
-                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2.5 L18 17 H2 Z"/><line x1="10" y1="9" x2="10" y2="13"/><circle cx="10" cy="15.2" r="0.7" fill="currentColor" stroke="none"/></svg></span>
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.2"/><line x1="10" y1="6" x2="10" y2="10.5"/><circle cx="10" cy="13.7" r="0.8" fill="currentColor" stroke="none"/></svg></span>
                     <span class="menu-label">Findings</span>
+                </button>
+                <button class="menu-item" data-tab="assets">
+                    <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.4"/><rect x="3" y="11" width="14" height="5" rx="1.4"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="13.5" x2="6.01" y2="13.5"/></svg></span>
+                    <span class="menu-label">Assets</span>
                 </button>
                 <button class="menu-item" data-tab="history">
                     <span class="menu-ico" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><polyline points="10,5.5 10,10 13,12.5"/></svg></span>
@@ -85,9 +89,9 @@
             <section class="tab active" id="tab-dashboard">
                 <div class="kpi-grid">
                     <article class="kpi panel">
-                        <span id="kpiAvgRiskLabel">Average Risk</span>
+                        <span id="kpiAvgRiskLabel">Risk Score</span>
                         <strong id="kpiAvgRisk">0.0</strong>
-                        <small id="kpiAvgRiskHint">Selected time window</small>
+                        <small id="kpiAvgRiskHint">Current weighted state</small>
                     </article>
                     <article class="kpi panel">
                         <span id="kpiScansLabel">Total Scans</span>
@@ -95,14 +99,14 @@
                         <small id="kpiScansHint">Reports saved</small>
                     </article>
                     <article class="kpi panel">
-                        <span id="kpiUniqueLabel">Unique Vulnerabilities</span>
+                        <span id="kpiUniqueLabel">Active Vulnerabilities</span>
                         <strong id="kpiUnique">0</strong>
-                        <small id="kpiUniqueHint">Aggregated by vuln key</small>
+                        <small id="kpiUniqueHint">Deduplicated current findings</small>
                     </article>
                     <article class="kpi panel">
                         <span id="kpiAssetsLabel">Affected Assets</span>
                         <strong id="kpiAssets">0</strong>
-                        <small id="kpiAssetsHint">Across current project</small>
+                        <small id="kpiAssetsHint">Impacted asset inventory</small>
                     </article>
                 </div>
 
@@ -388,6 +392,51 @@
                     </div>
                     <div id="stealthScanResult" class="table-host"></div>
                 </article>
+            </section>
+
+            <section class="tab" id="tab-assets">
+                <div class="split-grid">
+                    <article class="panel">
+                        <div class="panel-head">
+                            <h3 id="assetsInventoryTitle">Assets</h3>
+                            <button id="refreshAssetsButton" class="btn ghost" type="button">Refresh</button>
+                        </div>
+                        <div class="filter-grid">
+                            <div class="span-2">
+                                <label for="assetTagFilter">Tags</label>
+                                <input id="assetTagFilter" class="input" type="text" placeholder="prod, external" />
+                            </div>
+                        </div>
+                        <div id="assetsInventory" class="list-scroll"></div>
+                    </article>
+                    <article class="panel">
+                        <div class="panel-head">
+                            <h3 id="assetsAddTitle">Add Asset</h3>
+                        </div>
+                        <form id="assetForm" class="form-grid">
+                            <div class="span-2">
+                                <label for="assetValueInput">Asset</label>
+                                <input id="assetValueInput" class="input" type="text" placeholder="db.internal.local or 10.0.0.15" required />
+                            </div>
+                            <div>
+                                <label for="assetCriticalitySelect">Criticality</label>
+                                <select id="assetCriticalitySelect" class="input">
+                                    <option value="low">Low</option>
+                                    <option value="medium" selected>Medium</option>
+                                    <option value="high">High</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="assetTagsInput">Tags</label>
+                                <input id="assetTagsInput" class="input" type="text" placeholder="prod, payments" />
+                            </div>
+                            <div class="span-2 align-end action-stack">
+                                <button id="assetAddButton" class="btn" type="submit">Add Asset</button>
+                            </div>
+                        </form>
+                        <div id="assetsSummary" class="risk-legend exposure-legend-compact"></div>
+                    </article>
+                </div>
             </section>
 
             <section class="tab" id="tab-findings">

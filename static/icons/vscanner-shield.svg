@@ -1,17 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="vScanner shield icon">
   <defs>
     <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#2df2c8"/>
-      <stop offset="100%" stop-color="#4e9bff"/>
-    </linearGradient>
-    <linearGradient id="scan" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0%" stop-color="#9cf7ff"/>
-      <stop offset="100%" stop-color="#d9f5ff"/>
+      <stop offset="0%" stop-color="#22d3a6"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
     </linearGradient>
   </defs>
-  <path d="M32 5l23 8v16c0 14-8.7 24-23 30C17.7 53 9 43 9 29V13l23-8z" fill="url(#shield)"/>
-  <circle cx="32" cy="31" r="12" fill="none" stroke="url(#scan)" stroke-width="2.7"/>
-  <circle cx="32" cy="31" r="6" fill="none" stroke="url(#scan)" stroke-width="2.2"/>
-  <path d="M32 31l9-9" stroke="url(#scan)" stroke-width="2.6" stroke-linecap="round"/>
-  <circle cx="42" cy="21" r="3" fill="#e8fbff"/>
+  <path d="M32 6l20 7v15c0 13-7.5 22.8-20 29-12.5-6.2-20-16-20-29V13l20-7z" fill="url(#shield)"/>
+  <path d="M19 33h8l3-7 5 15 4-8h6" fill="none" stroke="#ecfeff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="12.5" fill="none" stroke="#d8fbff" stroke-opacity="0.35" stroke-width="2"/>
 </svg>

@@ -55,6 +55,14 @@ const findingSearch = document.getElementById("findingSearch");
 const refreshFindingsButton = document.getElementById("refreshFindingsButton");
 const findingsCsvButton = document.getElementById("findingsCsvButton");
 const findingsTable = document.getElementById("findingsTable");
+const assetsInventory = document.getElementById("assetsInventory");
+const assetsSummary = document.getElementById("assetsSummary");
+const refreshAssetsButton = document.getElementById("refreshAssetsButton");
+const assetForm = document.getElementById("assetForm");
+const assetValueInput = document.getElementById("assetValueInput");
+const assetTagsInput = document.getElementById("assetTagsInput");
+const assetCriticalitySelect = document.getElementById("assetCriticalitySelect");
+const assetTagFilter = document.getElementById("assetTagFilter");
 
 const historyList = document.getElementById("historyList");
 const refreshHistoryButton = document.getElementById("refreshHistoryButton");
@@ -134,14 +142,14 @@ const I18N = {
         v2ModeNote: "Der Adaptive V2 Scanner nutzt asynchrone Probes und Plugin-Checks für tiefere Service-Intelligenz.",
         operationalNotes: "Betriebshinweise",
         scannerReference: "Scanner-Referenz",
-        kpiAvgRiskLabel: "Durchschnittliches Risiko",
-        kpiAvgRiskHint: "Gewähltes Zeitfenster",
+        kpiAvgRiskLabel: "Risiko-Score",
+        kpiAvgRiskHint: "Gewichteter Ist-Zustand",
         kpiScansLabel: "Gesamt-Scans",
         kpiScansHint: "Gespeicherte Reports",
-        kpiUniqueLabel: "Eindeutige Schwachstellen",
-        kpiUniqueHint: "Nach Schwachstellen-Schlüssel aggregiert",
+        kpiUniqueLabel: "Aktive Schwachstellen",
+        kpiUniqueHint: "Deduplicierter aktueller Zustand",
         kpiAssetsLabel: "Betroffene Assets",
-        kpiAssetsHint: "Im aktuellen Projekt",
+        kpiAssetsHint: "Betroffene Assets im Inventar",
         netResultTitle: "Netzwerk-Scan-Ergebnisse",
         stealthResultTitle: "Stealth-Scan-Ergebnisse",
         scanNetworkButton: "Netzwerk scannen",
@@ -290,14 +298,14 @@ const I18N = {
         v2ModeNote: "Adaptive V2 scanner uses async probing and plugin checks. Use for deeper service intelligence.",
         operationalNotes: "Operational Notes",
         scannerReference: "Scanner Reference",
-        kpiAvgRiskLabel: "Average Risk",
-        kpiAvgRiskHint: "Selected time window",
+        kpiAvgRiskLabel: "Risk Score",
+        kpiAvgRiskHint: "Weighted current state",
         kpiScansLabel: "Total Scans",
         kpiScansHint: "Reports saved",
-        kpiUniqueLabel: "Unique Vulnerabilities",
-        kpiUniqueHint: "Aggregated by vulnerability key",
+        kpiUniqueLabel: "Active Vulnerabilities",
+        kpiUniqueHint: "Deduplicated current state",
         kpiAssetsLabel: "Affected Assets",
-        kpiAssetsHint: "Across current project",
+        kpiAssetsHint: "Impacted asset inventory",
         netResultTitle: "Network Scan Results",
         stealthResultTitle: "Stealth Scan Results",
         scanNetworkButton: "Scan Network",
@@ -814,6 +822,7 @@ function tabToPath(tabName) {
         network: "/network",
         stealth: "/stealth",
         findings: "/findings",
+        assets: "/assets",
         history: "/history",
         settings: "/settings",
     };
@@ -828,6 +837,7 @@ function pathToTab(pathname) {
         "/network": "network",
         "/stealth": "stealth",
         "/findings": "findings",
+        "/assets": "assets",
         "/history": "history",
         "/settings": "settings",
     };
@@ -1480,6 +1490,8 @@ function applyLanguage(lang) {
     setText("topAssetsTitle", t("topAssetsTitle"));
     setText("serviceInventoryTitle", t("serviceInventoryTitle"));
     setText("portIntelTitle", t("portIntelTitle") || "Port Intelligence");
+    setText("assetsInventoryTitle", text.assets || I18N.en.assets || "Assets");
+    setText("assetsAddTitle", text.newProject || "Add Asset");
     setText("runNewScanTitle", text.runScan || I18N.en.runScan);
     setText("modeRiskTitle", text.riskScanner || I18N.en.riskScanner);
     setText("modeRiskDesc", text.riskScannerDesc || I18N.en.riskScannerDesc);
@@ -1587,6 +1599,7 @@ function applyLanguage(lang) {
         network: text.networkTab || "Network",
         stealth: text.stealthTab || "Stealth",
         findings: text.findings,
+        assets: text.assets,
         history: text.history,
         settings: text.settings,
     };
@@ -1894,6 +1907,57 @@ function renderHistory(items) {
         .join("");
 }
 
+function renderAssetsSummary(items, totals) {
+    if (!assetsSummary) {
+        return;
+    }
+    const highCriticality = (items || []).filter((item) => String(item.criticality || "medium") === "high").length;
+    assetsSummary.innerHTML = [
+        `<span>Assets <strong>${esc((items || []).length)}</strong></span>`,
+        `<span>Critical assets <strong>${esc(totals.critical_assets || highCriticality || 0)}</strong></span>`,
+        `<span>Affected assets <strong>${esc(totals.affected_assets || 0)}</strong></span>`,
+    ].join("");
+}
+
+function renderAssets(items) {
+    if (!assetsInventory) {
+        return;
+    }
+    if (!items.length) {
+        assetsInventory.innerHTML = `<div class="list-item"><div class="list-line">${esc(t("noAssetInventory") || "No assets yet")}</div></div>`;
+        return;
+    }
+
+    assetsInventory.innerHTML = items
+        .map((item) => {
+            const tags = (item.tags || []).map((tag) => `<span class="chip">${esc(tag)}</span>`).join(" ");
+            const criticality = String(item.criticality || "medium").toLowerCase();
+            return `
+                <div class="list-item">
+                    <div class="list-line"><strong>${esc(item.value || "-")}</strong><span class="crit-badge crit-${esc(criticality)}">${esc(criticality)}</span></div>
+                    <div class="list-line"><span>${tags || "-"}</span><span>${esc(item.created_at || "-")}</span></div>
+                </div>
+            `;
+        })
+        .join("");
+}
+
+async function loadAssets() {
+    const params = new URLSearchParams();
+    const rawTags = String(assetTagFilter?.value || "").trim();
+    if (rawTags) {
+        params.set("tags", rawTags);
+    }
+    const qs = params.toString();
+    const response = await fetch(`/api/projects/${encodeURIComponent(activeProjectId)}/assets${qs ? `?${qs}` : ""}`);
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || "Assets unavailable");
+    }
+    renderAssets(data.items || []);
+    return data.items || [];
+}
+
 async function expandHistoryReport(reportId) {
     const card = historyList.querySelector(`[data-report-id="${CSS.escape(reportId)}"]`);
     if (!card) {
@@ -1978,13 +2042,10 @@ async function loadDashboard() {
     }
 
     const totals = data.totals || {};
-    kpiAvgRisk.textContent = String(totals.avg_risk || 0);
+    kpiAvgRisk.textContent = String(totals.risk_score || totals.avg_risk || 0);
     kpiScans.textContent = String(totals.scans || 0);
-
-    const uniqueCount = (data.top_vulnerabilities || []).length;
-    const affectedAssets = (data.top_vulnerabilities || []).reduce((sum, item) => sum + Number(item.affected_assets || 0), 0);
-    kpiUnique.textContent = String(uniqueCount);
-    kpiAssets.textContent = String(affectedAssets);
+    kpiUnique.textContent = String(totals.active_vulnerabilities || totals.findings || 0);
+    kpiAssets.textContent = String(totals.affected_assets || 0);
 
     drawTrend(data.trend || []);
     drawRiskBars(data.risk_distribution || {});
@@ -1997,6 +2058,7 @@ async function loadDashboard() {
     renderTopAssets(data.top_assets || []);
     renderServiceInventory(data.service_inventory || []);
     renderPortIntelligence(data.service_inventory || []);
+    renderAssetsSummary(data.assets || [], data.totals || {});
 }
 
 async function loadAggregatedFindings() {
@@ -2104,7 +2166,7 @@ historyList.addEventListener("click", async (event) => {
                 throw new Error(data?.error || "Could not delete scan.");
             }
             historyCache.delete(reportId);
-            await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+            await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
         } catch (error) {
             showError(error.message || "Could not delete scan.");
         }
@@ -2154,7 +2216,7 @@ scanForm.addEventListener("submit", async (event) => {
 
     renderScanResult(data);
     saveLastScan(exportScope, data);
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
         activateTab("dashboard");
     } catch (error) {
         showError(error.message || "Scan failed");
@@ -2263,7 +2325,7 @@ resetProjectButton?.addEventListener("click", async () => {
         reportPdfButton.disabled = true;
         reportCsvButton.disabled = true;
         scanResult.innerHTML = "";
-        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
     } catch (error) {
         showError(error.message || "Project reset failed.");
     }
@@ -2285,7 +2347,7 @@ deleteProjectButton?.addEventListener("click", async () => {
             throw new Error(data?.error || "Project deletion failed.");
         }
         activeProjectId = data?.fallback_project_id || "default";
-        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        await Promise.all([loadProjects(), loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
     } catch (error) {
         showError(error.message || "Project deletion failed.");
     }
@@ -2293,7 +2355,7 @@ deleteProjectButton?.addEventListener("click", async () => {
 
 projectSelect.addEventListener("change", async () => {
     activeProjectId = projectSelect.value || "default";
-    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
 });
 
 newProjectButton.addEventListener("click", async () => {
@@ -2316,7 +2378,7 @@ newProjectButton.addEventListener("click", async () => {
         await loadProjects();
         activeProjectId = data.id;
         projectSelect.value = data.id;
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
     } catch (error) {
         showError(error.message || "Project creation failed");
     }
@@ -2364,6 +2426,7 @@ intelOnlyButton?.addEventListener("click", async () => {
 windowDays.addEventListener("change", loadDashboard);
 refreshFindingsButton.addEventListener("click", loadAggregatedFindings);
 refreshHistoryButton.addEventListener("click", loadHistory);
+refreshAssetsButton?.addEventListener("click", loadAssets);
 severityFilter.addEventListener("change", loadAggregatedFindings);
 sinceDays.addEventListener("change", loadAggregatedFindings);
 sortBy.addEventListener("change", loadAggregatedFindings);
@@ -2375,6 +2438,41 @@ severityTimelineMode?.addEventListener("change", () => drawSeverityStack(severit
 findingSearch.addEventListener("input", () => {
     window.clearTimeout(window.__findingSearchTimer);
     window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
+});
+assetTagFilter?.addEventListener("input", () => {
+    window.clearTimeout(window.__assetFilterTimer);
+    window.__assetFilterTimer = window.setTimeout(loadAssets, 260);
+});
+
+assetForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const value = String(assetValueInput?.value || "").trim();
+    if (!value) {
+        showError("Asset value is required");
+        return;
+    }
+    const tags = String(assetTagsInput?.value || "")
+        .split(",")
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean);
+    try {
+        const { response, data } = await fetchJsonWithTimeout(`/api/projects/${encodeURIComponent(activeProjectId)}/assets`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                value,
+                tags,
+                criticality: assetCriticalitySelect?.value || "medium",
+            }),
+        }, 20000);
+        if (!response.ok) {
+            throw new Error(data?.error || "Asset creation failed");
+        }
+        assetForm.reset();
+        await loadAssets();
+    } catch (error) {
+        showError(error.message || "Asset creation failed");
+    }
 });
 
 // ─── Network Scanner ───────────────────────────────────────────────────────
@@ -2437,7 +2535,7 @@ netScanForm?.addEventListener("submit", async (event) => {
         if (netScanResult) netScanResult.innerHTML = buildScanResultMarkup(data);
         updateNetStats(data);
         saveLastScan("network", data);
-        await Promise.all([loadDashboard(), loadHistory()]);
+        await Promise.all([loadDashboard(), loadHistory(), loadAssets()]);
     } catch (err) {
         if (netScanError) { netScanError.textContent = err.message || "Network scan failed"; netScanError.classList.remove("hidden"); }
         if (netScanResult) netScanResult.innerHTML = "";
@@ -2521,7 +2619,7 @@ async function runStealthScan(intelOnly = false) {
             if (stealthReportCsvButton) stealthReportCsvButton.disabled = false;
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(data);
             saveLastScan("stealth", data);
-            await Promise.all([loadDashboard(), loadHistory()]);
+            await Promise.all([loadDashboard(), loadHistory(), loadAssets()]);
         }
     } catch (err) {
         if (stealthScanError) { stealthScanError.textContent = err.message || "Stealth scan failed"; stealthScanError.classList.remove("hidden"); }
@@ -2617,7 +2715,7 @@ function restoreLastScan() {
         restoreLastScan();
         await loadHealth();
         await loadProjects();
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory()]);
+        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
     } catch (error) {
         showError(error.message || "Initial load failed");
     }
