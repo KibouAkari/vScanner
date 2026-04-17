@@ -6634,6 +6634,44 @@ def assets_tags_api(asset_id: str) -> Any:
     return project_assets_tags_api(project_id, asset_id)
 
 
+@app.route("/api/dashboard")
+def dashboard_api_compat() -> Any:
+    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    try:
+        window_days = int(request.args.get("window_days", "30"))
+    except ValueError:
+        window_days = 30
+    try:
+        data = get_project_dashboard(project_id, window_days=window_days)
+        return jsonify(data)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@app.route("/api/findings")
+def findings_api_compat() -> Any:
+    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    severity = (request.args.get("severity") or "all").lower()
+    search = (request.args.get("search") or "").strip()
+    sort_by = (request.args.get("sort_by") or "severity").lower()
+    sort_dir = (request.args.get("sort_dir") or "desc").lower()
+    try:
+        since_days = int(request.args.get("since_days", "90"))
+    except ValueError:
+        since_days = 90
+    if severity not in {"all", "critical", "high", "medium", "low", "info"}:
+        return jsonify({"error": "Invalid severity filter."}), 400
+    items = get_project_findings(
+        project_id=project_id,
+        severity=severity,
+        search=search,
+        since_days=since_days,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return jsonify({"items": items})
+
+
 @app.route("/api/projects/<project_id>/settings")
 def project_settings_api(project_id: str) -> Any:
     if not get_project(project_id):
