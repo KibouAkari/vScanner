@@ -1409,7 +1409,6 @@ function renderServiceInventory(items) {
     }
 
     serviceInventory.innerHTML = items
-        .slice(0, 12)
         .map(
             (item) => `
                 <div class="list-item">
@@ -1707,6 +1706,11 @@ function renderIntelBlock(intelData) {
 
 function buildScanResultMarkup(data) {
     const metrics = data.metrics || {};
+    const hostOpenPortsObserved = (data.hosts || []).reduce((acc, host) => {
+        const openPorts = (host.ports || []).filter((entry) => String(entry.state || "").toLowerCase() === "open");
+        return acc + openPorts.length;
+    }, 0);
+    const openPortsDisplay = hostOpenPortsObserved > 0 ? hostOpenPortsObserved : (metrics.open_ports || 0);
     const severityRank = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
     const rows = [...(data.finding_items || [])]
         .sort((a, b) => {
@@ -1799,7 +1803,7 @@ function buildScanResultMarkup(data) {
     return `
         <div class="scan-summary-grid">
             <div class="scan-summary-item"><span>${esc(t("hostsScanned"))}</span><strong>${esc(metrics.hosts_scanned || 0)}</strong></div>
-            <div class="scan-summary-item"><span>${esc(t("openPorts"))}</span><strong>${esc(metrics.open_ports || 0)}</strong></div>
+            <div class="scan-summary-item"><span>${esc(t("openPorts"))}</span><strong>${esc(openPortsDisplay)}</strong></div>
             <div class="scan-summary-item"><span>${esc(t("cveCandidates"))}</span><strong>${esc(metrics.cve_candidates || 0)}</strong></div>
             <div class="scan-summary-item"><span>${esc(t("riskScore"))}</span><strong>${esc(data.true_risk_score || 0)}</strong></div>
         </div>

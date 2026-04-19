@@ -2415,7 +2415,28 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
     if not DB_READY:
         return report_id
 
-    metrics = result.get("metrics", {})
+    metrics = dict(result.get("metrics") or {})
+    observed_open_ports = 0
+    observed_services: set[str] = set()
+    for host in (result.get("hosts") or []):
+        for port_entry in (host.get("ports") or host.get("open_ports") or []):
+            if str(port_entry.get("state") or "open").lower() != "open":
+                continue
+            try:
+                port_no = int(port_entry.get("port") or 0)
+            except Exception:
+                port_no = 0
+            if port_no <= 0:
+                continue
+            observed_open_ports += 1
+            svc = str(port_entry.get("name") or port_entry.get("service") or "").strip().lower()
+            if svc:
+                observed_services.add(svc)
+    if observed_open_ports > 0:
+        metrics["open_ports"] = observed_open_ports
+    if observed_services:
+        metrics["exposed_services"] = len(observed_services)
+    result["metrics"] = metrics
     created_at = utc_now()
     asset_map = sync_assets_from_scan(project_id, result)
     scan_hosts = [
