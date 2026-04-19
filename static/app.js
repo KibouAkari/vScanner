@@ -1414,7 +1414,7 @@ function renderServiceInventory(items) {
             (item) => `
                 <div class="list-item">
                     <div class="list-line"><strong>${esc(item.service || "unknown")}</strong><span>${esc(t("assets"))}: ${esc(item.asset_count || 0)}</span></div>
-                    <div class="list-line"><span>Observations: ${esc(item.count || 0)}</span><span>Ports: ${esc((item.ports || []).slice(0, 5).join(", ") || "-")}</span></div>
+                    <div class="list-line"><span>Observations: ${esc(item.count || 0)}</span><span>Ports: ${esc((item.ports || []).join(", ") || "-")}</span></div>
                 </div>
             `
         )
@@ -1433,7 +1433,7 @@ function renderPortIntelligence(inventoryItems) {
             portMap.get(key).count += item.count || 1;
         });
     });
-    const sorted = [...portMap.entries()].sort((a, b) => b[1].count - a[1].count).slice(0, 12);
+    const sorted = [...portMap.entries()].sort((a, b) => b[1].count - a[1].count);
     if (!sorted.length) {
         el.innerHTML = `<div class="port-intel-item port-intel-empty"><span class="port-intel-service">No port data yet - run a scan to populate.</span></div>`;
         return;
