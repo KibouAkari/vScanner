@@ -963,7 +963,7 @@ function drawRiskBars(summary) {
         riskChartInstance.destroy();
     }
 
-    const values = ORDER.map((key) => Number(summary[key] || 0));
+    const values = ORDER.map((key) => Number(summary[key]));
     riskChartInstance = new window.Chart(riskChart, {
         type: "doughnut",
         data: {
@@ -993,7 +993,7 @@ function drawRiskBars(summary) {
         },
     });
 
-    riskLegend.innerHTML = ORDER.map((key) => `<div class="risk-item"><span>${key.toUpperCase()}</span><strong>${summary[key] || 0}</strong></div>`).join("");
+    riskLegend.innerHTML = ORDER.map((key) => `<div class="risk-item"><span>${key.toUpperCase()}</span><strong>${summary[key]}</strong></div>`).join("");
 }
 
 function drawSeverityStack(points) {
@@ -1299,7 +1299,7 @@ function renderSeverityHeatmap(items) {
     for (const item of items) {
         const sev = String(item.severity || "low").toLowerCase();
         if (counts[sev] !== undefined) {
-            counts[sev] += Number(item.affected_assets || 0);
+            counts[sev] += Number(item.affected_assets);
         }
     }
 
@@ -1326,7 +1326,7 @@ function renderTopVulns(items) {
                 <div class="list-item">
                     <div class="list-line">
                         <span class="badge badge-${esc(sev)}">${esc(sev)}</span>
-                        <strong>${esc(t("assets"))}: ${esc(item.affected_assets || 0)}</strong>
+                        <strong>${esc(t("assets"))}: ${esc(item.affected_assets)}</strong>
                     </div>
                     <div class="list-line"><span>${esc(item.title || "Finding")}</span></div>
                     <div class="list-line"><span>${esc(item.cve || "-")}</span><span>${esc(item.type || "-")}</span></div>
@@ -1391,7 +1391,7 @@ function renderTopAssets(items) {
             (item) => `
                 <div class="list-item">
                     <div class="list-line"><strong>${esc(item.host || "-")}</strong><span>${esc(item.last_seen || "-")}</span></div>
-                    <div class="list-line"><span>${esc(t("openPorts"))}: ${esc(item.open_ports || 0)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.findings || 0)}</span></div>
+                    <div class="list-line"><span>${esc(t("openPorts"))}: ${esc(item.open_ports)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.findings)}</span></div>
                     <div class="list-line"><span>${esc(t("risk"))}: ${esc(item.risk_score || 0)}</span><span>${esc((item.profiles || []).join(", ") || "-")}</span></div>
                 </div>
             `
@@ -2035,7 +2035,10 @@ async function loadProjects() {
 
 async function loadDashboard() {
     const days = Number(windowDays.value || 30);
-    const response = await fetch(`/api/dashboard?project_id=${encodeURIComponent(activeProjectId)}&window_days=${days}`);
+    const projectId = activeProjectId || "default";
+    const endpoint = `/api/dashboard?project_id=${encodeURIComponent(projectId)}&window_days=${days}`;
+    console.log("DASHBOARD ENDPOINT:", endpoint);
+    const response = await fetch(endpoint);
     const data = await response.json();
     console.log("DASHBOARD RAW:", data);
     console.log("DASHBOARD RESPONSE:", response);
@@ -2043,24 +2046,24 @@ async function loadDashboard() {
         throw new Error(data.error || "Dashboard unavailable");
     }
 
-    const totals = data.totals ? data.totals : data;
-    kpiAvgRisk.textContent = String(totals.risk_score);
-    kpiScans.textContent = String(totals.scans);
-    kpiUnique.textContent = String(totals.active_vulnerabilities);
-    kpiAssets.textContent = String(totals.affected_assets);
+    const dashboardData = { ...(data.totals || {}), ...data };
+    kpiAvgRisk.textContent = String(dashboardData.risk_score);
+    kpiScans.textContent = String(dashboardData.scans);
+    kpiUnique.textContent = String(dashboardData.active_vulnerabilities);
+    kpiAssets.textContent = String(dashboardData.affected_assets);
 
     drawTrend(data.trend || []);
-    drawRiskBars(data.risk_distribution || {});
+    drawRiskBars(data.risk_distribution);
     severityTimelinePoints = data.severity_timeline || [];
     drawSeverityStack(severityTimelinePoints);
     renderSeverityHeatmap(data.top_vulnerabilities || []);
     renderTopVulns(data.top_vulnerabilities || []);
     renderRecentScans(data.recent_scans || []);
-    renderExposureSummary(totals);
+    renderExposureSummary(dashboardData);
     renderTopAssets(data.top_assets || []);
     renderServiceInventory(data.service_inventory || []);
     renderPortIntelligence(data.service_inventory || []);
-    renderAssetsSummary(data.assets || [], totals);
+    renderAssetsSummary(data.assets || [], dashboardData);
 }
 
 async function loadAggregatedFindings() {
