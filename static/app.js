@@ -46,7 +46,6 @@ const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
-const scanJobStatus = document.getElementById("scanJobStatus");
 
 const severityFilter = document.getElementById("severityFilter");
 const sinceDays = document.getElementById("sinceDays");
@@ -106,6 +105,7 @@ let dashboardRequestSeq = 0;
 const CHART_ANIMATION_MS = 320;
 let selectedFindingKey = "";
 let activeScanJobId = "";
+let activeScanStatusController = null;
 
 const I18N = {
     de: {
@@ -801,31 +801,378 @@ function clearError() {
     scanError.classList.add("hidden");
 }
 
-function setScanJobStatus(message = "", state = "info") {
-    if (!scanJobStatus) {
-        return;
-    }
-    scanJobStatus.textContent = message;
-    scanJobStatus.classList.remove("hidden", "state-live", "state-degraded", "state-offline", "state-warn");
-    if (!message) {
-        scanJobStatus.classList.add("hidden");
-        return;
-    }
-    const map = {
-        info: "state-live",
-        running: "state-live",
-        warn: "state-warn",
-        error: "state-offline",
-        done: "state-live",
-    };
-    scanJobStatus.classList.add(map[state] || "state-live");
-}
-
 function delayMs(ms) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function runQueuedScan(payload, useV2 = false) {
+function parseIsoToMs(value) {
+    const ts = Date.parse(String(value || ""));
+    if (Number.isFinite(ts)) {
+        return ts;
+    }
+    return Date.now();
+}
+
+function formatElapsed(secondsRaw) {
+    const total = Math.max(0, Math.floor(Number(secondsRaw || 0)));
+    const mm = String(Math.floor(total / 60)).padStart(2, "0");
+    const ss = String(total % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+}
+
+function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, Number(value || 0)));
+}
+
+function prettyPhase(phaseRaw) {
+    const raw = String(phaseRaw || "queued").trim().toLowerCase();
+    const labels = {
+        queued: "queued",
+        init: "initializing",
+        collect: "collecting",
+        enrichment: "enrichment",
+        correlation: "correlation",
+        persist: "persisting",
+        finalize: "finalizing",
+        done: "completed",
+        completed: "completed",
+        failed: "failed",
+        intel: "intel",
+    };
+    return labels[raw] || raw.replace(/_/g, " ");
+}
+
+function scanTypeLabel(variantRaw) {
+    const variant = String(variantRaw || "risk").toLowerCase();
+    if (variant === "v2") {
+        return "Adaptive V2";
+    }
+    if (variant === "network") {
+        return "Network";
+    }
+    if (variant === "stealth") {
+        return "Stealth";
+    }
+    return "Risk";
+}
+
+function getPhaseProfile(phaseRaw) {
+    const phase = String(phaseRaw || "collect").toLowerCase();
+    const profile = {
+        queued: { floor: 1, ceiling: 6, expectedSec: 8 },
+        init: { floor: 2, ceiling: 10, expectedSec: 10 },
+        collect: { floor: 10, ceiling: 58, expectedSec: 85 },
+        enrichment: { floor: 48, ceiling: 78, expectedSec: 35 },
+        correlation: { floor: 72, ceiling: 91, expectedSec: 24 },
+        persist: { floor: 88, ceiling: 97, expectedSec: 15 },
+        finalize: { floor: 95, ceiling: 99.4, expectedSec: 9 },
+        done: { floor: 100, ceiling: 100, expectedSec: 0 },
+        completed: { floor: 100, ceiling: 100, expectedSec: 0 },
+        failed: { floor: 100, ceiling: 100, expectedSec: 0 },
+        intel: { floor: 18, ceiling: 64, expectedSec: 30 },
+    };
+    return profile[phase] || { floor: 8, ceiling: 90, expectedSec: 48 };
+}
+
+function loadScanTimingStats() {
+    try {
+        const raw = localStorage.getItem("vscanner.scanTimingStats.v2");
+        const parsed = raw ? JSON.parse(raw) : {};
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function saveScanTimingStats(stats) {
+    try {
+        localStorage.setItem("vscanner.scanTimingStats.v2", JSON.stringify(stats || {}));
+    } catch (_) {
+        // ignore storage failures
+    }
+}
+
+function readExpectedDurationSec(stats, mode, phase) {
+    const modeData = (stats && stats[mode]) || {};
+    const phases = modeData.phases || {};
+    const item = phases[phase] || {};
+    const avg = Number(item.avgSec || 0);
+    if (avg > 0) {
+        return avg;
+    }
+    return getPhaseProfile(phase).expectedSec;
+}
+
+function writeDurationStat(stats, mode, phase, durationSec) {
+    const duration = clamp(durationSec, 0, 36000);
+    if (!(duration > 0.25)) {
+        return;
+    }
+    if (!stats[mode]) {
+        stats[mode] = { phases: {}, total: { avgSec: 0, count: 0 } };
+    }
+    if (!stats[mode].phases) {
+        stats[mode].phases = {};
+    }
+    const current = stats[mode].phases[phase] || { avgSec: 0, count: 0 };
+    const count = Math.min(80, Number(current.count || 0) + 1);
+    const prevAvg = Number(current.avgSec || 0);
+    const nextAvg = prevAvg > 0 ? (prevAvg * (count - 1) + duration) / count : duration;
+    stats[mode].phases[phase] = { avgSec: Number(nextAvg.toFixed(3)), count };
+}
+
+function formatEta(secondsRaw) {
+    const seconds = Math.max(0, Math.floor(Number(secondsRaw || 0)));
+    if (!seconds) {
+        return "--:--";
+    }
+    const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+    const ss = String(seconds % 60).padStart(2, "0");
+    return `${mm}:${ss}`;
+}
+
+function createScanStatusController(container, variant = "risk", initial = {}) {
+    if (!container) {
+        return {
+            update: () => {},
+            complete: () => {},
+            fail: () => {},
+            dispose: () => {},
+        };
+    }
+
+    const mode = ["risk", "v2", "network", "stealth"].includes(String(variant || "").toLowerCase())
+        ? String(variant || "risk").toLowerCase()
+        : "risk";
+
+    const startedMs = parseIsoToMs(initial.createdAt);
+    const shortJobId = String(initial.jobId || "").slice(0, 8);
+    const typeLabel = scanTypeLabel(mode);
+    const timingStats = loadScanTimingStats();
+
+    let backendPhase = String(initial.phase || "queued").toLowerCase();
+    let phaseStartedAtMs = Date.now();
+    let phaseStartedFromProgress = clamp(initial.progress || getPhaseProfile(backendPhase).floor, 0, 100);
+    let previousPhase = backendPhase;
+    let pollProgress = clamp(initial.progress || 0, 0, 100);
+    let shownProgress = pollProgress;
+    let lastStatusAtMs = Date.now();
+    let phaseClockInterval = 0;
+    let elapsedClockInterval = 0;
+
+    container.innerHTML = `
+        <div class="scan-status-card scan-status-${esc(mode)}" role="status" aria-live="polite">
+            <div class="scan-loader scan-loader-${esc(mode)}" aria-hidden="true">
+                <div class="scan-loader-core">
+                    <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                </div>
+            </div>
+            <div class="scan-status-body">
+                <div class="scan-status-topline">
+                    <strong class="scan-status-type">${esc(typeLabel)}</strong>
+                    <span class="scan-status-elapsed">00:00</span>
+                </div>
+                <div class="scan-status-meta">
+                    <span class="scan-status-phase">queued</span>
+                    <span class="scan-status-eta">ETA --:--</span>
+                </div>
+                <div class="scan-status-message">Preparing scan pipeline...</div>
+                <div class="scan-status-progress-track"><div class="scan-status-progress-fill" style="width:0%"></div></div>
+                <div class="scan-status-bottomline">
+                    <span class="scan-status-progress-value">0%</span>
+                    <span class="scan-status-jobref">Job ${esc(shortJobId || "pending")}</span>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const phaseEl = container.querySelector(".scan-status-phase");
+    const elapsedEl = container.querySelector(".scan-status-elapsed");
+    const messageEl = container.querySelector(".scan-status-message");
+    const fillEl = container.querySelector(".scan-status-progress-fill");
+    const valueEl = container.querySelector(".scan-status-progress-value");
+
+    const etaEl = container.querySelector(".scan-status-eta");
+
+    let completed = false;
+    let rafId = 0;
+
+    const estimateRemainingSeconds = () => {
+        const elapsedSec = Math.max(0, (Date.now() - startedMs) / 1000);
+        const currentPhase = String(backendPhase || "collect").toLowerCase();
+        const phaseInfo = getPhaseProfile(currentPhase);
+        const expectedCurrentSec = readExpectedDurationSec(timingStats, mode, currentPhase);
+        const phaseElapsedSec = Math.max(0, (Date.now() - phaseStartedAtMs) / 1000);
+        const phaseBasedRemaining = Math.max(0, expectedCurrentSec - phaseElapsedSec);
+
+        let progressBasedRemaining = 0;
+        if (shownProgress > 1) {
+            progressBasedRemaining = Math.max(0, elapsedSec * ((100 - shownProgress) / shownProgress));
+        }
+
+        const remain = progressBasedRemaining > 0
+            ? (phaseBasedRemaining * 0.62 + progressBasedRemaining * 0.38)
+            : phaseBasedRemaining;
+        const maxRemain = Math.max(20, phaseInfo.expectedSec * 4);
+        return clamp(remain, 0, maxRemain);
+    };
+
+    const renderElapsed = () => {
+        if (!elapsedEl || completed) {
+            return;
+        }
+        const elapsedSeconds = Math.max(0, (Date.now() - startedMs) / 1000);
+        elapsedEl.textContent = formatElapsed(elapsedSeconds);
+    };
+
+    const renderEta = () => {
+        if (!etaEl) {
+            return;
+        }
+        if (completed) {
+            etaEl.textContent = "ETA 00:00";
+            return;
+        }
+        etaEl.textContent = `ETA ${formatEta(estimateRemainingSeconds())}`;
+    };
+
+    const predictedProgress = () => {
+        const phase = String(backendPhase || "collect").toLowerCase();
+        const phaseInfo = getPhaseProfile(phase);
+        const phaseElapsed = Math.max(0, (Date.now() - phaseStartedAtMs) / 1000);
+        const expectedSec = Math.max(4, readExpectedDurationSec(timingStats, mode, phase));
+        const phaseSpan = Math.max(0, phaseInfo.ceiling - phaseStartedFromProgress);
+        const phaseAdvance = phaseSpan > 0 ? (phaseElapsed / expectedSec) * phaseSpan : 0;
+
+        const timeSinceStatusSec = Math.max(0, (Date.now() - lastStatusAtMs) / 1000);
+        const leadBudget = Math.min(7.5, 1.4 + (timeSinceStatusSec * 0.28));
+        const baseline = phaseStartedFromProgress + phaseAdvance;
+        const boundedTarget = Math.min(phaseInfo.ceiling - 0.12, pollProgress + leadBudget);
+        return clamp(Math.max(pollProgress, baseline), 0, Math.max(pollProgress, boundedTarget));
+    };
+
+    const animate = () => {
+        if (completed) {
+            return;
+        }
+        const target = predictedProgress();
+        const delta = target - shownProgress;
+        if (Math.abs(delta) > 0.05) {
+            shownProgress += delta * 0.11;
+        } else {
+            shownProgress = target;
+        }
+        const safeProgress = clamp(shownProgress, 0, 100);
+        if (fillEl) {
+            fillEl.style.width = `${safeProgress.toFixed(1)}%`;
+        }
+        if (valueEl) {
+            valueEl.textContent = `${Math.round(safeProgress)}%`;
+        }
+        renderEta();
+        rafId = window.requestAnimationFrame(animate);
+    };
+
+    renderElapsed();
+    renderEta();
+    elapsedClockInterval = window.setInterval(renderElapsed, 1000);
+    phaseClockInterval = window.setInterval(renderEta, 1000);
+    rafId = window.requestAnimationFrame(animate);
+
+    const closePhaseWindow = (phaseName, endedAtMs) => {
+        const ended = Number(endedAtMs || Date.now());
+        const started = Number(phaseStartedAtMs || ended);
+        const durationSec = Math.max(0, (ended - started) / 1000);
+        writeDurationStat(timingStats, mode, String(phaseName || "collect").toLowerCase(), durationSec);
+    };
+
+    const flushStats = () => {
+        saveScanTimingStats(timingStats);
+    };
+
+    return {
+        update(job = {}) {
+            if (completed) {
+                return;
+            }
+            const nowMs = Date.now();
+            const nextProgress = clamp(job.progress || 0, 0, 100);
+            const phaseRaw = String(job.phase || backendPhase || "running").toLowerCase();
+
+            if (phaseRaw !== backendPhase) {
+                closePhaseWindow(previousPhase, nowMs);
+                previousPhase = phaseRaw;
+                backendPhase = phaseRaw;
+                phaseStartedAtMs = nowMs;
+                phaseStartedFromProgress = Math.max(nextProgress, clamp(shownProgress, 0, 100));
+            }
+
+            pollProgress = Math.max(pollProgress, nextProgress, getPhaseProfile(backendPhase).floor);
+            lastStatusAtMs = nowMs;
+            if (phaseEl) {
+                phaseEl.textContent = prettyPhase(backendPhase);
+            }
+            if (messageEl) {
+                messageEl.textContent = String(job.message || "Running scan...");
+            }
+            renderEta();
+        },
+        complete(message = "Completed") {
+            completed = true;
+            closePhaseWindow(backendPhase, Date.now());
+            pollProgress = 100;
+            shownProgress = 100;
+            if (fillEl) {
+                fillEl.style.width = "100%";
+            }
+            if (valueEl) {
+                valueEl.textContent = "100%";
+            }
+            if (phaseEl) {
+                phaseEl.textContent = "completed";
+            }
+            if (messageEl) {
+                messageEl.textContent = String(message || "Completed");
+            }
+            renderElapsed();
+            renderEta();
+            flushStats();
+            window.cancelAnimationFrame(rafId);
+            window.clearInterval(elapsedClockInterval);
+            window.clearInterval(phaseClockInterval);
+        },
+        fail(message = "Scan failed") {
+            completed = true;
+            closePhaseWindow(backendPhase, Date.now());
+            if (phaseEl) {
+                phaseEl.textContent = "failed";
+            }
+            if (messageEl) {
+                messageEl.textContent = String(message || "Scan failed");
+            }
+            container.querySelector(".scan-status-card")?.classList.add("scan-status-failed");
+            renderElapsed();
+            renderEta();
+            flushStats();
+            window.cancelAnimationFrame(rafId);
+            window.clearInterval(elapsedClockInterval);
+            window.clearInterval(phaseClockInterval);
+        },
+        dispose() {
+            completed = true;
+            flushStats();
+            window.cancelAnimationFrame(rafId);
+            window.clearInterval(elapsedClockInterval);
+            window.clearInterval(phaseClockInterval);
+        },
+    };
+}
+
+async function runQueuedScan(payload, options = {}) {
+    const useV2 = !!options.useV2;
+    const uiMode = String(options.uiMode || (useV2 ? "v2" : "risk"));
+    const statusContainer = options.statusContainer || scanResult;
+
     const { response, data } = await fetchJsonWithTimeout(
         "/api/scan/jobs",
         {
@@ -842,6 +1189,14 @@ async function runQueuedScan(payload, useV2 = false) {
     if (!jobId) {
         throw new Error("Invalid scan job response");
     }
+
+    activeScanStatusController?.dispose();
+    activeScanStatusController = createScanStatusController(statusContainer, uiMode, {
+        jobId,
+        createdAt: data?.created_at,
+        progress: 0,
+    });
+
     activeScanJobId = jobId;
     let polls = 0;
     while (polls < 500) {
@@ -852,21 +1207,18 @@ async function runQueuedScan(payload, useV2 = false) {
         }
         const job = statusResponse.data || {};
         const status = String(job.status || "queued").toLowerCase();
-        const progress = Number(job.progress || 0);
-        const message = String(job.message || status);
-        setScanJobStatus(`Scan Job ${jobId.slice(0, 8)} | ${progress}% | ${message}`, status === "failed" ? "error" : "running");
-        if (scanResult && status !== "completed") {
-            scanResult.innerHTML = `<div class="scan-loading"><div class="scan-spinner"></div><span>Job ${esc(jobId.slice(0, 8))} ${esc(progress)}% - ${esc(message)}</span></div>`;
-        }
+        activeScanStatusController?.update(job);
         if (status === "completed") {
-            setScanJobStatus(`Scan Job ${jobId.slice(0, 8)} completed.`, "done");
+            activeScanStatusController?.complete(job.message || "Scan completed");
             return job.result || {};
         }
         if (status === "failed") {
+            activeScanStatusController?.fail(job.error || job.message || "Scan job failed");
             throw new Error(job.error || job.message || "Scan job failed");
         }
-        await delayMs(1200);
+        await delayMs(1400);
     }
+    activeScanStatusController?.fail("Scan job timeout. Please check backend status.");
     throw new Error("Scan job timeout. Please check job status in backend.");
 }
 
@@ -2398,14 +2750,14 @@ scanForm.addEventListener("submit", async (event) => {
     scanButton.disabled = true;
     scanButton.classList.add("scanning");
     scanButton.textContent = t("scanning");
-    setScanJobStatus("Queueing scan job...", "running");
-    if (scanResult) {
-        scanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Running scan pipeline...</span></div>';
-    }
 
     try {
         const useV2 = endpoint.includes("/api/scan/v2") || scannerMode === "advanced_v2";
-        const data = await runQueuedScan(payload, useV2);
+        const data = await runQueuedScan(payload, {
+            useV2,
+            uiMode: useV2 ? "v2" : "risk",
+            statusContainer: scanResult,
+        });
 
         lastReportId = data.report_id || null;
         lastScannerScope = exportScope;
@@ -2423,7 +2775,6 @@ scanForm.addEventListener("submit", async (event) => {
         activateTab("dashboard");
     } catch (error) {
         showError(error.message || "Scan failed");
-        setScanJobStatus(error.message || "Scan failed", "error");
         if (scanResult) {
             scanResult.innerHTML = "";
         }
@@ -2812,11 +3163,12 @@ netScanForm?.addEventListener("submit", async (event) => {
 
     netScanButton.disabled = true;
     netScanButton.textContent = "Scanning…";
-    setScanJobStatus("Queueing network scan...", "running");
-    if (netScanResult) netScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Mapping network…</span></div>';
 
     try {
-        const data = await runQueuedScan({ target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId }, false);
+        const data = await runQueuedScan(
+            { target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId },
+            { useV2: false, uiMode: "network", statusContainer: netScanResult }
+        );
         lastNetReportId = data.report_id;
         if (netReportPdfButton) netReportPdfButton.disabled = false;
         if (netReportCsvButton) netReportCsvButton.disabled = false;
@@ -2827,7 +3179,6 @@ netScanForm?.addEventListener("submit", async (event) => {
     } catch (err) {
         if (netScanError) { netScanError.textContent = err.message || "Network scan failed"; netScanError.classList.remove("hidden"); }
         if (netScanResult) netScanResult.innerHTML = "";
-        setScanJobStatus(err.message || "Network scan failed", "error");
     } finally {
         netScanButton.disabled = false;
         netScanButton.textContent = "Scan Network";
@@ -2889,17 +3240,27 @@ async function runStealthScan(intelOnly = false) {
     stealthScanButton.disabled = true;
     stealthIntelButton.disabled = true;
     stealthScanButton.textContent = "Probing…";
-    setScanJobStatus(intelOnly ? "Running intel-only mode..." : "Queueing stealth scan...", "running");
-    if (stealthScanResult) stealthScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner stealth-spinner"></div><span>Low-noise probing…</span></div>';
+    if (intelOnly && stealthScanResult) {
+        activeScanStatusController?.dispose();
+        activeScanStatusController = createScanStatusController(stealthScanResult, "stealth", {
+            jobId: "intel",
+            createdAt: new Date().toISOString(),
+            progress: 10,
+        });
+        activeScanStatusController.update({ phase: "intel", progress: 22, message: "Collecting passive intelligence..." });
+    }
 
     try {
         if (intelOnly) {
             const intel = await fetchIntelData(tgt);
             const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
+            activeScanStatusController?.complete("Intel collection completed");
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
-            setScanJobStatus("Intel-only mode completed.", "done");
         } else {
-            const data = await runQueuedScan({ target: tgt, profile: mode, port_strategy, project_id: activeProjectId }, false);
+            const data = await runQueuedScan(
+                { target: tgt, profile: mode, port_strategy, project_id: activeProjectId },
+                { useV2: false, uiMode: "stealth", statusContainer: stealthScanResult }
+            );
             lastStealthReportId = data.report_id;
             if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
             if (stealthReportCsvButton) stealthReportCsvButton.disabled = false;
@@ -2910,7 +3271,7 @@ async function runStealthScan(intelOnly = false) {
     } catch (err) {
         if (stealthScanError) { stealthScanError.textContent = err.message || "Stealth scan failed"; stealthScanError.classList.remove("hidden"); }
         if (stealthScanResult) stealthScanResult.innerHTML = "";
-        setScanJobStatus(err.message || "Stealth scan failed", "error");
+        activeScanStatusController?.fail(err.message || "Stealth scan failed");
     } finally {
         stealthScanButton.disabled = false;
         stealthIntelButton.disabled = false;

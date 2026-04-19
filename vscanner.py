@@ -248,8 +248,10 @@ DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE_TTL_SECONDS = 30.0
 SCAN_JOB_WORKERS = max(2, min(8, int(os.getenv("SCAN_JOB_WORKERS", "4"))))
 SCAN_JOB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_JOB_WORKERS)
-SCAN_JOB_STAGE_TIMEOUT_SECONDS = max(30, int(os.getenv("SCAN_JOB_STAGE_TIMEOUT_SECONDS", "900")))
+SCAN_JOB_STAGE_TIMEOUT_SECONDS = int(os.getenv("SCAN_JOB_STAGE_TIMEOUT_SECONDS", "0") or 0)
 SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS = max(2, int(os.getenv("SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS", "5")))
+SCAN_JOB_RECONCILED = False
+SCAN_JOB_RECONCILE_LOCK = threading.Lock()
 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
@@ -515,50 +517,132 @@ def normalize_finding_title(title: str) -> str:
     return value or "finding"
 
 
-def infer_service_identity(port: int, name: str = "", product: str = "", banner: str = "") -> tuple[str, float, str]:
+def infer_service_identity(
+    port: int,
+    name: str = "",
+    product: str = "",
+    banner: str = "",
+    *,
+    http_status: str = "",
+    http_server: str = "",
+    http_title: str = "",
+    tls_subject: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> tuple[str, float, str]:
     inferred_name, inferred_conf, inferred_source = infer_port_identity(port=port, name=name, product=product, banner=banner)
     normalized_name = str(inferred_name or "").strip().lower()
     if normalized_name and normalized_name not in {"unknown", "-"}:
         return normalized_name, float(inferred_conf or 0.0), str(inferred_source or "port-intel")
 
-    text = " ".join([str(name or ""), str(product or ""), str(banner or "")]).lower()
+    md = metadata if isinstance(metadata, dict) else {}
+    text = " ".join(
+        [
+            str(name or ""),
+            str(product or ""),
+            str(banner or ""),
+            str(http_status or ""),
+            str(http_server or ""),
+            str(http_title or ""),
+            str(tls_subject or ""),
+            str(md.get("http_server") or ""),
+            str(md.get("http_powered_by") or ""),
+            str(md.get("http_app") or ""),
+            str(md.get("tls_subject") or ""),
+            str(md.get("tls_issuer") or ""),
+            str(md.get("banner") or ""),
+        ]
+    ).lower()
     token_map: list[tuple[str, str]] = [
         ("kubernetes", "kubernetes-api"),
+        ("k8s", "kubernetes-api"),
         ("docker", "docker"),
+        ("containerd", "container-runtime"),
         ("jenkins", "jenkins"),
         ("rabbitmq", "rabbitmq-management"),
         ("activemq", "activemq-web"),
+        ("kafka", "kafka"),
+        ("zookeeper", "zookeeper"),
+        ("vault", "vault"),
+        ("traefik", "http"),
+        ("haproxy", "http"),
+        ("envoy", "http"),
         ("elasticsearch", "elasticsearch"),
+        ("opensearch", "elasticsearch"),
+        ("solr", "http"),
         ("mongodb", "mongodb"),
         ("postgres", "postgresql"),
         ("mysql", "mysql"),
         ("mariadb", "mysql"),
         ("redis", "redis"),
+        ("keydb", "redis"),
         ("memcached", "memcached"),
         ("openssh", "ssh"),
         ("ssh-", "ssh"),
+        ("x-powered-by", "http"),
+        ("server:", "http"),
+        ("strict-transport-security", "https"),
         ("nginx", "http"),
         ("apache", "http"),
         ("http/", "http"),
         ("tls", "https"),
         ("ssl", "https"),
+        ("subject=", "https"),
         ("smtps", "smtp-submission"),
         ("smtp", "smtp"),
         ("imap", "imap"),
         ("pop3", "pop3"),
+        ("dns", "dns"),
+        ("doq", "dns-over-tls"),
+        ("dot", "dns-over-tls"),
         ("rdp", "rdp"),
         ("minecraft", "minecraft"),
         ("mqtt", "mqtt"),
+        ("amqp", "amqp"),
         ("consul", "consul"),
         ("prometheus", "prometheus"),
         ("grafana", "http"),
+        ("kibana", "http"),
         ("weblogic", "weblogic"),
         ("tomcat", "http"),
         ("iis", "http"),
+        ("gunicorn", "http"),
+        ("uvicorn", "http"),
+        ("caddy", "http"),
+        ("cloudflare", "http"),
+        ("akamai", "http"),
+        ("fastly", "http"),
+        ("nghttp", "https"),
+        ("h2", "https"),
+        ("tlsv1", "https"),
+        ("let's encrypt", "https"),
+        ("letsencrypt", "https"),
     ]
     for token, svc in token_map:
         if token in text:
             return svc, 0.78, "banner-heuristic"
+
+    status_text = str(http_status or md.get("http_status") or "").strip().lower()
+    server_text = str(http_server or md.get("http_server") or "").strip().lower()
+    title_text = str(http_title or md.get("title") or "").strip().lower()
+    tls_text = str(tls_subject or md.get("tls_subject") or "").strip().lower()
+
+    if any(v for v in [status_text, server_text, title_text]) and (int(port or 0) in WEB_CANDIDATE_PORTS or "http" in text):
+        if "grafana" in title_text or "grafana" in server_text:
+            return "http", 0.82, "http-behavior"
+        if "prometheus" in title_text or "prometheus" in server_text:
+            return "prometheus", 0.84, "http-behavior"
+        if "kibana" in title_text or "kibana" in server_text:
+            return "http", 0.82, "http-behavior"
+        if "jenkins" in title_text or "jenkins" in server_text:
+            return "jenkins", 0.86, "http-behavior"
+        if "elastic" in title_text or "opensearch" in title_text:
+            return "elasticsearch", 0.85, "http-behavior"
+        if tls_text:
+            return "https", 0.8, "http-tls-behavior"
+        return "http", 0.76, "http-behavior"
+
+    if tls_text and int(port or 0) in TLS_CANDIDATE_PORTS:
+        return "https", 0.74, "tls-subject-heuristic"
 
     common_name = str(COMMON_SERVICE_NAMES.get(int(port or 0), "unknown") or "unknown").strip().lower()
     if common_name not in {"", "unknown", "-"}:
@@ -5494,7 +5578,7 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
-    safety_args = " --host-timeout 8m --script-timeout 60s"
+    safety_args = _resolve_nmap_safety_args(profile, port_strategy)
     if profile == "network":
         return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info" + safety_args
 
@@ -6606,8 +6690,15 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             ]
             if p not in {int(x.get("port") or 0) for x in open_ports}
         ]
-        phase2_limit = 24 if IS_SERVERLESS else 64
-        extra_port_entries = lightweight_port_scan(target, phase2_pool[:phase2_limit], timeout_s=0.65, max_workers=80)
+        phase2_limit = 28 if IS_SERVERLESS else 84
+        phase2_timeout = 0.9 if IS_SERVERLESS else (1.0 if port_strategy == "standard" else 1.25)
+        phase2_workers = 72 if IS_SERVERLESS else 96
+        extra_port_entries = lightweight_port_scan(
+            target,
+            phase2_pool[:phase2_limit],
+            timeout_s=phase2_timeout,
+            max_workers=phase2_workers,
+        )
         if extra_port_entries:
             open_ports.extend(extra_port_entries)
             for entry in extra_port_entries:
@@ -6653,9 +6744,10 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         web_port_entries = [entry for entry in web_ports if is_likely_web_port(entry)]
     if web_port_entries:
         if needs_phase2:
-            probe_limit = 3 if IS_SERVERLESS else len(web_port_entries)
+            probe_limit = 4 if IS_SERVERLESS else len(web_port_entries)
         else:
-            probe_limit = 1 if IS_SERVERLESS else min(2, len(web_port_entries))
+            # Keep a representative sample even in low-signal cases to avoid blind spots.
+            probe_limit = 2 if IS_SERVERLESS else min(5, len(web_port_entries))
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as probe_pool:
             probe_futures = {
                 probe_pool.submit(probe_http_service, target, entry["port"]): entry["port"]
@@ -6752,18 +6844,33 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
                     str(p.get("service", "unknown")),
                     str(p.get("product", "")),
                     str(p.get("banner", "")),
+                    http_status=str((p.get("metadata") or {}).get("http_status") or ""),
+                    http_server=str((p.get("metadata") or {}).get("http_server") or ""),
+                    http_title=str((p.get("metadata") or {}).get("title") or ""),
+                    tls_subject=str((p.get("metadata") or {}).get("tls_subject") or ""),
+                    metadata=dict(p.get("metadata") or {}),
                 )[0],
                 "service_source": infer_service_identity(
                     int(p.get("port") or 0),
                     str(p.get("service", "unknown")),
                     str(p.get("product", "")),
                     str(p.get("banner", "")),
+                    http_status=str((p.get("metadata") or {}).get("http_status") or ""),
+                    http_server=str((p.get("metadata") or {}).get("http_server") or ""),
+                    http_title=str((p.get("metadata") or {}).get("title") or ""),
+                    tls_subject=str((p.get("metadata") or {}).get("tls_subject") or ""),
+                    metadata=dict(p.get("metadata") or {}),
                 )[2],
                 "service_confidence": infer_service_identity(
                     int(p.get("port") or 0),
                     str(p.get("service", "unknown")),
                     str(p.get("product", "")),
                     str(p.get("banner", "")),
+                    http_status=str((p.get("metadata") or {}).get("http_status") or ""),
+                    http_server=str((p.get("metadata") or {}).get("http_server") or ""),
+                    http_title=str((p.get("metadata") or {}).get("title") or ""),
+                    tls_subject=str((p.get("metadata") or {}).get("tls_subject") or ""),
+                    metadata=dict(p.get("metadata") or {}),
                 )[1],
             })
             for p in open_ports
@@ -6969,6 +7076,86 @@ def diagnostics_storage_repair_api() -> Any:
         )
     except Exception as exc:
         return jsonify({"error": "Diagnostics repair failed.", "details": str(exc)}), 500
+
+
+@app.route("/api/diagnostics/scan-compare", methods=["POST"])
+def diagnostics_scan_compare_api() -> Any:
+    if not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
+    payload = request.get_json(silent=True) or {}
+    target = str(payload.get("target") or "").strip()
+    if not target:
+        return jsonify({"error": "Target is required."}), 400
+
+    profile = str(payload.get("profile") or "light").strip().lower()
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": "Invalid profile."}), 400
+
+    port_strategy = str(payload.get("port_strategy") or "standard").strip().lower()
+    if port_strategy not in {"standard", "aggressive"}:
+        return jsonify({"error": "Invalid port strategy."}), 400
+
+    project_id = str(payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    use_v2 = bool(payload.get("use_v2") or False)
+    persist_result = str(payload.get("persist") or "false").strip().lower() in {"1", "true", "yes"}
+
+    if not get_project(project_id):
+        return jsonify({"error": "Project not found."}), 404
+
+    baseline = _load_latest_report_result(project_id, target, profile)
+
+    try:
+        current_result = _execute_scan_request(
+            {
+                "target": target,
+                "profile": profile,
+                "port_strategy": port_strategy,
+                "project_id": project_id,
+                "_client_ip": str(request.remote_addr or "diagnostics"),
+            },
+            use_v2=use_v2,
+            persist_result=persist_result,
+        )
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Comparison scan failed.", "details": _public_scan_error_message(exc)}), 500
+
+    current_metrics = _scan_quality_metrics(current_result)
+    baseline_metrics = _scan_quality_metrics(baseline or {}) if isinstance(baseline, dict) else {}
+    current_keys = _finding_signature_set(current_result)
+    baseline_keys = _finding_signature_set(baseline or {}) if isinstance(baseline, dict) else set()
+
+    missing_vs_baseline = sorted(list(baseline_keys - current_keys))[:200]
+    new_vs_baseline = sorted(list(current_keys - baseline_keys))[:200]
+
+    return jsonify(
+        {
+            "project_id": project_id,
+            "target": target,
+            "profile": profile,
+            "port_strategy": port_strategy,
+            "use_v2": use_v2,
+            "persist": persist_result,
+            "baseline_found": bool(baseline),
+            "baseline_metrics": baseline_metrics,
+            "current_metrics": current_metrics,
+            "delta": {
+                "finding_count": int(current_metrics.get("finding_count", 0)) - int(baseline_metrics.get("finding_count", 0)),
+                "cve_count": int(current_metrics.get("cve_count", 0)) - int(baseline_metrics.get("cve_count", 0)),
+                "unknown_service_ratio": round(float(current_metrics.get("unknown_service_ratio", 0.0)) - float(baseline_metrics.get("unknown_service_ratio", 0.0)), 4),
+                "risk_score": round(float(current_metrics.get("risk_score", 0.0)) - float(baseline_metrics.get("risk_score", 0.0)), 2),
+            },
+            "findings_diff": {
+                "missing_vs_baseline_count": len(baseline_keys - current_keys),
+                "new_vs_baseline_count": len(current_keys - baseline_keys),
+                "missing_vs_baseline_sample": missing_vs_baseline,
+                "new_vs_baseline_sample": new_vs_baseline,
+            },
+            "report_id": str(current_result.get("report_id") or ""),
+        }
+    )
 
 
 @app.route("/api/projects", methods=["GET", "POST"])
@@ -7794,6 +7981,61 @@ def _list_scan_job_records(project_id: str = "", limit: int = 20) -> list[dict[s
     return [dict(row) for row in rows]
 
 
+def _mark_inflight_scan_jobs_interrupted() -> None:
+    now_iso = utc_now()
+    interruption_msg = "Scan interrupted by service restart."
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.scan_jobs.update_many(
+            {"status": {"$in": ["queued", "running"]}},
+            {
+                "$set": {
+                    "status": "failed",
+                    "phase": "failed",
+                    "progress": 100,
+                    "message": interruption_msg,
+                    "error": interruption_msg,
+                    "updated_at": now_iso,
+                    "result_json": "{}",
+                }
+            },
+        )
+        return
+
+    with db_connection() as connection:
+        execute(
+            connection,
+            """
+            UPDATE scan_jobs
+               SET status = 'failed',
+                   phase = 'failed',
+                   progress = 100,
+                   message = ?,
+                   error = ?,
+                   updated_at = ?,
+                   result_json = '{}'
+             WHERE status IN ('queued', 'running')
+            """,
+            (interruption_msg, interruption_msg, now_iso),
+        )
+        connection.commit()
+
+
+def _ensure_scan_jobs_reconciled() -> None:
+    global SCAN_JOB_RECONCILED
+    if SCAN_JOB_RECONCILED:
+        return
+    with SCAN_JOB_RECONCILE_LOCK:
+        if SCAN_JOB_RECONCILED:
+            return
+        try:
+            _mark_inflight_scan_jobs_interrupted()
+        except Exception as exc:
+            _scan_job_log("", "scan_job_reconcile_failed", error=str(exc)[:220])
+        SCAN_JOB_RECONCILED = True
+
+
 def _public_scan_error_message(exc: Exception) -> str:
     if isinstance(exc, ScanInputError):
         return str(exc)
@@ -7816,11 +8058,77 @@ def _scan_job_log(job_id: str, event: str, **fields: Any) -> None:
         SCAN_LOGGER.info("scan_event=%s job_id=%s", event, job_id)
 
 
+def _resolve_collection_stage_timeout(
+    profile: str,
+    port_strategy: str,
+    target_count: int,
+    *,
+    use_v2: bool,
+) -> int:
+    if SCAN_JOB_STAGE_TIMEOUT_SECONDS > 0:
+        return max(60, int(SCAN_JOB_STAGE_TIMEOUT_SECONDS))
+
+    profile_l = str(profile or "light").lower()
+    strategy_l = str(port_strategy or "standard").lower()
+    targets = max(1, int(target_count or 1))
+
+    base_seconds = {
+        "light": 14 * 60,
+        "stealth": 18 * 60,
+        "deep": 28 * 60,
+        "network": 36 * 60,
+    }.get(profile_l, 16 * 60)
+
+    if strategy_l == "aggressive":
+        base_seconds += 10 * 60
+    if use_v2:
+        # V2 uses conditional deeper probes and should not be cut by shorter generic timeout scaling.
+        base_seconds = int(base_seconds * 1.08)
+
+    total = base_seconds * min(targets, 8)
+    return min(max(total, 10 * 60), 6 * 3600)
+
+
+def _resolve_nmap_safety_args(profile: str, port_strategy: str) -> str:
+    profile_l = str(profile or "light").lower()
+    strategy_l = str(port_strategy or "standard").lower()
+
+    host_timeout = {
+        "light": "20m",
+        "stealth": "25m",
+        "deep": "40m",
+        "network": "55m",
+    }.get(profile_l, "25m")
+    script_timeout = {
+        "light": "90s",
+        "stealth": "120s",
+        "deep": "180s",
+        "network": "210s",
+    }.get(profile_l, "120s")
+
+    if strategy_l == "aggressive":
+        host_timeout = {
+            "light": "28m",
+            "stealth": "32m",
+            "deep": "55m",
+            "network": "70m",
+        }.get(profile_l, "35m")
+        script_timeout = {
+            "light": "120s",
+            "stealth": "150s",
+            "deep": "240s",
+            "network": "300s",
+        }.get(profile_l, "150s")
+
+    return f" --host-timeout {host_timeout} --script-timeout {script_timeout}"
+
+
 def _execute_scan_request(
     payload: dict[str, Any],
     *,
     use_v2: bool,
     job_id: str = "",
+    persist_result: bool = True,
     progress_hook: Any = None,
 ) -> dict[str, Any]:
     profile = (payload.get("profile") or "light").lower()
@@ -7876,7 +8184,15 @@ def _execute_scan_request(
     heartbeat_thread = threading.Thread(target=_collect_heartbeat, name=f"scan-heartbeat-{job_id or 'sync'}", daemon=True)
     heartbeat_thread.start()
 
+    collection_timeout_s = _resolve_collection_stage_timeout(
+        profile,
+        port_strategy,
+        len(targets),
+        use_v2=use_v2,
+    )
+
     try:
+
         def _run_collection_stage() -> dict[str, Any]:
             if len(targets) == 1:
                 return orchestrate_scan_v2(targets[0], profile, port_strategy) if use_v2 else orchestrate_scan(targets[0], profile, port_strategy)
@@ -7888,11 +8204,11 @@ def _execute_scan_request(
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as stage_executor:
             stage_future = stage_executor.submit(_run_collection_stage)
-            result = stage_future.result(timeout=float(SCAN_JOB_STAGE_TIMEOUT_SECONDS))
+            result = stage_future.result(timeout=float(collection_timeout_s))
     except concurrent.futures.TimeoutError as exc:
-        _scan_job_log(job_id, "scan_phase_timeout", phase="collect", timeout_s=SCAN_JOB_STAGE_TIMEOUT_SECONDS)
+        _scan_job_log(job_id, "scan_phase_timeout", phase="collect", timeout_s=collection_timeout_s)
         raise ScanInputError(
-            f"Scan timed out after {SCAN_JOB_STAGE_TIMEOUT_SECONDS}s during collection phase."
+            f"Scan timed out after {collection_timeout_s}s during collection phase."
         ) from exc
     finally:
         heartbeat_stop.set()
@@ -7942,20 +8258,25 @@ def _execute_scan_request(
             "persisted": False,
         }
 
-    if callable(progress_hook):
-        progress_hook(status="running", phase="persist", progress=88, message="Persisting report and findings")
-    _scan_job_log(job_id, "scan_phase_started", phase="persist", progress=88)
+    if persist_result:
+        if callable(progress_hook):
+            progress_hook(status="running", phase="persist", progress=88, message="Persisting report and findings")
+        _scan_job_log(job_id, "scan_phase_started", phase="persist", progress=88)
 
-    try:
-        report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
-        result["report_id"] = report_id
-        result["persisted"] = True
-        _scan_job_log(job_id, "scan_persisted", report_id=report_id, project_id=project["id"])
-    except Exception as exc:
+        try:
+            report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
+            result["report_id"] = report_id
+            result["persisted"] = True
+            _scan_job_log(job_id, "scan_persisted", report_id=report_id, project_id=project["id"])
+        except Exception as exc:
+            result["persisted"] = False
+            result["warning"] = "Scan completed, but saving the report failed."
+            result["persist_error"] = "Persistence error"
+            _scan_job_log(job_id, "scan_persist_failed", error=str(exc)[:220])
+    else:
         result["persisted"] = False
-        result["warning"] = "Scan completed, but saving the report failed."
-        result["persist_error"] = "Persistence error"
-        _scan_job_log(job_id, "scan_persist_failed", error=str(exc)[:220])
+        result["report_id"] = ""
+        _scan_job_log(job_id, "scan_persist_skipped", project_id=project["id"])
 
     if callable(progress_hook):
         progress_hook(status="running", phase="finalize", progress=96, message="Finalizing response")
@@ -7964,7 +8285,89 @@ def _execute_scan_request(
     return result
 
 
+def _finding_signature_set(result: dict[str, Any]) -> set[str]:
+    out: set[str] = set()
+    for item in (result.get("finding_items") or []):
+        host = str(item.get("host") or item.get("asset") or "-").strip().lower()
+        try:
+            port = int(item.get("port") or 0)
+        except Exception:
+            port = 0
+        ftype = str(item.get("type") or item.get("finding_type") or "-").strip().lower()
+        title = normalize_finding_title(str(item.get("title") or "finding"))
+        cve = str(item.get("cve") or "").strip().upper()
+        out.add(f"{host}|{port}|{ftype}|{title}|{cve}")
+    return out
+
+
+def _scan_quality_metrics(result: dict[str, Any]) -> dict[str, Any]:
+    hosts = list(result.get("hosts") or [])
+    total_services = 0
+    unknown_services = 0
+    for host in hosts:
+        for port_info in (host.get("ports") or []):
+            if str(port_info.get("state") or "open").lower() != "open":
+                continue
+            total_services += 1
+            svc = str(
+                port_info.get("name")
+                or port_info.get("inferred_service")
+                or "unknown"
+            ).strip().lower()
+            if svc in {"", "unknown", "-"}:
+                unknown_services += 1
+
+    findings = list(result.get("finding_items") or [])
+    cve_items = list(result.get("cve_items") or [])
+    return {
+        "finding_count": len(findings),
+        "cve_count": len(cve_items),
+        "open_service_count": total_services,
+        "unknown_service_count": unknown_services,
+        "unknown_service_ratio": round((unknown_services / total_services), 4) if total_services else 0.0,
+        "risk_score": round(float(result.get("true_risk_score") or 0.0), 2),
+    }
+
+
+def _load_latest_report_result(project_id: str, target: str, profile: str) -> dict[str, Any] | None:
+    target_l = str(target or "").strip().lower()
+    profile_l = str(profile or "").strip().lower()
+    if not target_l:
+        return None
+
+    if use_mongodb():
+        db = get_mongo_db()
+        row = db.reports.find_one(
+            {"project_id": project_id, "target": target_l, "profile": profile_l},
+            {"_id": 0, "data_json": 1},
+            sort=[("created_at", DESCENDING)],
+        )
+        if not row:
+            return None
+        data_json = row.get("data_json")
+    else:
+        with db_connection() as connection:
+            row = fetchone(
+                connection,
+                "SELECT data_json FROM reports WHERE project_id = ? AND lower(target) = ? AND lower(profile) = ? ORDER BY created_at DESC LIMIT 1",
+                (project_id, target_l, profile_l),
+            )
+        if not row:
+            return None
+        data_json = row.get("data_json")
+
+    if isinstance(data_json, str):
+        try:
+            data_json = json.loads(data_json)
+        except Exception:
+            return None
+    if not isinstance(data_json, dict):
+        return None
+    return data_json
+
+
 def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -> dict[str, Any]:
+    _ensure_scan_jobs_reconciled()
     job_id = str(uuid.uuid4())
     now_iso = utc_now()
     safe_payload = {k: v for k, v in dict(payload).items() if not str(k).startswith("_")}
@@ -8102,6 +8505,7 @@ def create_scan_job_api() -> Any:
 
 @app.route("/api/scan/jobs")
 def list_scan_jobs_api() -> Any:
+    _ensure_scan_jobs_reconciled()
     project_id = (request.args.get("project_id") or "").strip()
     limit_raw = request.args.get("limit", "20")
     try:
@@ -8129,6 +8533,7 @@ def list_scan_jobs_api() -> Any:
 
 @app.route("/api/scan/jobs/<job_id>")
 def get_scan_job_api(job_id: str) -> Any:
+    _ensure_scan_jobs_reconciled()
     payload = _get_scan_job_record(job_id)
     if not payload:
         return jsonify({"error": "Job not found."}), 404

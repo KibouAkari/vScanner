@@ -521,10 +521,164 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 .crit-badge.crit-normal   { background: rgba(99,102,241,0.1);   color: #a5b4fc; border: 1px solid rgba(99,102,241,0.22); }
 .crit-badge.crit-low      { background: rgba(107,114,128,0.1);  color: #9ca3af; border: 1px solid rgba(107,114,128,0.22); }
 
-/* Scan loading spinner */
-.scan-loading { display: flex; align-items: center; gap: 0.72rem; padding: 2rem 1rem; color: var(--muted); font-size: 0.88rem; }
-.scan-spinner { width: 22px; height: 22px; border: 3px solid rgba(57,212,181,0.18); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
-@keyframes spin { to { transform: rotate(360deg); } }
+/* Unified scan status widget */
+.scan-status-card {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 0.8rem;
+  align-items: center;
+  padding: 0.85rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(8,18,34,0.88), rgba(10,20,36,0.72));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 8px 18px rgba(0,0,0,0.25);
+}
+.scan-status-card.scan-status-failed {
+  border-color: rgba(255,93,115,0.5);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.02), 0 10px 22px rgba(70,10,22,0.35);
+}
+.scan-loader {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(130,165,210,0.28);
+  background: rgba(5,12,24,0.65);
+  overflow: hidden;
+}
+.scan-loader-core { width: 36px; height: 36px; position: relative; }
+.scan-loader-core i { position: absolute; display: block; }
+
+.scan-loader-risk .scan-loader-core i {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: rgba(57,212,181,0.25);
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  animation: riskPulse 2.4s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
+}
+.scan-loader-risk .scan-loader-core i:nth-child(2) { animation-delay: 0.22s; }
+.scan-loader-risk .scan-loader-core i:nth-child(3) { animation-delay: 0.44s; }
+.scan-loader-risk .scan-loader-core i:nth-child(n+4) { display: none; }
+@keyframes riskPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(57,212,181,0.0); background: rgba(57,212,181,0.34); }
+  50% { box-shadow: 0 0 0 9px rgba(57,212,181,0.0); background: rgba(57,212,181,0.88); }
+}
+
+.scan-loader-v2 .scan-loader-core { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+.scan-loader-v2 .scan-loader-core i {
+  position: static;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: rgba(34,211,238,0.2);
+  animation: v2Grid 1.25s ease-in-out infinite;
+}
+.scan-loader-v2 .scan-loader-core i:nth-child(2) { animation-delay: 0.08s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(3) { animation-delay: 0.16s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(4) { animation-delay: 0.24s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(5) { animation-delay: 0.32s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(6) { animation-delay: 0.40s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(7) { animation-delay: 0.48s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(8) { animation-delay: 0.56s; }
+.scan-loader-v2 .scan-loader-core i:nth-child(9) { animation-delay: 0.64s; }
+@keyframes v2Grid {
+  0%, 100% { background: rgba(34,211,238,0.22); transform: scale(0.9); }
+  50% { background: rgba(34,211,238,0.84); transform: scale(1); }
+}
+
+.scan-loader-network .scan-loader-core i {
+  width: 4px; bottom: 0; border-radius: 3px 3px 0 0;
+  background: linear-gradient(to top, #00d4aa, rgba(0,212,170,0.2));
+  animation: networkWave 1.8s ease-in-out infinite;
+}
+.scan-loader-network .scan-loader-core i:nth-child(1) { left: 2px; height: 10px; animation-delay: 0s; }
+.scan-loader-network .scan-loader-core i:nth-child(2) { left: 8px; height: 18px; animation-delay: 0.08s; }
+.scan-loader-network .scan-loader-core i:nth-child(3) { left: 14px; height: 12px; animation-delay: 0.16s; }
+.scan-loader-network .scan-loader-core i:nth-child(4) { left: 20px; height: 22px; animation-delay: 0.24s; }
+.scan-loader-network .scan-loader-core i:nth-child(5) { left: 26px; height: 14px; animation-delay: 0.32s; }
+.scan-loader-network .scan-loader-core i:nth-child(6) { left: 32px; height: 18px; animation-delay: 0.4s; }
+.scan-loader-network .scan-loader-core i:nth-child(n+7) { display: none; }
+@keyframes networkWave {
+  0%, 100% { transform: scaleY(0.62); opacity: 0.6; }
+  50% { transform: scaleY(1); opacity: 0.92; }
+}
+
+.scan-loader-stealth .scan-loader-core {
+  border: 1px solid rgba(167,139,250,0.38);
+  border-radius: 50%;
+}
+.scan-loader-stealth .scan-loader-core i:nth-child(1) {
+  width: 100%; height: 100%; left: 0; top: 0;
+  border-radius: 50%; border: 1px dashed rgba(167,139,250,0.35);
+}
+.scan-loader-stealth .scan-loader-core i:nth-child(2) {
+  width: 50%; height: 2px; left: 50%; top: 50%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, rgba(167,139,250,0.95), rgba(167,139,250,0));
+  animation: stealthSweep 3s linear infinite;
+}
+.scan-loader-stealth .scan-loader-core i:nth-child(n+3) { display: none; }
+@keyframes stealthSweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.scan-status-body { display: grid; gap: 0.38rem; min-width: 0; }
+.scan-status-topline, .scan-status-bottomline {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+}
+.scan-status-phase {
+  font-size: 0.83rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text);
+}
+.scan-status-type {
+  font-size: 0.77rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #d5e8ff;
+}
+.scan-status-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.55rem;
+}
+.scan-status-eta {
+  font-size: 0.71rem;
+  color: #9fd4ff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.scan-status-elapsed, .scan-status-jobref {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.scan-status-message {
+  font-size: 0.84rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scan-status-progress-track {
+  height: 7px;
+  background: rgba(130,165,210,0.2);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.scan-status-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  transition: width 0.2s linear;
+  background: linear-gradient(90deg, var(--secondary), var(--primary));
+}
+.scan-status-progress-value { font-size: 0.76rem; color: var(--text); font-weight: 700; }
 
 /* ═══════════════════════════════════════════════════════════════
    SCANNER PAGES
