@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import hmac
 import hashlib
 import io
 import ipaddress
@@ -238,6 +239,7 @@ DASHBOARD_CACHE_TTL_SECONDS = 30.0
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "vscanner").strip() or "vscanner"
+ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
 
 if os.getenv("VERCEL") and not DB_URL:
     DB_PATH = "/tmp/vscanner_reports.db"  # nosec B108 - intentional Vercel serverless path
@@ -2866,6 +2868,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
     # Self-heal path: if reports clearly contain findings but the materialized findings
     # store is empty/out-of-sync, rebuild once from persisted report payloads.
     has_report_findings = any(int(row.get("total_findings") or 0) > 0 for row in recent_rows)
+    persisted_findings_count = len(findings)
+    synthesized_findings_count = 0
     using_report_payload_fallback = False
     if has_report_findings and not findings:
         try:
@@ -2876,6 +2880,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             else:
                 with db_connection() as connection:
                     findings = fetchall(connection, "SELECT * FROM findings WHERE project_id = ? AND status IN ('active', 'open', 'stale')", (project_id,))
+            persisted_findings_count = len(findings)
         except Exception:
             # Keep dashboard available even if repair fails; fallback values remain deterministic.
             pass
@@ -2886,6 +2891,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         synthesized = _synthesize_findings_from_reports(trend_source_rows, assets)
         if synthesized:
             findings = synthesized
+            synthesized_findings_count = len(synthesized)
             using_report_payload_fallback = True
 
     views = build_soc_dashboard_views(assets, findings)
@@ -2920,7 +2926,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         "attack_graph": attack_graph_output,
         "diagnostics": {
             "reports_with_findings": has_report_findings,
-            "materialized_findings_count": len(findings),
+            "materialized_findings_count": persisted_findings_count,
+            "synthesized_findings_count": synthesized_findings_count,
             "using_report_payload_fallback": using_report_payload_fallback,
         },
     }
@@ -2964,6 +2971,123 @@ def get_project_findings(
                 """,
                 (project_id, since),
             )
+
+    def _synthesize_rows_from_reports() -> list[dict[str, Any]]:
+        assets_by_value: dict[str, str] = {}
+        report_rows: list[dict[str, Any]] = []
+
+        if use_mongodb():
+            db = get_mongo_db()
+            assets_cursor = db.assets.find({"project_id": project_id}, {"_id": 0, "id": 1, "value": 1})
+            assets_by_value = {
+                str(item.get("value") or "").strip().lower(): str(item.get("id") or "")
+                for item in assets_cursor
+                if str(item.get("value") or "").strip()
+            }
+            report_rows = list(
+                db.reports.find(
+                    {"project_id": project_id, "created_at": {"$gte": since}},
+                    {"_id": 0, "id": 1, "created_at": 1, "data_json": 1},
+                )
+            )
+        else:
+            with db_connection() as connection:
+                assets_rows = fetchall(connection, "SELECT id, value FROM assets WHERE project_id = ?", (project_id,))
+                assets_by_value = {
+                    str(item.get("value") or "").strip().lower(): str(item.get("id") or "")
+                    for item in assets_rows
+                    if str(item.get("value") or "").strip()
+                }
+                report_rows = fetchall(
+                    connection,
+                    "SELECT id, created_at, data_json FROM reports WHERE project_id = ? AND created_at >= ?",
+                    (project_id, since),
+                )
+
+        synthesized: list[dict[str, Any]] = []
+        for report in report_rows:
+            data_json = report.get("data_json")
+            if isinstance(data_json, str):
+                try:
+                    data_json = json.loads(data_json)
+                except Exception:
+                    data_json = None
+            if not isinstance(data_json, dict):
+                continue
+            report_created_at = str(report.get("created_at") or utc_now())
+            for item in data_json.get("finding_items") or []:
+                host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+                if not host_value or host_value == "-":
+                    host_value = "unknown.local"
+                try:
+                    port_value = int(item.get("port") or 0)
+                except Exception:
+                    port_value = 0
+                finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
+                title = str(item.get("title") or "Finding")
+                dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
+                synthesized.append(
+                    {
+                        "project_id": project_id,
+                        "asset_id": assets_by_value.get(host_value, ""),
+                        "host": host_value,
+                        "asset": host_value,
+                        "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
+                        "dedup_key": dedup_key,
+                        "port": port_value,
+                        "title_norm": normalize_finding_title(title),
+                        "severity": normalize_severity(str(item.get("severity") or "low")),
+                        "title": title,
+                        "evidence": str(item.get("evidence") or "-"),
+                        "finding_type": finding_type,
+                        "cve": str(item.get("cve") or "").upper(),
+                        "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
+                        "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
+                        "confidence_score": float(item.get("confidence_score") or 0.8),
+                        "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
+                        "status": "active",
+                        "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
+                        "remediation_text": str(item.get("remediation_text") or item.get("remediation_title") or ""),
+                        "remediation_priority": str(item.get("remediation_priority") or "scheduled"),
+                        "estimated_effort": str(item.get("estimated_effort") or item.get("effort_level") or "medium"),
+                        "first_seen": str(item.get("first_seen") or report_created_at),
+                        "last_seen": str(item.get("last_seen") or report_created_at),
+                        "occurrence_count": int(item.get("occurrence_count") or 1),
+                    }
+                )
+        return synthesized
+
+    if not rows:
+        try:
+            rebuild_project_findings(project_id)
+            if use_mongodb():
+                db = get_mongo_db()
+                rows = list(
+                    db.findings.find(
+                        {
+                            "project_id": project_id,
+                            "status": {"$in": ["active", "open", "stale"]},
+                            "last_seen": {"$gte": since},
+                        },
+                        {"_id": 0},
+                    )
+                )
+            else:
+                with db_connection() as connection:
+                    rows = fetchall(
+                        connection,
+                        """
+                          SELECT *
+                        FROM findings
+                          WHERE project_id = ? AND status IN ('active', 'open', 'stale') AND last_seen >= ?
+                        """,
+                        (project_id, since),
+                    )
+        except Exception:
+            pass
+
+    if not rows:
+        rows = _synthesize_rows_from_reports()
 
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -6492,6 +6616,24 @@ def _mode_from_classic_profile(profile: str) -> str:
     return "risk"
 
 
+def _is_admin_authorized() -> bool:
+    remote_addr = str(request.remote_addr or "")
+    is_local = remote_addr in {"127.0.0.1", "::1", "localhost"}
+
+    if not ADMIN_API_TOKEN:
+        return is_local
+
+    provided = (
+        str(request.headers.get("X-Admin-Token") or "").strip()
+        or str(request.args.get("admin_token") or "").strip()
+    )
+    auth_header = str(request.headers.get("Authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        provided = auth_header[7:].strip() or provided
+
+    return bool(provided) and hmac.compare_digest(provided, ADMIN_API_TOKEN)
+
+
 @app.after_request
 def set_security_headers(response: Any) -> Any:
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -6578,6 +6720,9 @@ def diagnostics_storage_api() -> Any:
 
 @app.route("/api/diagnostics/storage/repair", methods=["POST"])
 def diagnostics_storage_repair_api() -> Any:
+    if not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
     payload = request.get_json(silent=True) or {}
     project_id = (str(payload.get("project_id") or request.args.get("project_id") or "")).strip() or None
     dry_run = str(payload.get("dry_run") or request.args.get("dry_run") or "false").strip().lower() in {"1", "true", "yes"}
@@ -7009,6 +7154,9 @@ def project_settings_update_api(project_id: str) -> Any:
 
 @app.route("/api/admin/migrate-sql-to-mongo", methods=["POST"])
 def migrate_sql_to_mongo_api() -> Any:
+    if not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
     payload = request.get_json(silent=True) or {}
     source_database_url = (payload.get("source_database_url") or "").strip() or None
     source_sqlite_path = (payload.get("source_sqlite_path") or "").strip() or None
@@ -7029,6 +7177,9 @@ def migrate_sql_to_mongo_api() -> Any:
 
 @app.route("/api/admin/reset-data", methods=["POST"])
 def reset_data_api() -> Any:
+    if not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
     if not DB_READY:
         return jsonify({"error": "Storage is unavailable."}), 503
 
