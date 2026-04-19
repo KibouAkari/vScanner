@@ -2619,8 +2619,10 @@ def build_soc_dashboard_views(
             continue
         if port_value <= 0:
             continue
-        if service_name in {"", "unknown", "-", "host"}:
+        if service_name in {"", "-", "host"}:
             continue
+        if service_name == "unknown":
+            service_name = f"unknown-{port_value}"
 
         service_key = (service_name, port_value)
         service_bucket = service_buckets.setdefault(
@@ -5909,6 +5911,42 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
 
     merged = findings + correlated
     merged = deduplicate_finding_items(merged)
+
+    # Keep port-bound findings aligned with actually observed open ports per host.
+    observed_ports_by_host: dict[str, set[int]] = {}
+    for host in enriched.get("hosts", []) or []:
+        host_name = str(host.get("host") or "").strip().lower()
+        if not host_name:
+            continue
+        observed_ports_by_host[host_name] = {
+            int(port_entry.get("port") or 0)
+            for port_entry in (host.get("ports") or host.get("open_ports") or [])
+            if str(port_entry.get("state") or "open").lower() == "open" and int(port_entry.get("port") or 0) > 0
+        }
+
+    if observed_ports_by_host:
+        default_host = next(iter(observed_ports_by_host.keys())) if len(observed_ports_by_host) == 1 else ""
+        validated: list[dict[str, Any]] = []
+        for item in merged:
+            finding_type = str(item.get("type") or item.get("finding_type") or "").strip().lower()
+            if finding_type not in {"open_port", "exposed_port", "cve_candidate", "plaintext_protocol", "service_fingerprint"}:
+                validated.append(item)
+                continue
+
+            host_value = str(item.get("host") or item.get("asset") or "").strip().lower() or default_host
+            try:
+                port_value = int(item.get("port") or 0)
+            except Exception:
+                port_value = 0
+            if port_value <= 0:
+                port_value = int(infer_port_from_legacy_finding(item) or 0)
+
+            allowed_ports = observed_ports_by_host.get(host_value, set())
+            if port_value > 0 and allowed_ports and port_value not in allowed_ports:
+                continue
+            validated.append(item)
+
+        merged = validated
 
     merged, advanced_score = apply_advanced_risk(
         merged,
