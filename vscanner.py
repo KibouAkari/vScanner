@@ -2113,6 +2113,10 @@ def upsert_findings(
         for record in scanned_asset_records.values()
         if isinstance(record, dict) and str(record.get("id") or "")
     }
+    for item in unique_scan_items.values():
+        asset_id = str(item.get("asset_id") or "")
+        if asset_id:
+            scanned_asset_ids.add(asset_id)
     seen_dedup_keys_by_asset: dict[str, set[str]] = {}
     for item in unique_scan_items.values():
         seen_dedup_keys_by_asset.setdefault(str(item.get("asset_id") or ""), set()).add(str(item.get("dedup_key") or ""))
@@ -2787,55 +2791,65 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             for asset in (assets_rows or [])
             if str(asset.get("value") or "").strip()
         }
-        out: list[dict[str, Any]] = []
+        latest_row: dict[str, Any] | None = None
+        latest_ts = ""
         for row in rows or []:
-            data_json = row.get("data_json")
-            if isinstance(data_json, str):
-                try:
-                    data_json = json.loads(data_json)
-                except Exception:
-                    data_json = None
-            if not isinstance(data_json, dict):
-                continue
-            for item in data_json.get("finding_items") or []:
-                host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
-                if not host_value or host_value == "-":
-                    host_value = "unknown.local"
-                try:
-                    port_value = int(item.get("port") or 0)
-                except Exception:
-                    port_value = 0
-                finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
-                title = str(item.get("title") or "Finding")
-                dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
-                out.append(
-                    {
-                        "project_id": project_id,
-                        "asset_id": assets_by_value.get(host_value, ""),
-                        "host": host_value,
-                        "asset": host_value,
-                        "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
-                        "dedup_key": dedup_key,
-                        "port": port_value,
-                        "severity": normalize_severity(str(item.get("severity") or "low")),
-                        "title": title,
-                        "evidence": str(item.get("evidence") or "-"),
-                        "finding_type": finding_type,
-                        "cve": str(item.get("cve") or "").upper(),
-                        "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
-                        "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
-                        "confidence_score": float(item.get("confidence_score") or 0.8),
-                        "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
-                        "status": "active",
-                        "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
-                        "service_confidence": float(item.get("service_confidence") or 0.0),
-                        "service_source": str(item.get("service_source") or "report_payload"),
-                        "first_seen": str(item.get("first_seen") or row.get("created_at") or utc_now()),
-                        "last_seen": str(item.get("last_seen") or row.get("created_at") or utc_now()),
-                        "occurrence_count": int(item.get("occurrence_count") or 1),
-                    }
-                )
-        return out
+            created_at = str(row.get("created_at") or "")
+            if not latest_row or created_at >= latest_ts:
+                latest_row = row
+                latest_ts = created_at
+
+        if not latest_row:
+            return []
+
+        data_json = latest_row.get("data_json")
+        if isinstance(data_json, str):
+            try:
+                data_json = json.loads(data_json)
+            except Exception:
+                data_json = None
+        if not isinstance(data_json, dict):
+            return []
+
+        deduped: dict[str, dict[str, Any]] = {}
+        for item in data_json.get("finding_items") or []:
+            host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+            if not host_value or host_value == "-":
+                host_value = "unknown.local"
+            try:
+                port_value = int(item.get("port") or 0)
+            except Exception:
+                port_value = 0
+            finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
+            title = str(item.get("title") or "Finding")
+            dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
+            deduped[dedup_key] = {
+                "project_id": project_id,
+                "asset_id": assets_by_value.get(host_value, ""),
+                "host": host_value,
+                "asset": host_value,
+                "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
+                "dedup_key": dedup_key,
+                "port": port_value,
+                "severity": normalize_severity(str(item.get("severity") or "low")),
+                "title": title,
+                "evidence": str(item.get("evidence") or "-"),
+                "finding_type": finding_type,
+                "cve": str(item.get("cve") or "").upper(),
+                "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
+                "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
+                "confidence_score": float(item.get("confidence_score") or 0.8),
+                "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
+                "status": "active",
+                "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
+                "service_confidence": float(item.get("service_confidence") or 0.0),
+                "service_source": str(item.get("service_source") or "report_payload"),
+                "first_seen": str(item.get("first_seen") or latest_row.get("created_at") or utc_now()),
+                "last_seen": str(item.get("last_seen") or latest_row.get("created_at") or utc_now()),
+                "occurrence_count": int(item.get("occurrence_count") or 1),
+            }
+
+        return list(deduped.values())
 
     if use_mongodb():
         db = get_mongo_db()
@@ -3004,58 +3018,67 @@ def get_project_findings(
                     (project_id, since),
                 )
 
-        synthesized: list[dict[str, Any]] = []
+        latest_report: dict[str, Any] | None = None
+        latest_ts = ""
         for report in report_rows:
-            data_json = report.get("data_json")
-            if isinstance(data_json, str):
-                try:
-                    data_json = json.loads(data_json)
-                except Exception:
-                    data_json = None
-            if not isinstance(data_json, dict):
-                continue
-            report_created_at = str(report.get("created_at") or utc_now())
-            for item in data_json.get("finding_items") or []:
-                host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
-                if not host_value or host_value == "-":
-                    host_value = "unknown.local"
-                try:
-                    port_value = int(item.get("port") or 0)
-                except Exception:
-                    port_value = 0
-                finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
-                title = str(item.get("title") or "Finding")
-                dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
-                synthesized.append(
-                    {
-                        "project_id": project_id,
-                        "asset_id": assets_by_value.get(host_value, ""),
-                        "host": host_value,
-                        "asset": host_value,
-                        "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
-                        "dedup_key": dedup_key,
-                        "port": port_value,
-                        "title_norm": normalize_finding_title(title),
-                        "severity": normalize_severity(str(item.get("severity") or "low")),
-                        "title": title,
-                        "evidence": str(item.get("evidence") or "-"),
-                        "finding_type": finding_type,
-                        "cve": str(item.get("cve") or "").upper(),
-                        "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
-                        "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
-                        "confidence_score": float(item.get("confidence_score") or 0.8),
-                        "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
-                        "status": "active",
-                        "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
-                        "remediation_text": str(item.get("remediation_text") or item.get("remediation_title") or ""),
-                        "remediation_priority": str(item.get("remediation_priority") or "scheduled"),
-                        "estimated_effort": str(item.get("estimated_effort") or item.get("effort_level") or "medium"),
-                        "first_seen": str(item.get("first_seen") or report_created_at),
-                        "last_seen": str(item.get("last_seen") or report_created_at),
-                        "occurrence_count": int(item.get("occurrence_count") or 1),
-                    }
-                )
-        return synthesized
+            created_at = str(report.get("created_at") or "")
+            if not latest_report or created_at >= latest_ts:
+                latest_report = report
+                latest_ts = created_at
+
+        if not latest_report:
+            return []
+
+        data_json = latest_report.get("data_json")
+        if isinstance(data_json, str):
+            try:
+                data_json = json.loads(data_json)
+            except Exception:
+                data_json = None
+        if not isinstance(data_json, dict):
+            return []
+
+        report_created_at = str(latest_report.get("created_at") or utc_now())
+        deduped: dict[str, dict[str, Any]] = {}
+        for item in data_json.get("finding_items") or []:
+            host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+            if not host_value or host_value == "-":
+                host_value = "unknown.local"
+            try:
+                port_value = int(item.get("port") or 0)
+            except Exception:
+                port_value = 0
+            finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
+            title = str(item.get("title") or "Finding")
+            dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
+            deduped[dedup_key] = {
+                "project_id": project_id,
+                "asset_id": assets_by_value.get(host_value, ""),
+                "host": host_value,
+                "asset": host_value,
+                "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
+                "dedup_key": dedup_key,
+                "port": port_value,
+                "title_norm": normalize_finding_title(title),
+                "severity": normalize_severity(str(item.get("severity") or "low")),
+                "title": title,
+                "evidence": str(item.get("evidence") or "-"),
+                "finding_type": finding_type,
+                "cve": str(item.get("cve") or "").upper(),
+                "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
+                "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
+                "confidence_score": float(item.get("confidence_score") or 0.8),
+                "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
+                "status": "active",
+                "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
+                "remediation_text": str(item.get("remediation_text") or item.get("remediation_title") or ""),
+                "remediation_priority": str(item.get("remediation_priority") or "scheduled"),
+                "estimated_effort": str(item.get("estimated_effort") or item.get("effort_level") or "medium"),
+                "first_seen": str(item.get("first_seen") or report_created_at),
+                "last_seen": str(item.get("last_seen") or report_created_at),
+                "occurrence_count": int(item.get("occurrence_count") or 1),
+            }
+        return list(deduped.values())
 
     if not rows:
         try:
