@@ -2779,6 +2779,62 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
 
     since = now_minus_days(max(1, min(window_days, 365)))
 
+    def _synthesize_findings_from_reports(rows: list[dict[str, Any]], assets_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        assets_by_value = {
+            str(asset.get("value") or "").strip().lower(): str(asset.get("id") or "")
+            for asset in (assets_rows or [])
+            if str(asset.get("value") or "").strip()
+        }
+        out: list[dict[str, Any]] = []
+        for row in rows or []:
+            data_json = row.get("data_json")
+            if isinstance(data_json, str):
+                try:
+                    data_json = json.loads(data_json)
+                except Exception:
+                    data_json = None
+            if not isinstance(data_json, dict):
+                continue
+            for item in data_json.get("finding_items") or []:
+                host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+                if not host_value or host_value == "-":
+                    host_value = "unknown.local"
+                try:
+                    port_value = int(item.get("port") or 0)
+                except Exception:
+                    port_value = 0
+                finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
+                title = str(item.get("title") or "Finding")
+                dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
+                out.append(
+                    {
+                        "project_id": project_id,
+                        "asset_id": assets_by_value.get(host_value, ""),
+                        "host": host_value,
+                        "asset": host_value,
+                        "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
+                        "dedup_key": dedup_key,
+                        "port": port_value,
+                        "severity": normalize_severity(str(item.get("severity") or "low")),
+                        "title": title,
+                        "evidence": str(item.get("evidence") or "-"),
+                        "finding_type": finding_type,
+                        "cve": str(item.get("cve") or "").upper(),
+                        "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
+                        "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
+                        "confidence_score": float(item.get("confidence_score") or 0.8),
+                        "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
+                        "status": "active",
+                        "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
+                        "service_confidence": float(item.get("service_confidence") or 0.0),
+                        "service_source": str(item.get("service_source") or "report_payload"),
+                        "first_seen": str(item.get("first_seen") or row.get("created_at") or utc_now()),
+                        "last_seen": str(item.get("last_seen") or row.get("created_at") or utc_now()),
+                        "occurrence_count": int(item.get("occurrence_count") or 1),
+                    }
+                )
+        return out
+
     if use_mongodb():
         db = get_mongo_db()
         project = db.projects.find_one({"id": project_id}, {"_id": 0, "id": 1, "name": 1, "created_at": 1})
@@ -2810,6 +2866,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
     # Self-heal path: if reports clearly contain findings but the materialized findings
     # store is empty/out-of-sync, rebuild once from persisted report payloads.
     has_report_findings = any(int(row.get("total_findings") or 0) > 0 for row in recent_rows)
+    using_report_payload_fallback = False
     if has_report_findings and not findings:
         try:
             rebuild_project_findings(project_id)
@@ -2822,6 +2879,14 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         except Exception:
             # Keep dashboard available even if repair fails; fallback values remain deterministic.
             pass
+
+    # Last-resort fallback for production resilience: synthesize findings directly
+    # from persisted report payloads so dashboard KPIs remain accurate.
+    if has_report_findings and not findings:
+        synthesized = _synthesize_findings_from_reports(trend_source_rows, assets)
+        if synthesized:
+            findings = synthesized
+            using_report_payload_fallback = True
 
     views = build_soc_dashboard_views(assets, findings)
     attack_graph_output = build_attack_graph(
@@ -2853,6 +2918,11 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         "threat_intel": get_threat_intel_summary(views["active_findings"]),
         "remediation": get_remediation_summary(views["active_findings"]),
         "attack_graph": attack_graph_output,
+        "diagnostics": {
+            "reports_with_findings": has_report_findings,
+            "materialized_findings_count": len(findings),
+            "using_report_payload_fallback": using_report_payload_fallback,
+        },
     }
     _set_cached_dashboard(project_id, window_days, payload)
     return payload
