@@ -463,6 +463,37 @@ def weighted_finding_score(finding: dict[str, Any]) -> float:
     return round(base * confidence, 2)
 
 
+def compute_exploitability_score(finding: dict[str, Any]) -> float:
+    severity = normalize_severity(str(finding.get("severity") or "low"))
+    severity_component = {
+        "critical": 40.0,
+        "high": 30.0,
+        "medium": 18.0,
+        "low": 8.0,
+        "info": 2.0,
+    }.get(severity, 8.0)
+
+    confidence_component = min(1.0, max(0.0, float(finding.get("confidence_score") or 0.0) or 0.8)) * 18.0
+
+    finding_type = str(finding.get("type") or finding.get("finding_type") or "").strip().lower()
+    exposure_component = 16.0 if finding_type in {"exposed_port", "open_port", "plaintext_protocol"} else 4.0
+
+    service_confidence = min(1.0, max(0.0, float(finding.get("service_confidence") or 0.0)))
+    service_component = service_confidence * 8.0
+
+    exploit_component = 12.0 if bool(finding.get("exploit_known")) else 0.0
+
+    asset_criticality = normalize_asset_criticality(str(finding.get("asset_criticality") or "medium"))
+    asset_component = {
+        "high": 10.0,
+        "medium": 5.0,
+        "low": 1.0,
+    }.get(asset_criticality, 5.0)
+
+    score = severity_component + confidence_component + exposure_component + service_component + exploit_component + asset_component
+    return round(min(100.0, max(0.0, score)), 2)
+
+
 def clear_project_caches(project_id: str) -> None:
     for key in list(DASHBOARD_CACHE.keys()):
         if key.startswith(f"{project_id}:"):
@@ -2205,11 +2236,25 @@ def upsert_findings(
             if fallback_host:
                 host_value = fallback_host
             else:
-                continue
+                SCAN_LOGGER.warning(
+                    "upsert_findings_host_mismatch project_id=%s scan_id=%s raw_host=%s allowed_hosts=%s",
+                    project_id,
+                    scan_id,
+                    host_value,
+                    len(allowed_scan_hosts),
+                )
         host_level = False
         if not host_value or host_value == "-":
             if fallback_host:
                 host_value = fallback_host
+            elif allowed_scan_hosts:
+                host_value = sorted(allowed_scan_hosts)[0]
+                SCAN_LOGGER.warning(
+                    "upsert_findings_host_missing project_id=%s scan_id=%s fallback_host=%s",
+                    project_id,
+                    scan_id,
+                    host_value,
+                )
             else:
                 continue
 
@@ -2319,6 +2364,15 @@ def upsert_findings(
     seen_dedup_keys_by_asset: dict[str, set[str]] = {}
     for item in unique_scan_items.values():
         seen_dedup_keys_by_asset.setdefault(str(item.get("asset_id") or ""), set()).add(str(item.get("dedup_key") or ""))
+
+    SCAN_LOGGER.info(
+        "upsert_findings_summary project_id=%s scan_id=%s input_items=%s persisted_candidates=%s scanned_assets=%s",
+        project_id,
+        scan_id,
+        len(enriched_findings),
+        len(unique_scan_items),
+        len(scanned_asset_ids),
+    )
 
     if use_mongodb():
         db = get_mongo_db()
@@ -2723,6 +2777,10 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
             scanned_assets=[str(h.get("host") or "-").strip().lower() for h in (result.get("hosts") or [])],
             asset_map=asset_map,
         )
+        result["persist_summary"] = {
+            "persisted_candidates": len(persisted_items),
+            "scanned_assets": len({str(item.get("asset_id") or "") for item in persisted_items if str(item.get("asset_id") or "")}),
+        }
         record_asset_scan_links(project_id, report_id, [str(item.get("asset_id") or "") for item in persisted_items])
         update_project_last_scan_id(project_id, report_id)
         cache_latest_scan_for_export(project_id, str(result.get("meta", {}).get("export_scope") or "standard"), {**result, "report_id": report_id, "report_created_at": created_at})
@@ -2763,6 +2821,10 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
         scanned_assets=[str(h.get("host") or "-").strip().lower() for h in (result.get("hosts") or [])],
         asset_map=asset_map,
     )
+    result["persist_summary"] = {
+        "persisted_candidates": len(persisted_items),
+        "scanned_assets": len({str(item.get("asset_id") or "") for item in persisted_items if str(item.get("asset_id") or "")}),
+    }
     record_asset_scan_links(project_id, report_id, [str(item.get("asset_id") or "") for item in persisted_items])
     update_project_last_scan_id(project_id, report_id)
     cache_latest_scan_for_export(project_id, str(result.get("meta", {}).get("export_scope") or "standard"), {**result, "report_id": report_id, "report_created_at": created_at})
@@ -6169,8 +6231,12 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
         internet_exposed=internet_exposed,
     )
 
+    for item in merged:
+        item["exploitability_score"] = compute_exploitability_score(item)
+
     merged.sort(
         key=lambda item: (
+            float(item.get("exploitability_score") or 0.0),
             float(item.get("advanced_risk_score") or 0.0),
             SEVERITY_ORDER.get(str(item.get("severity") or "info").lower(), 0),
         ),
@@ -6211,6 +6277,8 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
         len(enriched.get("cve_items") or []),
         sum(1 for item in merged if is_cve_candidate_finding(item)),
     )
+    metrics["known_exploit_candidates"] = sum(1 for item in merged if bool(item.get("exploit_known")))
+    metrics["max_exploitability_score"] = round(max((float(item.get("exploitability_score") or 0.0) for item in merged), default=0.0), 2)
     enriched["metrics"] = metrics
 
     # Add host role classification for network-oriented context.
@@ -6228,6 +6296,90 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
         }
 
     return enriched
+
+
+def _count_open_ports_in_result(result: dict[str, Any]) -> int:
+    total = 0
+    for host in (result.get("hosts") or []):
+        for port_entry in (host.get("ports") or host.get("open_ports") or []):
+            if str(port_entry.get("state") or "open").lower() != "open":
+                continue
+            try:
+                port_no = int(port_entry.get("port") or 0)
+            except Exception:
+                port_no = 0
+            if port_no > 0:
+                total += 1
+    return total
+
+
+def _build_scan_trace_payload(
+    *,
+    profile: str,
+    port_strategy: str,
+    target_count: int,
+    use_v2: bool,
+    collection_timeout_s: int,
+    collect_started_ts: float,
+    collect_finished_ts: float,
+    result_before_pipeline: dict[str, Any],
+    result_after_pipeline: dict[str, Any],
+    persisted: bool,
+    report_id: str,
+) -> dict[str, Any]:
+    before_hosts = list(result_before_pipeline.get("hosts") or [])
+    before_findings = list(result_before_pipeline.get("finding_items") or [])
+    before_cves = list(result_before_pipeline.get("cve_items") or [])
+    before_services = _flatten_services_from_result(result_before_pipeline)
+
+    after_hosts = list(result_after_pipeline.get("hosts") or [])
+    after_findings = list(result_after_pipeline.get("finding_items") or [])
+    after_cves = list(result_after_pipeline.get("cve_items") or [])
+    after_services = _flatten_services_from_result(result_after_pipeline)
+    after_metrics = dict(result_after_pipeline.get("metrics") or {})
+    persist_summary = dict(result_after_pipeline.get("persist_summary") or {})
+
+    return {
+        "config": {
+            "profile": profile,
+            "port_strategy": port_strategy,
+            "target_count": int(target_count),
+            "use_v2": bool(use_v2),
+            "collection_timeout_s": int(collection_timeout_s),
+        },
+        "phases": {
+            "collect": {
+                "duration_ms": int(max(0.0, (collect_finished_ts - collect_started_ts) * 1000.0)),
+                "hosts": len(before_hosts),
+                "open_ports": _count_open_ports_in_result(result_before_pipeline),
+                "services": len(before_services),
+                "findings_raw": len(before_findings),
+                "cves_raw": len(before_cves),
+            },
+            "intelligence": {
+                "hosts": len(after_hosts),
+                "open_ports": _count_open_ports_in_result(result_after_pipeline),
+                "services": len(after_services),
+                "findings": len(after_findings),
+                "cves": len(after_cves),
+                "known_exploit_candidates": int(after_metrics.get("known_exploit_candidates") or 0),
+                "max_exploitability_score": float(after_metrics.get("max_exploitability_score") or 0.0),
+            },
+            "persist": {
+                "enabled": bool(persisted),
+                "report_id": str(report_id or ""),
+                "persisted": bool(result_after_pipeline.get("persisted")),
+                "persisted_candidates": int(persist_summary.get("persisted_candidates") or 0),
+                "scanned_assets": int(persist_summary.get("scanned_assets") or 0),
+            },
+        },
+        "meta": {
+            "target": str(result_after_pipeline.get("meta", {}).get("target") or ""),
+            "target_type": str(result_after_pipeline.get("meta", {}).get("target_type") or ""),
+            "advanced_risk_score": float(result_after_pipeline.get("advanced_risk_score") or 0.0),
+            "true_risk_score": float(result_after_pipeline.get("true_risk_score") or 0.0),
+        },
+    }
 
 
 def enforce_rate_limit(client_ip: str) -> None:
@@ -7154,6 +7306,70 @@ def diagnostics_scan_compare_api() -> Any:
                 "new_vs_baseline_sample": new_vs_baseline,
             },
             "report_id": str(current_result.get("report_id") or ""),
+        }
+    )
+
+
+@app.route("/api/diagnostics/scan-trace", methods=["POST"])
+def diagnostics_scan_trace_api() -> Any:
+    if not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
+    payload = request.get_json(silent=True) or {}
+    target = str(payload.get("target") or "").strip()
+    if not target:
+        return jsonify({"error": "Target is required."}), 400
+
+    profile = str(payload.get("profile") or "light").strip().lower()
+    if profile not in VALID_PROFILES:
+        return jsonify({"error": "Invalid profile."}), 400
+
+    port_strategy = str(payload.get("port_strategy") or "standard").strip().lower()
+    if port_strategy not in {"standard", "aggressive"}:
+        return jsonify({"error": "Invalid port strategy."}), 400
+
+    project_id = str(payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    use_v2 = bool(payload.get("use_v2") or False)
+    persist_result = str(payload.get("persist") or "false").strip().lower() in {"1", "true", "yes"}
+
+    if not get_project(project_id):
+        return jsonify({"error": "Project not found."}), 404
+
+    try:
+        scan_result = _execute_scan_request(
+            {
+                "target": target,
+                "profile": profile,
+                "port_strategy": port_strategy,
+                "project_id": project_id,
+                "debug_trace": True,
+                "_client_ip": str(request.remote_addr or "diagnostics"),
+            },
+            use_v2=use_v2,
+            persist_result=persist_result,
+        )
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": "Trace scan failed.", "details": _public_scan_error_message(exc)}), 500
+
+    return jsonify(
+        {
+            "project_id": project_id,
+            "target": target,
+            "profile": profile,
+            "port_strategy": port_strategy,
+            "use_v2": use_v2,
+            "persist": persist_result,
+            "report_id": str(scan_result.get("report_id") or ""),
+            "persisted": bool(scan_result.get("persisted")),
+            "trace": scan_result.get("debug_trace") or {},
+            "summary": {
+                "hosts": len(scan_result.get("hosts") or []),
+                "findings": len(scan_result.get("finding_items") or []),
+                "cves": len(scan_result.get("cve_items") or []),
+                "risk_score": float(scan_result.get("true_risk_score") or 0.0),
+            },
         }
     )
 
@@ -8134,6 +8350,7 @@ def _execute_scan_request(
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
     response_format = str(payload.get("response_format") or "legacy").strip().lower()
+    debug_trace = str(payload.get("debug_trace") or "false").strip().lower() in {"1", "true", "yes"}
     project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
     client_ip_value = str(payload.get("_client_ip") or "unknown")
 
@@ -8214,6 +8431,9 @@ def _execute_scan_request(
         heartbeat_stop.set()
         heartbeat_thread.join(timeout=0.2)
 
+    collection_finished = time.time()
+    result_before_pipeline = dict(result)
+
     if callable(progress_hook):
         progress_hook(status="running", phase="enrichment", progress=48, message="Running enrichment pipeline")
     _scan_job_log(job_id, "scan_phase_started", phase="enrichment", progress=48)
@@ -8249,6 +8469,21 @@ def _execute_scan_request(
 
     cache_latest_scan_for_export(project["id"], export_scope, result)
 
+    if debug_trace:
+        result["debug_trace"] = _build_scan_trace_payload(
+            profile=profile,
+            port_strategy=port_strategy,
+            target_count=len(targets),
+            use_v2=use_v2,
+            collection_timeout_s=collection_timeout_s,
+            collect_started_ts=collection_started,
+            collect_finished_ts=collection_finished,
+            result_before_pipeline=result_before_pipeline,
+            result_after_pipeline=result,
+            persisted=False,
+            report_id="",
+        )
+
     if response_format == "soc_json":
         _scan_job_log(job_id, "scan_response_soc_json", phase="finalize", persisted=False)
         return {
@@ -8267,6 +8502,20 @@ def _execute_scan_request(
             report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
             result["report_id"] = report_id
             result["persisted"] = True
+            if debug_trace:
+                result["debug_trace"] = _build_scan_trace_payload(
+                    profile=profile,
+                    port_strategy=port_strategy,
+                    target_count=len(targets),
+                    use_v2=use_v2,
+                    collection_timeout_s=collection_timeout_s,
+                    collect_started_ts=collection_started,
+                    collect_finished_ts=collection_finished,
+                    result_before_pipeline=result_before_pipeline,
+                    result_after_pipeline=result,
+                    persisted=True,
+                    report_id=report_id,
+                )
             _scan_job_log(job_id, "scan_persisted", report_id=report_id, project_id=project["id"])
         except Exception as exc:
             result["persisted"] = False
