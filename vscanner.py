@@ -2626,6 +2626,22 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             except Exception:
                 asset["tags"] = []
 
+    # Self-heal path: if reports clearly contain findings but the materialized findings
+    # store is empty/out-of-sync, rebuild once from persisted report payloads.
+    has_report_findings = any(int(row.get("total_findings") or 0) > 0 for row in recent_rows)
+    if has_report_findings and not findings:
+        try:
+            rebuild_project_findings(project_id)
+            if use_mongodb():
+                db = get_mongo_db()
+                findings = list(db.findings.find({"project_id": project_id, "status": {"$in": ["active", "open", "stale"]}}, {"_id": 0}))
+            else:
+                with db_connection() as connection:
+                    findings = fetchall(connection, "SELECT * FROM findings WHERE project_id = ? AND status IN ('active', 'open', 'stale')", (project_id,))
+        except Exception:
+            # Keep dashboard available even if repair fails; fallback values remain deterministic.
+            pass
+
     views = build_soc_dashboard_views(assets, findings)
     attack_graph_output = build_attack_graph(
         services=[
