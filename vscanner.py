@@ -7,6 +7,7 @@ import hashlib
 import io
 import ipaddress
 import json
+import logging
 import os
 import random
 import re
@@ -73,6 +74,15 @@ urllib3.disable_warnings(category=InsecureRequestWarning)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024
+
+LOG_LEVEL = os.getenv("VSCANNER_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+SCAN_LOGGER = logging.getLogger("vscanner.scan")
+if not SCAN_LOGGER.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+    SCAN_LOGGER.addHandler(_handler)
+SCAN_LOGGER.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+SCAN_LOGGER.propagate = False
 
 TARGET_DOMAIN_RE = re.compile(
     r"^(?=.{1,253}$)(?!-)[a-zA-Z0-9-]{1,63}(?<!-)(\.(?!-)[a-zA-Z0-9-]{1,63}(?<!-))+\.?$"
@@ -238,6 +248,8 @@ DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE_TTL_SECONDS = 30.0
 SCAN_JOB_WORKERS = max(2, min(8, int(os.getenv("SCAN_JOB_WORKERS", "4"))))
 SCAN_JOB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_JOB_WORKERS)
+SCAN_JOB_STAGE_TIMEOUT_SECONDS = max(30, int(os.getenv("SCAN_JOB_STAGE_TIMEOUT_SECONDS", "900")))
+SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS = max(2, int(os.getenv("SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS", "5")))
 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
@@ -5482,26 +5494,27 @@ def run_lightweight_scan(target: str, target_type: str, profile: str, port_strat
 
 
 def resolve_nmap_arguments(profile: str, port_strategy: str) -> str:
+    safety_args = " --host-timeout 8m --script-timeout 60s"
     if profile == "network":
-        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
+        return "-Pn -n -T4 --open -sS -sV --version-all --reason --top-ports 3500 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info" + safety_args
 
     if profile == "stealth":
         # Low-noise profile: fewer probes, slower timing, no evasive/bypass behavior.
-        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
+        return "-Pn -T2 --open -sS -sV --version-all --version-intensity 8 --top-ports 1200 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info" + safety_args
 
     if profile == "light":
         if port_strategy == "aggressive":
-            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info"
+            return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info" + safety_args
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 6000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info" + safety_args
 
     # Deep profile. In private/lab mode we allow broader scripts and full port coverage.
     if port_strategy == "aggressive" and not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason -p- --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln" + safety_args
 
     if not is_public_mode():
-        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
+        return "-Pn -T4 --open -sS -sV --version-all --version-intensity 9 --reason --top-ports 14000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln" + safety_args
 
-    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln"
+    return "-Pn -T4 --open -sS -sV --version-all --version-intensity 8 --reason --top-ports 9000 --script=default,safe,banner,ssl-cert,http-title,http-headers,ssh-hostkey,minecraft-info,vuln" + safety_args
 
 
 def run_nmap_scan(target: str, profile: str, port_strategy: str) -> dict[str, Any]:
@@ -7789,10 +7802,25 @@ def _public_scan_error_message(exc: Exception) -> str:
     return "Scan failed."
 
 
+def _scan_job_log(job_id: str, event: str, **fields: Any) -> None:
+    payload: dict[str, Any] = {"event": event}
+    if job_id:
+        payload["job_id"] = job_id
+    for key, value in fields.items():
+        if value is None:
+            continue
+        payload[str(key)] = value
+    try:
+        SCAN_LOGGER.info(json.dumps(payload, ensure_ascii=True, sort_keys=True, default=str))
+    except Exception:
+        SCAN_LOGGER.info("scan_event=%s job_id=%s", event, job_id)
+
+
 def _execute_scan_request(
     payload: dict[str, Any],
     *,
     use_v2: bool,
+    job_id: str = "",
     progress_hook: Any = None,
 ) -> dict[str, Any]:
     profile = (payload.get("profile") or "light").lower()
@@ -7813,20 +7841,66 @@ def _execute_scan_request(
     targets = resolve_scan_targets(payload, project["id"])
     enforce_rate_limit(client_ip_value)
 
+    _scan_job_log(
+        job_id,
+        "scan_request_validated",
+        project_id=project["id"],
+        target_count=len(targets),
+        profile=profile,
+        port_strategy=port_strategy,
+        use_v2=use_v2,
+    )
+
     if callable(progress_hook):
         progress_hook(status="running", phase="collect", progress=10, message="Starting scan collection")
+    _scan_job_log(job_id, "scan_phase_started", phase="collect", progress=10, message="Starting scan collection")
 
-    if len(targets) == 1:
-        result = orchestrate_scan_v2(targets[0], profile, port_strategy) if use_v2 else orchestrate_scan(targets[0], profile, port_strategy)
-    else:
-        if use_v2:
-            partial_results = [orchestrate_scan_v2(target_value, profile, port_strategy) for target_value in targets]
-        else:
-            partial_results = [orchestrate_scan(target_value, profile, port_strategy) for target_value in targets]
-        result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
+    collection_started = time.time()
+    heartbeat_stop = threading.Event()
+
+    def _collect_heartbeat() -> None:
+        while not heartbeat_stop.wait(float(SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS)):
+            elapsed_s = int(max(0.0, time.time() - collection_started))
+            heartbeat_progress = min(44, 12 + int(elapsed_s / max(1, SCAN_JOB_HEARTBEAT_INTERVAL_SECONDS)) * 2)
+            heartbeat_message = f"Collecting scan data ({elapsed_s}s elapsed)"
+            if callable(progress_hook):
+                progress_hook(status="running", phase="collect", progress=heartbeat_progress, message=heartbeat_message)
+            _scan_job_log(
+                job_id,
+                "scan_phase_heartbeat",
+                phase="collect",
+                progress=heartbeat_progress,
+                elapsed_s=elapsed_s,
+            )
+
+    heartbeat_thread = threading.Thread(target=_collect_heartbeat, name=f"scan-heartbeat-{job_id or 'sync'}", daemon=True)
+    heartbeat_thread.start()
+
+    try:
+        def _run_collection_stage() -> dict[str, Any]:
+            if len(targets) == 1:
+                return orchestrate_scan_v2(targets[0], profile, port_strategy) if use_v2 else orchestrate_scan(targets[0], profile, port_strategy)
+            if use_v2:
+                partial_results = [orchestrate_scan_v2(target_value, profile, port_strategy) for target_value in targets]
+            else:
+                partial_results = [orchestrate_scan(target_value, profile, port_strategy) for target_value in targets]
+            return merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as stage_executor:
+            stage_future = stage_executor.submit(_run_collection_stage)
+            result = stage_future.result(timeout=float(SCAN_JOB_STAGE_TIMEOUT_SECONDS))
+    except concurrent.futures.TimeoutError as exc:
+        _scan_job_log(job_id, "scan_phase_timeout", phase="collect", timeout_s=SCAN_JOB_STAGE_TIMEOUT_SECONDS)
+        raise ScanInputError(
+            f"Scan timed out after {SCAN_JOB_STAGE_TIMEOUT_SECONDS}s during collection phase."
+        ) from exc
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=0.2)
 
     if callable(progress_hook):
         progress_hook(status="running", phase="enrichment", progress=48, message="Running enrichment pipeline")
+    _scan_job_log(job_id, "scan_phase_started", phase="enrichment", progress=48)
 
     result["meta"]["project_id"] = project["id"]
     result["meta"]["project_name"] = project["name"]
@@ -7842,6 +7916,7 @@ def _execute_scan_request(
 
     if callable(progress_hook):
         progress_hook(status="running", phase="correlation", progress=72, message="Building SOC report")
+    _scan_job_log(job_id, "scan_phase_started", phase="correlation", progress=72)
 
     soc_report = build_soc_report(
         mode=soc_mode,
@@ -7859,6 +7934,7 @@ def _execute_scan_request(
     cache_latest_scan_for_export(project["id"], export_scope, result)
 
     if response_format == "soc_json":
+        _scan_job_log(job_id, "scan_response_soc_json", phase="finalize", persisted=False)
         return {
             "response_format": "soc_json",
             "soc_report": soc_report,
@@ -7868,18 +7944,22 @@ def _execute_scan_request(
 
     if callable(progress_hook):
         progress_hook(status="running", phase="persist", progress=88, message="Persisting report and findings")
+    _scan_job_log(job_id, "scan_phase_started", phase="persist", progress=88)
 
     try:
         report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
         result["report_id"] = report_id
         result["persisted"] = True
+        _scan_job_log(job_id, "scan_persisted", report_id=report_id, project_id=project["id"])
     except Exception as exc:
         result["persisted"] = False
         result["warning"] = "Scan completed, but saving the report failed."
         result["persist_error"] = "Persistence error"
+        _scan_job_log(job_id, "scan_persist_failed", error=str(exc)[:220])
 
     if callable(progress_hook):
         progress_hook(status="running", phase="finalize", progress=96, message="Finalizing response")
+    _scan_job_log(job_id, "scan_phase_started", phase="finalize", progress=96)
 
     return result
 
@@ -7903,23 +7983,30 @@ def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -
         "error": "",
     }
     _create_scan_job_record(job_state)
+    _scan_job_log(job_id, "scan_job_created", project_id=job_state["project_id"], use_v2=bool(use_v2))
 
     def _progress(**kwargs: Any) -> None:
+        status_value = str(kwargs.get("status") or "running")
+        phase_value = str(kwargs.get("phase") or "running")
+        progress_value = int(kwargs.get("progress") or 0)
+        message_value = str(kwargs.get("message") or "Running")
         _update_scan_job_record(
             job_id,
-            status=str(kwargs.get("status") or "running"),
-            phase=str(kwargs.get("phase") or "running"),
-            progress=int(kwargs.get("progress") or 0),
-            message=str(kwargs.get("message") or "Running"),
+            status=status_value,
+            phase=phase_value,
+            progress=progress_value,
+            message=message_value,
             updated_at=utc_now(),
         )
+        _scan_job_log(job_id, "scan_job_progress", status=status_value, phase=phase_value, progress=progress_value, message=message_value)
 
     def _worker() -> None:
+        _scan_job_log(job_id, "scan_worker_started")
         _progress(status="running", phase="init", progress=3, message="Initializing job")
         try:
             run_payload = dict(payload)
             run_payload["_client_ip"] = client_ip
-            result = _execute_scan_request(run_payload, use_v2=use_v2, progress_hook=_progress)
+            result = _execute_scan_request(run_payload, use_v2=use_v2, job_id=job_id, progress_hook=_progress)
             _update_scan_job_record(
                 job_id,
                 status="completed",
@@ -7930,7 +8017,9 @@ def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -
                 result_json=json.dumps(result, ensure_ascii=True),
                 error="",
             )
+            _scan_job_log(job_id, "scan_job_completed", progress=100)
         except Exception as exc:
+            SCAN_LOGGER.exception("scan_worker_failed job_id=%s", job_id)
             _update_scan_job_record(
                 job_id,
                 status="failed",
@@ -7941,8 +8030,10 @@ def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -
                 result_json="{}",
                 error=_public_scan_error_message(exc),
             )
+            _scan_job_log(job_id, "scan_job_failed", error=str(exc)[:220])
 
     SCAN_JOB_EXECUTOR.submit(_worker)
+    _scan_job_log(job_id, "scan_job_enqueued")
     return {
         "id": job_id,
         "status": "queued",
