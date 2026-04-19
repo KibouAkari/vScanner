@@ -2595,13 +2595,24 @@ def _dashboard_cache_key(project_id: str, window_days: int) -> str:
 
 
 def _get_cached_dashboard(project_id: str, window_days: int) -> dict[str, Any] | None:
-    # Integrity-first mode: always recompute from persisted findings/assets state.
-    return None
+    key = _dashboard_cache_key(project_id, window_days)
+    payload = DASHBOARD_CACHE.get(key)
+    if not payload:
+        return None
+    ts = float(payload.get("ts") or 0.0)
+    if (time.time() - ts) > float(DASHBOARD_CACHE_TTL_SECONDS or 0.0):
+        DASHBOARD_CACHE.pop(key, None)
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        DASHBOARD_CACHE.pop(key, None)
+        return None
+    return data
 
 
 def _set_cached_dashboard(project_id: str, window_days: int, data: dict[str, Any]) -> None:
-    # Integrity-first mode: no-op to avoid serving stale in-memory dashboard state.
-    return None
+    key = _dashboard_cache_key(project_id, window_days)
+    DASHBOARD_CACHE[key] = {"ts": time.time(), "data": data}
 
 
 def build_soc_dashboard_views(
@@ -2813,7 +2824,7 @@ def build_soc_dashboard_views(
     }
 
 
-def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, Any]:
+def get_project_dashboard(project_id: str, window_days: int = 30, include_heavy: bool = True) -> dict[str, Any]:
     if not DB_READY:
         return {
             "project": {"id": DEFAULT_PROJECT_ID, "name": DEFAULT_PROJECT_NAME, "created_at": utc_now()},
@@ -2841,6 +2852,14 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
 
     cached = _get_cached_dashboard(project_id, window_days)
     if cached is not None:
+        if include_heavy:
+            return cached
+        if isinstance(cached, dict):
+            lite_cached = dict(cached)
+            lite_cached["attack_graph"] = {}
+            lite_cached["threat_intel"] = {}
+            lite_cached["remediation"] = {}
+            return lite_cached
         return cached
 
     since = now_minus_days(max(1, min(window_days, 365)))
@@ -2969,20 +2988,26 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
             using_report_payload_fallback = True
 
     views = build_soc_dashboard_views(assets, findings)
-    attack_graph_output = build_attack_graph(
-        services=[
-            {
-                "host": str(finding.get("host") or finding.get("asset") or ""),
-                "port": int(finding.get("port") or 0),
-                "service": str(finding.get("service_name") or "unknown"),
-            }
-            for finding in views["active_findings"]
-            if str(finding.get("finding_type") or "") == "exposed_port"
-        ],
-        findings=views["active_findings"],
-        assets=[{"host": str(asset.get("value") or ""), "risk_score": next((float(item.get("risk_score") or 0.0) for item in views["top_assets"] if str(item.get("host") or "") == str(asset.get("value") or "")), 0.0)} for asset in assets],
-        max_paths=6,
-    )
+    attack_graph_output: dict[str, Any] = {}
+    threat_intel_summary: dict[str, Any] = {}
+    remediation_summary: dict[str, Any] = {}
+    if include_heavy:
+        attack_graph_output = build_attack_graph(
+            services=[
+                {
+                    "host": str(finding.get("host") or finding.get("asset") or ""),
+                    "port": int(finding.get("port") or 0),
+                    "service": str(finding.get("service_name") or "unknown"),
+                }
+                for finding in views["active_findings"]
+                if str(finding.get("finding_type") or "") == "exposed_port"
+            ],
+            findings=views["active_findings"],
+            assets=[{"host": str(asset.get("value") or ""), "risk_score": next((float(item.get("risk_score") or 0.0) for item in views["top_assets"] if str(item.get("host") or "") == str(asset.get("value") or "")), 0.0)} for asset in assets],
+            max_paths=6,
+        )
+        threat_intel_summary = get_threat_intel_summary(views["active_findings"])
+        remediation_summary = get_remediation_summary(views["active_findings"])
     payload = {
         "project": project,
         "window_days": window_days,
@@ -2995,8 +3020,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         "top_assets": views["top_assets"],
         "service_inventory": views["service_inventory"],
         "assets": [{"id": str(asset.get("id") or ""), "value": str(asset.get("value") or ""), "tags": asset.get("tags") or [], "criticality": normalize_asset_criticality(str(asset.get("criticality") or "medium")), "created_at": str(asset.get("created_at") or utc_now())} for asset in assets],
-        "threat_intel": get_threat_intel_summary(views["active_findings"]),
-        "remediation": get_remediation_summary(views["active_findings"]),
+        "threat_intel": threat_intel_summary,
+        "remediation": remediation_summary,
         "attack_graph": attack_graph_output,
         "diagnostics": {
             "reports_with_findings": has_report_findings,
@@ -7220,12 +7245,13 @@ def assets_tags_api(asset_id: str) -> Any:
 @app.route("/api/dashboard")
 def dashboard_api_compat() -> Any:
     project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    lite = str(request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
     try:
         window_days = int(request.args.get("window_days", "30"))
     except ValueError:
         window_days = 30
     try:
-        data = get_project_dashboard(project_id, window_days=window_days)
+        data = get_project_dashboard(project_id, window_days=window_days, include_heavy=not lite)
         return jsonify(data)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 404

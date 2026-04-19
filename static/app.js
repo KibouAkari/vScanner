@@ -99,6 +99,9 @@ let severityStackChartInstance = null;
 let severityMiniChartInstance = null;
 let severityTimelinePoints = [];
 const historyCache = new Map();
+let dashboardAbortController = null;
+let dashboardRequestSeq = 0;
+const CHART_ANIMATION_MS = 320;
 
 const I18N = {
     de: {
@@ -925,7 +928,7 @@ function drawTrend(points) {
             responsive: true,
             maintainAspectRatio: false,
             animation: {
-                duration: 950,
+                duration: CHART_ANIMATION_MS,
                 easing: "easeOutQuart",
             },
             plugins: {
@@ -983,7 +986,7 @@ function drawRiskBars(summary) {
             animation: {
                 animateRotate: true,
                 animateScale: true,
-                duration: 1250,
+                duration: CHART_ANIMATION_MS + 80,
                 easing: "easeOutExpo",
             },
             plugins: {
@@ -1079,7 +1082,7 @@ function drawSeverityStack(points) {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: {
-                    duration: 950,
+                    duration: CHART_ANIMATION_MS,
                     easing: "easeOutQuart",
                 },
                 interaction: {
@@ -1134,7 +1137,7 @@ function drawSeverityStack(points) {
                     responsive: true,
                     maintainAspectRatio: false,
                     animation: {
-                        duration: 750,
+                        duration: CHART_ANIMATION_MS,
                         easing: "easeOutQuad",
                     },
                     plugins: {
@@ -1228,7 +1231,7 @@ function drawSeverityStack(points) {
             responsive: true,
             maintainAspectRatio: false,
             animation: {
-                duration: 1100,
+                duration: CHART_ANIMATION_MS + 40,
                 easing: "easeOutQuart",
             },
             interaction: {
@@ -2040,12 +2043,26 @@ async function loadProjects() {
 async function loadDashboard() {
     const days = Number(windowDays.value || 30);
     const projectId = activeProjectId || "default";
-    const endpoint = `/api/dashboard?project_id=${encodeURIComponent(projectId)}&window_days=${days}`;
-    console.log("DASHBOARD ENDPOINT:", endpoint);
-    const response = await fetch(endpoint);
-    const data = await response.json();
-    console.log("DASHBOARD RAW:", data);
-    console.log("DASHBOARD RESPONSE:", response);
+    const requestSeq = ++dashboardRequestSeq;
+    if (dashboardAbortController) {
+        dashboardAbortController.abort();
+    }
+    dashboardAbortController = new AbortController();
+    const endpoint = `/api/dashboard?project_id=${encodeURIComponent(projectId)}&window_days=${days}&lite=1`;
+    let response;
+    let data;
+    try {
+        response = await fetch(endpoint, { signal: dashboardAbortController.signal });
+        data = await response.json();
+    } catch (error) {
+        if (error && error.name === "AbortError") {
+            return;
+        }
+        throw error;
+    }
+    if (requestSeq !== dashboardRequestSeq) {
+        return;
+    }
     if (!response.ok) {
         throw new Error(data.error || "Dashboard unavailable");
     }
@@ -2068,6 +2085,15 @@ async function loadDashboard() {
     renderServiceInventory(data.service_inventory || []);
     renderPortIntelligence(data.service_inventory || []);
     renderAssetsSummary(data.assets || [], dashboardData);
+}
+
+async function refreshWorkspaceViews(priority = "dashboard") {
+    if (priority === "dashboard") {
+        await loadDashboard();
+        void Promise.allSettled([loadAggregatedFindings(), loadHistory(), loadAssets()]);
+        return;
+    }
+    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
 }
 
 async function loadAggregatedFindings() {
@@ -2369,7 +2395,7 @@ deleteProjectButton?.addEventListener("click", async () => {
 
 projectSelect.addEventListener("change", async () => {
     activeProjectId = projectSelect.value || "default";
-    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
+    await refreshWorkspaceViews("dashboard");
 });
 
 newProjectButton.addEventListener("click", async () => {
@@ -2392,7 +2418,7 @@ newProjectButton.addEventListener("click", async () => {
         await loadProjects();
         activeProjectId = data.id;
         projectSelect.value = data.id;
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
+        await refreshWorkspaceViews("dashboard");
     } catch (error) {
         showError(error.message || "Project creation failed");
     }
