@@ -2005,14 +2005,23 @@ def upsert_findings(
     normalized_profile = canonical_profile(profile)
     profile_confidence = profile_confidence_score(normalized_profile)
     synced_assets = dict(asset_map or {})
+    normalized_scanned_assets = [
+        str(value or "").strip().lower()
+        for value in (scanned_assets or [])
+        if str(value or "").strip() and str(value or "").strip() != "-"
+    ]
+    fallback_host = normalized_scanned_assets[0] if len(set(normalized_scanned_assets)) == 1 else ""
     unique_scan_items: dict[tuple[str, str], dict[str, Any]] = {}
 
     for item in enriched_findings:
         host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
         host_level = False
         if not host_value or host_value == "-":
-            host_value = "unknown.local"
-            host_level = True
+            if fallback_host:
+                host_value = fallback_host
+            else:
+                host_value = "unknown.local"
+                host_level = True
 
         try:
             port_value = int(item.get("port") or 0)
@@ -2409,9 +2418,17 @@ def save_report_entry(result: dict[str, Any], project_id: str, project_name: str
     metrics = result.get("metrics", {})
     created_at = utc_now()
     asset_map = sync_assets_from_scan(project_id, result)
+    scan_hosts = [
+        str(h.get("host") or "").strip().lower()
+        for h in (result.get("hosts") or [])
+        if str(h.get("host") or "").strip() and str(h.get("host") or "").strip() != "-"
+    ]
+    fallback_host = scan_hosts[0] if len(set(scan_hosts)) == 1 else ""
     enriched_findings = generate_remediation_plan(enrich_findings_with_threat_intel(list(result.get("finding_items") or [])))
     for item in enriched_findings:
         host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+        if (not host_value or host_value == "-") and fallback_host:
+            host_value = fallback_host
         try:
             port_value = int(item.get("port") or 0)
         except Exception:
