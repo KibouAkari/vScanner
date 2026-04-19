@@ -1102,6 +1102,98 @@ def get_project(project_id: str | None) -> dict[str, Any] | None:
         return fetchone(connection, "SELECT id, name, created_at FROM projects WHERE id = ?", (safe_id,))
 
 
+def get_storage_diagnostics(project_id: str | None = None) -> dict[str, Any]:
+    safe_project_id = (project_id or "").strip()
+    projects = list_projects()
+    if safe_project_id:
+        projects = [item for item in projects if str(item.get("id") or "") == safe_project_id]
+
+    if use_mongodb():
+        db = get_mongo_db()
+        items: list[dict[str, Any]] = []
+        for project in projects:
+            pid = str(project.get("id") or "")
+            report_count = int(db.reports.count_documents({"project_id": pid}))
+            latest_report = db.reports.find_one(
+                {"project_id": pid},
+                {"_id": 0, "id": 1, "created_at": 1, "total_findings": 1, "open_ports": 1, "cve_count": 1},
+                sort=[("created_at", DESCENDING)],
+            ) or {}
+            findings_total = int(db.findings.count_documents({"project_id": pid}))
+            findings_active = int(db.findings.count_documents({"project_id": pid, "status": {"$in": ["active", "open", "stale"]}}))
+            mismatch = report_count > 0 and int(latest_report.get("total_findings") or 0) > 0 and findings_active == 0
+            items.append(
+                {
+                    "project_id": pid,
+                    "project_name": str(project.get("name") or "Untitled"),
+                    "report_count": report_count,
+                    "findings_total": findings_total,
+                    "findings_active_or_stale": findings_active,
+                    "latest_report": {
+                        "id": str(latest_report.get("id") or ""),
+                        "created_at": str(latest_report.get("created_at") or ""),
+                        "total_findings": int(latest_report.get("total_findings") or 0),
+                        "open_ports": int(latest_report.get("open_ports") or 0),
+                        "cve_count": int(latest_report.get("cve_count") or 0),
+                    },
+                    "mismatch": mismatch,
+                    "suggested_action": "rebuild_project_findings" if mismatch else "none",
+                }
+            )
+        return {"items": items}
+
+    with db_connection() as connection:
+        items = []
+        for project in projects:
+            pid = str(project.get("id") or "")
+            report_row = fetchone(
+                connection,
+                "SELECT COUNT(*) AS c FROM reports WHERE project_id = ?",
+                (pid,),
+            ) or {"c": 0}
+            latest_row = fetchone(
+                connection,
+                "SELECT id, created_at, total_findings, open_ports, cve_count FROM reports WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
+                (pid,),
+            ) or {}
+            findings_total_row = fetchone(
+                connection,
+                "SELECT COUNT(*) AS c FROM findings WHERE project_id = ?",
+                (pid,),
+            ) or {"c": 0}
+            findings_active_row = fetchone(
+                connection,
+                "SELECT COUNT(*) AS c FROM findings WHERE project_id = ? AND status IN ('active', 'open', 'stale')",
+                (pid,),
+            ) or {"c": 0}
+
+            report_count = int(report_row.get("c") or 0)
+            findings_total = int(findings_total_row.get("c") or 0)
+            findings_active = int(findings_active_row.get("c") or 0)
+            latest_total_findings = int(latest_row.get("total_findings") or 0)
+            mismatch = report_count > 0 and latest_total_findings > 0 and findings_active == 0
+
+            items.append(
+                {
+                    "project_id": pid,
+                    "project_name": str(project.get("name") or "Untitled"),
+                    "report_count": report_count,
+                    "findings_total": findings_total,
+                    "findings_active_or_stale": findings_active,
+                    "latest_report": {
+                        "id": str(latest_row.get("id") or ""),
+                        "created_at": str(latest_row.get("created_at") or ""),
+                        "total_findings": latest_total_findings,
+                        "open_ports": int(latest_row.get("open_ports") or 0),
+                        "cve_count": int(latest_row.get("cve_count") or 0),
+                    },
+                    "mismatch": mismatch,
+                    "suggested_action": "rebuild_project_findings" if mismatch else "none",
+                }
+            )
+    return {"items": items}
+
+
 def backfill_soc_state() -> None:
     if not DB_READY or use_mongodb():
         return
@@ -6403,6 +6495,15 @@ def network_hints_api() -> Any:
     forwarded = request.headers.get("X-Forwarded-For", "")
     candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
     return jsonify({"hints": suggest_network_hints(candidate), "client_ip": candidate})
+
+
+@app.route("/api/diagnostics/storage")
+def diagnostics_storage_api() -> Any:
+    project_id = (request.args.get("project_id") or "").strip() or None
+    try:
+        return jsonify(get_storage_diagnostics(project_id=project_id))
+    except Exception as exc:
+        return jsonify({"error": "Diagnostics unavailable.", "details": str(exc)}), 500
 
 
 @app.route("/api/projects", methods=["GET", "POST"])
