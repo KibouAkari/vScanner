@@ -46,6 +46,7 @@ const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
+const scanJobStatus = document.getElementById("scanJobStatus");
 
 const severityFilter = document.getElementById("severityFilter");
 const sinceDays = document.getElementById("sinceDays");
@@ -55,6 +56,7 @@ const findingSearch = document.getElementById("findingSearch");
 const refreshFindingsButton = document.getElementById("refreshFindingsButton");
 const findingsCsvButton = document.getElementById("findingsCsvButton");
 const findingsTable = document.getElementById("findingsTable");
+const findingDetail = document.getElementById("findingDetail");
 const assetsInventory = document.getElementById("assetsInventory");
 const assetsSummary = document.getElementById("assetsSummary");
 const refreshAssetsButton = document.getElementById("refreshAssetsButton");
@@ -102,6 +104,8 @@ const historyCache = new Map();
 let dashboardAbortController = null;
 let dashboardRequestSeq = 0;
 const CHART_ANIMATION_MS = 320;
+let selectedFindingKey = "";
+let activeScanJobId = "";
 
 const I18N = {
     de: {
@@ -797,6 +801,154 @@ function clearError() {
     scanError.classList.add("hidden");
 }
 
+function setScanJobStatus(message = "", state = "info") {
+    if (!scanJobStatus) {
+        return;
+    }
+    scanJobStatus.textContent = message;
+    scanJobStatus.classList.remove("hidden", "state-live", "state-degraded", "state-offline", "state-warn");
+    if (!message) {
+        scanJobStatus.classList.add("hidden");
+        return;
+    }
+    const map = {
+        info: "state-live",
+        running: "state-live",
+        warn: "state-warn",
+        error: "state-offline",
+        done: "state-live",
+    };
+    scanJobStatus.classList.add(map[state] || "state-live");
+}
+
+function delayMs(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runQueuedScan(payload, useV2 = false) {
+    const { response, data } = await fetchJsonWithTimeout(
+        "/api/scan/jobs",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, use_v2: !!useV2 }),
+        },
+        20000,
+    );
+    if (!response.ok) {
+        throw new Error(data?.error || "Could not enqueue scan job");
+    }
+    const jobId = String(data?.id || "");
+    if (!jobId) {
+        throw new Error("Invalid scan job response");
+    }
+    activeScanJobId = jobId;
+    let polls = 0;
+    while (polls < 500) {
+        polls += 1;
+        const statusResponse = await fetchJsonWithTimeout(`/api/scan/jobs/${encodeURIComponent(jobId)}`, {}, 20000);
+        if (!statusResponse.response.ok) {
+            throw new Error(statusResponse.data?.error || "Scan job status unavailable");
+        }
+        const job = statusResponse.data || {};
+        const status = String(job.status || "queued").toLowerCase();
+        const progress = Number(job.progress || 0);
+        const message = String(job.message || status);
+        setScanJobStatus(`Scan Job ${jobId.slice(0, 8)} | ${progress}% | ${message}`, status === "failed" ? "error" : "running");
+        if (scanResult && status !== "completed") {
+            scanResult.innerHTML = `<div class="scan-loading"><div class="scan-spinner"></div><span>Job ${esc(jobId.slice(0, 8))} ${esc(progress)}% - ${esc(message)}</span></div>`;
+        }
+        if (status === "completed") {
+            setScanJobStatus(`Scan Job ${jobId.slice(0, 8)} completed.`, "done");
+            return job.result || {};
+        }
+        if (status === "failed") {
+            throw new Error(job.error || job.message || "Scan job failed");
+        }
+        await delayMs(1200);
+    }
+    throw new Error("Scan job timeout. Please check job status in backend.");
+}
+
+async function loadFindingDetail(findingKey) {
+    const key = String(findingKey || "").trim();
+    if (!findingDetail) {
+        return;
+    }
+    if (!key) {
+        findingDetail.innerHTML = `<div class="list-item"><div class="list-line">Select a finding to inspect technical context, evidence, CVEs, and remediation guidance.</div></div>`;
+        return;
+    }
+
+    findingDetail.innerHTML = '<div class="list-item"><div class="list-line">Loading finding detail...</div></div>';
+    const { response, data } = await fetchJsonWithTimeout(
+        `/api/projects/${encodeURIComponent(activeProjectId)}/findings/${encodeURIComponent(key)}?since_days=${encodeURIComponent(sinceDays.value || "3650")}`,
+        {},
+        30000,
+    );
+    if (!response.ok) {
+        throw new Error(data?.error || "Could not load finding detail");
+    }
+
+    const assets = Array.isArray(data.assets) ? data.assets : [];
+    const ports = Array.isArray(data.ports) ? data.ports : [];
+    const cves = Array.isArray(data.related_cves) ? data.related_cves : [];
+    const instances = Array.isArray(data.instances) ? data.instances : [];
+    const remediation = data.remediation || {};
+    const actions = Array.isArray(remediation.recommended_actions) ? remediation.recommended_actions : [];
+
+    const instanceRows = instances
+        .slice(0, 60)
+        .map((item) => `
+            <tr>
+                <td>${esc(item.asset || item.host || "-")}</td>
+                <td>${esc(item.port || "-")}</td>
+                <td>${esc(item.service || "unknown")}</td>
+                <td>${esc(item.status || "active")}</td>
+                <td>${esc(item.last_seen || "-")}</td>
+                <td>${esc(item.evidence || "-")}</td>
+            </tr>
+        `)
+        .join("");
+
+    findingDetail.innerHTML = `
+        <div class="finding-detail-grid">
+            <div class="finding-detail-kpis">
+                <div class="finding-detail-kpi"><span>Severity</span><strong>${esc(data.severity || "low")}</strong></div>
+                <div class="finding-detail-kpi"><span>Risk</span><strong>${esc(data.risk_score || 0)}</strong></div>
+                <div class="finding-detail-kpi"><span>Assets</span><strong>${esc(data.asset_count || 0)}</strong></div>
+                <div class="finding-detail-kpi"><span>Occurrences</span><strong>${esc(data.occurrence_count || 0)}</strong></div>
+            </div>
+            <div class="list-item">
+                <div class="list-line"><strong>${esc(data.title || "Finding")}</strong><span>${esc(data.type || "-")}</span></div>
+                <div class="finding-section-title">Related CVEs</div>
+                <div class="finding-chip-row">${(cves.length ? cves : ["-"]).map((v) => `<span class="finding-chip">${esc(v)}</span>`).join("")}</div>
+                <div class="finding-section-title">Affected Assets</div>
+                <div class="finding-chip-row">${(assets.length ? assets : ["-"]).map((v) => `<span class="finding-chip">${esc(v)}</span>`).join("")}</div>
+                <div class="finding-section-title">Observed Ports</div>
+                <div class="finding-chip-row">${(ports.length ? ports : ["-"]).map((v) => `<span class="finding-chip">${esc(v)}</span>`).join("")}</div>
+                <div class="finding-section-title">Primary Evidence</div>
+                <div class="finding-evidence">${esc(data.evidence || "-")}</div>
+                <div class="finding-section-title">Remediation</div>
+                <div class="list-line"><span>${esc(remediation.summary || "-")}</span></div>
+                <div class="list-line"><span>Priority: ${esc(remediation.priority || "scheduled")}</span><span>Effort: ${esc(remediation.effort || "medium")}</span></div>
+                <div class="finding-chip-row">${actions.map((a) => `<span class="finding-chip">${esc(a)}</span>`).join("")}</div>
+            </div>
+            <div>
+                <div class="finding-section-title">Technical Instances</div>
+                <div class="finding-instance-table">
+                    <table class="table compact-table">
+                        <thead>
+                            <tr><th>Asset</th><th>Port</th><th>Service</th><th>Status</th><th>Last Seen</th><th>Evidence</th></tr>
+                        </thead>
+                        <tbody>${instanceRows || '<tr><td colspan="6">No instance data available.</td></tr>'}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
 function activateTab(tabName) {
     menuItems.forEach((button) => {
         button.classList.toggle("active", button.dataset.tab === tabName);
@@ -1325,8 +1477,10 @@ function renderTopVulns(items) {
         .slice(0, 12)
         .map((item) => {
             const sev = String(item.severity || "low").toLowerCase();
+            const title = String(item.title || "");
+            const cve = String(item.cve || "");
             return `
-                <div class="list-item">
+                <div class="list-item" data-top-vuln="1" data-title="${esc(title)}" data-cve="${esc(cve)}">
                     <div class="list-line">
                         <span class="badge badge-${esc(sev)}">${esc(sev)}</span>
                         <strong>${esc(t("assets"))}: ${esc(item.affected_assets)}</strong>
@@ -1392,7 +1546,7 @@ function renderTopAssets(items) {
         .slice(0, 12)
         .map(
             (item) => `
-                <div class="list-item">
+                <div class="list-item" data-top-asset="1" data-asset="${esc(item.host || "")}">
                     <div class="list-line"><strong>${esc(item.host || "-")}</strong><span>${esc(item.last_seen || "-")}</span></div>
                     <div class="list-line"><span>${esc(t("openPorts"))}: ${esc(item.open_ports)}</span><span>${esc(t("findingsLabel"))}: ${esc(item.findings)}</span></div>
                     <div class="list-line"><span>${esc(t("risk"))}: ${esc(item.risk_score || 0)}</span><span>${esc((item.profiles || []).join(", ") || "-")}</span></div>
@@ -1414,7 +1568,7 @@ function renderServiceInventory(items) {
     serviceInventory.innerHTML = items
         .map(
             (item) => `
-                <div class="list-item">
+                <div class="list-item" data-service-item="1" data-service="${esc(item.service || "unknown")}">
                     <div class="list-line"><strong>${esc(item.service || "unknown")}</strong><span>${esc(t("assets"))}: ${esc(item.asset_count || 0)}</span></div>
                     <div class="list-line"><span>Observations: ${esc(item.count || 0)}</span><span>Ports: ${esc((item.ports || []).join(", ") || "-")}</span></div>
                 </div>
@@ -1443,7 +1597,7 @@ function renderPortIntelligence(inventoryItems) {
     const maxCount = sorted[0][1].count || 1;
     el.innerHTML = sorted.map(([port, info]) => {
         const svc = info.service.length > 22 ? info.service.slice(0, 20) + "…" : info.service;
-        return `<div class="port-intel-item">
+        return `<div class="port-intel-item" data-port-intel="1" data-port="${esc(port)}" data-service="${esc(info.service || "unknown")}">
             <span class="port-intel-port">${esc(port)}</span>
             <span class="port-intel-service">${esc(svc)}</span>
             <div class="port-intel-bar-wrap"><progress class="port-intel-bar" max="${maxCount}" value="${Math.max(0, Number(info.count) || 0)}"></progress></div>
@@ -1840,8 +1994,10 @@ function renderFindings(items) {
             const assets = (item.assets || []).slice(0, 6).map((asset) => `<span>${esc(asset)}</span>`).join(", ");
             const conf = String(item.confidence || "medium").toLowerCase();
             const crit = String(item.asset_criticality || "normal").toLowerCase();
+            const findingKey = String(item.dedup_key || item.vuln_key || "");
+            const selectedClass = selectedFindingKey && findingKey === selectedFindingKey ? "is-selected" : "";
             return `
-                <tr>
+                <tr class="finding-row ${selectedClass}" data-finding-key="${esc(findingKey)}">
                     <td><span class="badge badge-${esc(sev)}">${esc(sev)}</span></td>
                     <td>${esc(item.title || "-")}</td>
                     <td>${esc(item.type || "-")}</td>
@@ -2111,7 +2267,20 @@ async function loadAggregatedFindings() {
         throw new Error(data.error || "Findings unavailable");
     }
 
-    renderFindings(data.items || []);
+    const items = data.items || [];
+    renderFindings(items);
+    if (!items.length) {
+        selectedFindingKey = "";
+        await loadFindingDetail("");
+        return;
+    }
+    const hasCurrentSelection = items.some((item) => String(item.dedup_key || item.vuln_key || "") === selectedFindingKey);
+    if (!hasCurrentSelection) {
+        selectedFindingKey = String(items[0].dedup_key || items[0].vuln_key || "");
+    }
+    if (selectedFindingKey) {
+        await loadFindingDetail(selectedFindingKey);
+    }
 }
 
 async function loadHistory() {
@@ -2229,20 +2398,14 @@ scanForm.addEventListener("submit", async (event) => {
     scanButton.disabled = true;
     scanButton.classList.add("scanning");
     scanButton.textContent = t("scanning");
+    setScanJobStatus("Queueing scan job...", "running");
     if (scanResult) {
         scanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Running scan pipeline...</span></div>';
     }
 
     try {
-        const { response, data } = await fetchJsonWithTimeout(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-        }, 240000);
-
-        if (!response.ok) {
-            throw new Error(data.error || "Scan failed");
-        }
+        const useV2 = endpoint.includes("/api/scan/v2") || scannerMode === "advanced_v2";
+        const data = await runQueuedScan(payload, useV2);
 
         lastReportId = data.report_id || null;
         lastScannerScope = exportScope;
@@ -2256,16 +2419,20 @@ scanForm.addEventListener("submit", async (event) => {
 
     renderScanResult(data);
     saveLastScan(exportScope, data);
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
+        await refreshWorkspaceViews("all");
         activateTab("dashboard");
     } catch (error) {
         showError(error.message || "Scan failed");
+        setScanJobStatus(error.message || "Scan failed", "error");
         if (scanResult) {
             scanResult.innerHTML = "";
         }
     } finally {
         scanButton.disabled = false;
         scanButton.classList.remove("scanning");
+        if (activeScanJobId) {
+            activeScanJobId = "";
+        }
         const activeLanguage = localStorage.getItem("vscanner.language") || "de";
         scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
     }
@@ -2479,6 +2646,91 @@ findingSearch.addEventListener("input", () => {
     window.clearTimeout(window.__findingSearchTimer);
     window.__findingSearchTimer = window.setTimeout(loadAggregatedFindings, 260);
 });
+findingsTable?.addEventListener("click", async (event) => {
+    const row = event.target.closest("tr[data-finding-key]");
+    if (!row) {
+        return;
+    }
+    const key = String(row.dataset.findingKey || "");
+    if (!key) {
+        return;
+    }
+    selectedFindingKey = key;
+    try {
+        await loadFindingDetail(key);
+        findingsTable.querySelectorAll("tr.finding-row").forEach((entry) => {
+            entry.classList.toggle("is-selected", entry.dataset.findingKey === key);
+        });
+    } catch (error) {
+        showError(error.message || "Could not load finding detail");
+    }
+});
+topVulns?.addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-top-vuln]");
+    if (!card) {
+        return;
+    }
+    const title = String(card.dataset.title || "").trim();
+    const cve = String(card.dataset.cve || "").trim();
+    if (findingSearch) {
+        findingSearch.value = cve && cve !== "-" ? cve : title;
+    }
+    activateTab("findings");
+    try {
+        await loadAggregatedFindings();
+    } catch (error) {
+        showError(error.message || "Could not load findings from vulnerability selection");
+    }
+});
+topAssets?.addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-top-asset]");
+    if (!card) {
+        return;
+    }
+    const assetValue = String(card.dataset.asset || "").trim();
+    if (findingSearch) {
+        findingSearch.value = assetValue;
+    }
+    activateTab("findings");
+    try {
+        await loadAggregatedFindings();
+    } catch (error) {
+        showError(error.message || "Could not filter findings by asset");
+    }
+});
+serviceInventory?.addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-service-item]");
+    if (!card) {
+        return;
+    }
+    const serviceName = String(card.dataset.service || "").trim();
+    if (findingSearch) {
+        findingSearch.value = serviceName;
+    }
+    activateTab("findings");
+    try {
+        await loadAggregatedFindings();
+    } catch (error) {
+        showError(error.message || "Could not filter findings by service");
+    }
+});
+document.getElementById("portIntelList")?.addEventListener("click", async (event) => {
+    const card = event.target.closest("[data-port-intel]");
+    if (!card) {
+        return;
+    }
+    const port = String(card.dataset.port || "").trim();
+    const service = String(card.dataset.service || "").trim();
+    if (findingSearch) {
+        findingSearch.value = service && service !== "unknown" ? `${service} ${port}` : `port ${port}`;
+    }
+    activateTab("findings");
+    try {
+        await loadAggregatedFindings();
+    } catch (error) {
+        showError(error.message || "Could not filter findings by port");
+    }
+});
 assetTagFilter?.addEventListener("input", () => {
     window.clearTimeout(window.__assetFilterTimer);
     window.__assetFilterTimer = window.setTimeout(loadAssets, 260);
@@ -2560,25 +2812,22 @@ netScanForm?.addEventListener("submit", async (event) => {
 
     netScanButton.disabled = true;
     netScanButton.textContent = "Scanning…";
+    setScanJobStatus("Queueing network scan...", "running");
     if (netScanResult) netScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner"></div><span>Mapping network…</span></div>';
 
     try {
-        const { response: resp, data } = await fetchJsonWithTimeout("/api/scan", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId }),
-        }, 240000);
-        if (!resp.ok) throw new Error(data.error || "Network scan failed");
+        const data = await runQueuedScan({ target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId }, false);
         lastNetReportId = data.report_id;
         if (netReportPdfButton) netReportPdfButton.disabled = false;
         if (netReportCsvButton) netReportCsvButton.disabled = false;
         if (netScanResult) netScanResult.innerHTML = buildScanResultMarkup(data);
         updateNetStats(data);
         saveLastScan("network", data);
-        await Promise.all([loadDashboard(), loadHistory(), loadAssets()]);
+        await refreshWorkspaceViews("all");
     } catch (err) {
         if (netScanError) { netScanError.textContent = err.message || "Network scan failed"; netScanError.classList.remove("hidden"); }
         if (netScanResult) netScanResult.innerHTML = "";
+        setScanJobStatus(err.message || "Network scan failed", "error");
     } finally {
         netScanButton.disabled = false;
         netScanButton.textContent = "Scan Network";
@@ -2640,6 +2889,7 @@ async function runStealthScan(intelOnly = false) {
     stealthScanButton.disabled = true;
     stealthIntelButton.disabled = true;
     stealthScanButton.textContent = "Probing…";
+    setScanJobStatus(intelOnly ? "Running intel-only mode..." : "Queueing stealth scan...", "running");
     if (stealthScanResult) stealthScanResult.innerHTML = '<div class="scan-loading"><div class="scan-spinner stealth-spinner"></div><span>Low-noise probing…</span></div>';
 
     try {
@@ -2647,23 +2897,20 @@ async function runStealthScan(intelOnly = false) {
             const intel = await fetchIntelData(tgt);
             const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
+            setScanJobStatus("Intel-only mode completed.", "done");
         } else {
-            const { response: resp, data } = await fetchJsonWithTimeout("/api/scan", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ target: tgt, profile: mode, port_strategy, project_id: activeProjectId }),
-            }, 240000);
-            if (!resp.ok) throw new Error(data.error || "Stealth scan failed");
+            const data = await runQueuedScan({ target: tgt, profile: mode, port_strategy, project_id: activeProjectId }, false);
             lastStealthReportId = data.report_id;
             if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
             if (stealthReportCsvButton) stealthReportCsvButton.disabled = false;
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(data);
             saveLastScan("stealth", data);
-            await Promise.all([loadDashboard(), loadHistory(), loadAssets()]);
+            await refreshWorkspaceViews("all");
         }
     } catch (err) {
         if (stealthScanError) { stealthScanError.textContent = err.message || "Stealth scan failed"; stealthScanError.classList.remove("hidden"); }
         if (stealthScanResult) stealthScanResult.innerHTML = "";
+        setScanJobStatus(err.message || "Stealth scan failed", "error");
     } finally {
         stealthScanButton.disabled = false;
         stealthIntelButton.disabled = false;

@@ -428,6 +428,25 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 .table th { position: sticky; top: 0; background: rgba(10,18,32,0.97); text-transform: uppercase; font-size: 0.67rem; letter-spacing: 0.06em; color: var(--muted); }
 .mono { font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace; }
 
+.finding-row { cursor: pointer; transition: background 0.16s ease, border-color 0.16s ease; }
+.finding-row:hover { background: rgba(90,168,255,0.08); }
+.finding-row.is-selected { background: rgba(57,212,181,0.12); box-shadow: inset 0 0 0 1px rgba(57,212,181,0.25); }
+
+.finding-detail-grid { display: grid; gap: 0.5rem; }
+.finding-detail-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.45rem; }
+.finding-detail-kpi { border: 1px solid var(--panel-border); border-radius: var(--radius-sm); background: rgba(8,16,28,0.75); padding: 0.46rem; display: grid; gap: 0.1rem; }
+.finding-detail-kpi span { font-size: 0.66rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.finding-detail-kpi strong { font-family: "Sora", sans-serif; font-size: 0.86rem; }
+.finding-chip-row { display: flex; flex-wrap: wrap; gap: 0.34rem; }
+.finding-chip { border: 1px solid var(--panel-border); border-radius: 999px; padding: 0.15rem 0.48rem; font-size: 0.69rem; color: #cde2f7; background: rgba(11,19,32,0.82); }
+.finding-section-title { margin: 0.2rem 0 0.12rem; font-size: 0.78rem; color: #b8d3ee; text-transform: uppercase; letter-spacing: 0.06em; }
+.finding-evidence { white-space: pre-wrap; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); padding: 0.5rem; background: rgba(8,16,28,0.78); font-size: 0.76rem; color: #d4e8fb; }
+.finding-instance-table { max-height: 300px; overflow: auto; border: 1px solid var(--panel-border); border-radius: var(--radius-sm); }
+
+@media (max-width: 900px) {
+  .finding-detail-kpis { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* Form / filters */
 .form-grid { display: grid; grid-template-columns: 1.6fr 1fr 1fr auto; gap: 0.52rem; align-items: end; }
 .align-end { display: grid; align-items: end; }

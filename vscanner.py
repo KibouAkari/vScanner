@@ -13,6 +13,7 @@ import re
 import socket
 import sqlite3
 import struct
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -235,6 +236,8 @@ REQUEST_LOG: dict[str, list[float]] = {}
 LATEST_SCAN_EXPORT_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE_TTL_SECONDS = 30.0
+SCAN_JOB_WORKERS = max(2, min(8, int(os.getenv("SCAN_JOB_WORKERS", "4"))))
+SCAN_JOB_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_JOB_WORKERS)
 
 DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
@@ -501,7 +504,60 @@ def normalize_finding_title(title: str) -> str:
 
 
 def infer_service_identity(port: int, name: str = "", product: str = "", banner: str = "") -> tuple[str, float, str]:
-    return infer_port_identity(port=port, name=name, product=product, banner=banner)
+    inferred_name, inferred_conf, inferred_source = infer_port_identity(port=port, name=name, product=product, banner=banner)
+    normalized_name = str(inferred_name or "").strip().lower()
+    if normalized_name and normalized_name not in {"unknown", "-"}:
+        return normalized_name, float(inferred_conf or 0.0), str(inferred_source or "port-intel")
+
+    text = " ".join([str(name or ""), str(product or ""), str(banner or "")]).lower()
+    token_map: list[tuple[str, str]] = [
+        ("kubernetes", "kubernetes-api"),
+        ("docker", "docker"),
+        ("jenkins", "jenkins"),
+        ("rabbitmq", "rabbitmq-management"),
+        ("activemq", "activemq-web"),
+        ("elasticsearch", "elasticsearch"),
+        ("mongodb", "mongodb"),
+        ("postgres", "postgresql"),
+        ("mysql", "mysql"),
+        ("mariadb", "mysql"),
+        ("redis", "redis"),
+        ("memcached", "memcached"),
+        ("openssh", "ssh"),
+        ("ssh-", "ssh"),
+        ("nginx", "http"),
+        ("apache", "http"),
+        ("http/", "http"),
+        ("tls", "https"),
+        ("ssl", "https"),
+        ("smtps", "smtp-submission"),
+        ("smtp", "smtp"),
+        ("imap", "imap"),
+        ("pop3", "pop3"),
+        ("rdp", "rdp"),
+        ("minecraft", "minecraft"),
+        ("mqtt", "mqtt"),
+        ("consul", "consul"),
+        ("prometheus", "prometheus"),
+        ("grafana", "http"),
+        ("weblogic", "weblogic"),
+        ("tomcat", "http"),
+        ("iis", "http"),
+    ]
+    for token, svc in token_map:
+        if token in text:
+            return svc, 0.78, "banner-heuristic"
+
+    common_name = str(COMMON_SERVICE_NAMES.get(int(port or 0), "unknown") or "unknown").strip().lower()
+    if common_name not in {"", "unknown", "-"}:
+        return common_name, max(float(inferred_conf or 0.0), 0.62), "port-heuristic"
+
+    if int(port or 0) in WEB_CANDIDATE_PORTS:
+        return "http", 0.55, "web-port-heuristic"
+    if int(port or 0) in TLS_CANDIDATE_PORTS:
+        return "https", 0.56, "tls-port-heuristic"
+
+    return "unknown", max(float(inferred_conf or 0.0), 0.35), "fallback"
 
 
 def infer_port_from_legacy_finding(finding: dict[str, Any]) -> int:
@@ -645,6 +701,7 @@ def ensure_mongo_indexes() -> None:
     db.findings.create_index([("project_id", ASCENDING), ("asset_id", ASCENDING), ("port", ASCENDING)])
     db.findings.create_index([("project_id", ASCENDING), ("status", ASCENDING)])
     db.findings.create_index([("project_id", ASCENDING), ("dedup_key", ASCENDING)])
+    db.findings.create_index([("project_id", ASCENDING), ("vuln_key", ASCENDING)])
 
     db.assets.create_index([("id", ASCENDING)], unique=True)
     db.assets.create_index([("project_id", ASCENDING), ("value", ASCENDING)], unique=True)
@@ -655,6 +712,9 @@ def ensure_mongo_indexes() -> None:
     db.asset_scans.create_index([("scan_id", ASCENDING)])
 
     db.project_settings.create_index([("project_id", ASCENDING)], unique=True)
+    db.scan_jobs.create_index([("id", ASCENDING)], unique=True)
+    db.scan_jobs.create_index([("project_id", ASCENDING), ("created_at", DESCENDING)])
+    db.scan_jobs.create_index([("status", ASCENDING), ("updated_at", DESCENDING)])
 
 
 def migrate_sql_reports_to_mongo(
@@ -965,6 +1025,25 @@ def init_report_store() -> None:
             )
             """,
         )
+        execute(
+            connection,
+            """
+            CREATE TABLE IF NOT EXISTS scan_jobs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                progress INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                use_v2 INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """,
+        )
 
         # Additive migrations for existing deployments.
         additive_columns = [
@@ -1007,8 +1086,12 @@ def init_report_store() -> None:
         execute(connection, "CREATE INDEX IF NOT EXISTS idx_findings_project_status ON findings(project_id, status)")
         execute(connection, "CREATE INDEX IF NOT EXISTS idx_findings_project_asset_port ON findings(project_id, asset_id, port)")
         execute(connection, "CREATE INDEX IF NOT EXISTS idx_findings_project_dedup ON findings(project_id, dedup_key)")
+        execute(connection, "CREATE INDEX IF NOT EXISTS idx_findings_project_vuln ON findings(project_id, vuln_key)")
+        execute(connection, "CREATE INDEX IF NOT EXISTS idx_findings_project_last_seen ON findings(project_id, last_seen)")
         execute(connection, "CREATE INDEX IF NOT EXISTS idx_assets_project_criticality ON assets(project_id, criticality)")
         execute(connection, "CREATE INDEX IF NOT EXISTS idx_asset_scans_scan ON asset_scans(scan_id)")
+        execute(connection, "CREATE INDEX IF NOT EXISTS idx_scan_jobs_project_created ON scan_jobs(project_id, created_at DESC)")
+        execute(connection, "CREATE INDEX IF NOT EXISTS idx_scan_jobs_status_updated ON scan_jobs(status, updated_at DESC)")
 
         execute(
             connection,
@@ -2864,72 +2947,6 @@ def get_project_dashboard(project_id: str, window_days: int = 30, include_heavy:
 
     since = now_minus_days(max(1, min(window_days, 365)))
 
-    def _synthesize_findings_from_reports(rows: list[dict[str, Any]], assets_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        assets_by_value = {
-            str(asset.get("value") or "").strip().lower(): str(asset.get("id") or "")
-            for asset in (assets_rows or [])
-            if str(asset.get("value") or "").strip()
-        }
-        latest_row: dict[str, Any] | None = None
-        latest_ts = ""
-        for row in rows or []:
-            created_at = str(row.get("created_at") or "")
-            if not latest_row or created_at >= latest_ts:
-                latest_row = row
-                latest_ts = created_at
-
-        if not latest_row:
-            return []
-
-        data_json = latest_row.get("data_json")
-        if isinstance(data_json, str):
-            try:
-                data_json = json.loads(data_json)
-            except Exception:
-                data_json = None
-        if not isinstance(data_json, dict):
-            return []
-
-        deduped: dict[str, dict[str, Any]] = {}
-        for item in data_json.get("finding_items") or []:
-            host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
-            if not host_value or host_value == "-":
-                continue
-            try:
-                port_value = int(item.get("port") or 0)
-            except Exception:
-                port_value = 0
-            finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
-            title = str(item.get("title") or "Finding")
-            dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
-            deduped[dedup_key] = {
-                "project_id": project_id,
-                "asset_id": assets_by_value.get(host_value, ""),
-                "host": host_value,
-                "asset": host_value,
-                "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
-                "dedup_key": dedup_key,
-                "port": port_value,
-                "severity": normalize_severity(str(item.get("severity") or "low")),
-                "title": title,
-                "evidence": str(item.get("evidence") or "-"),
-                "finding_type": finding_type,
-                "cve": str(item.get("cve") or "").upper(),
-                "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
-                "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
-                "confidence_score": float(item.get("confidence_score") or 0.8),
-                "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
-                "status": "active",
-                "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
-                "service_confidence": float(item.get("service_confidence") or 0.0),
-                "service_source": str(item.get("service_source") or "report_payload"),
-                "first_seen": str(item.get("first_seen") or latest_row.get("created_at") or utc_now()),
-                "last_seen": str(item.get("last_seen") or latest_row.get("created_at") or utc_now()),
-                "occurrence_count": int(item.get("occurrence_count") or 1),
-            }
-
-        return list(deduped.values())
-
     if use_mongodb():
         db = get_mongo_db()
         project = db.projects.find_one({"id": project_id}, {"_id": 0, "id": 1, "name": 1, "created_at": 1})
@@ -2958,34 +2975,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30, include_heavy:
             except Exception:
                 asset["tags"] = []
 
-    # Self-heal path: if reports clearly contain findings but the materialized findings
-    # store is empty/out-of-sync, rebuild once from persisted report payloads.
     has_report_findings = any(int(row.get("total_findings") or 0) > 0 for row in recent_rows)
     persisted_findings_count = len(findings)
-    synthesized_findings_count = 0
-    using_report_payload_fallback = False
-    if has_report_findings and not findings:
-        try:
-            rebuild_project_findings(project_id)
-            if use_mongodb():
-                db = get_mongo_db()
-                findings = list(db.findings.find({"project_id": project_id, "status": {"$in": ["active", "open", "stale"]}}, {"_id": 0}))
-            else:
-                with db_connection() as connection:
-                    findings = fetchall(connection, "SELECT * FROM findings WHERE project_id = ? AND status IN ('active', 'open', 'stale')", (project_id,))
-            persisted_findings_count = len(findings)
-        except Exception:
-            # Keep dashboard available even if repair fails; fallback values remain deterministic.
-            pass
-
-    # Last-resort fallback for production resilience: synthesize findings directly
-    # from persisted report payloads so dashboard KPIs remain accurate.
-    if has_report_findings and not findings:
-        synthesized = _synthesize_findings_from_reports(trend_source_rows, assets)
-        if synthesized:
-            findings = synthesized
-            synthesized_findings_count = len(synthesized)
-            using_report_payload_fallback = True
 
     views = build_soc_dashboard_views(assets, findings)
     attack_graph_output: dict[str, Any] = {}
@@ -3026,8 +3017,8 @@ def get_project_dashboard(project_id: str, window_days: int = 30, include_heavy:
         "diagnostics": {
             "reports_with_findings": has_report_findings,
             "materialized_findings_count": persisted_findings_count,
-            "synthesized_findings_count": synthesized_findings_count,
-            "using_report_payload_fallback": using_report_payload_fallback,
+            "synthesized_findings_count": 0,
+            "using_report_payload_fallback": False,
         },
     }
     _set_cached_dashboard(project_id, window_days, payload)
@@ -3070,132 +3061,6 @@ def get_project_findings(
                 """,
                 (project_id, since),
             )
-
-    def _synthesize_rows_from_reports() -> list[dict[str, Any]]:
-        assets_by_value: dict[str, str] = {}
-        report_rows: list[dict[str, Any]] = []
-
-        if use_mongodb():
-            db = get_mongo_db()
-            assets_cursor = db.assets.find({"project_id": project_id}, {"_id": 0, "id": 1, "value": 1})
-            assets_by_value = {
-                str(item.get("value") or "").strip().lower(): str(item.get("id") or "")
-                for item in assets_cursor
-                if str(item.get("value") or "").strip()
-            }
-            report_rows = list(
-                db.reports.find(
-                    {"project_id": project_id, "created_at": {"$gte": since}},
-                    {"_id": 0, "id": 1, "created_at": 1, "data_json": 1},
-                )
-            )
-        else:
-            with db_connection() as connection:
-                assets_rows = fetchall(connection, "SELECT id, value FROM assets WHERE project_id = ?", (project_id,))
-                assets_by_value = {
-                    str(item.get("value") or "").strip().lower(): str(item.get("id") or "")
-                    for item in assets_rows
-                    if str(item.get("value") or "").strip()
-                }
-                report_rows = fetchall(
-                    connection,
-                    "SELECT id, created_at, data_json FROM reports WHERE project_id = ? AND created_at >= ?",
-                    (project_id, since),
-                )
-
-        latest_report: dict[str, Any] | None = None
-        latest_ts = ""
-        for report in report_rows:
-            created_at = str(report.get("created_at") or "")
-            if not latest_report or created_at >= latest_ts:
-                latest_report = report
-                latest_ts = created_at
-
-        if not latest_report:
-            return []
-
-        data_json = latest_report.get("data_json")
-        if isinstance(data_json, str):
-            try:
-                data_json = json.loads(data_json)
-            except Exception:
-                data_json = None
-        if not isinstance(data_json, dict):
-            return []
-
-        report_created_at = str(latest_report.get("created_at") or utc_now())
-        deduped: dict[str, dict[str, Any]] = {}
-        for item in data_json.get("finding_items") or []:
-            host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
-            if not host_value or host_value == "-":
-                continue
-            try:
-                port_value = int(item.get("port") or 0)
-            except Exception:
-                port_value = 0
-            finding_type = str(item.get("type") or item.get("finding_type") or "-").lower()
-            title = str(item.get("title") or "Finding")
-            dedup_key = build_finding_dedup_key(host_value, port_value, title, finding_type)
-            deduped[dedup_key] = {
-                "project_id": project_id,
-                "asset_id": assets_by_value.get(host_value, ""),
-                "host": host_value,
-                "asset": host_value,
-                "vuln_key": finding_vuln_key({"host": host_value, "type": finding_type, "port": port_value, "title": title}),
-                "dedup_key": dedup_key,
-                "port": port_value,
-                "title_norm": normalize_finding_title(title),
-                "severity": normalize_severity(str(item.get("severity") or "low")),
-                "title": title,
-                "evidence": str(item.get("evidence") or "-"),
-                "finding_type": finding_type,
-                "cve": str(item.get("cve") or "").upper(),
-                "risk_score": float(item.get("advanced_risk_score") or item.get("risk_score") or item.get("threat_score") or 0.0),
-                "threat_score": float(item.get("threat_score") or item.get("advanced_risk_score") or item.get("risk_score") or 0.0),
-                "confidence_score": float(item.get("confidence_score") or 0.8),
-                "exploit_known": 1 if bool(item.get("exploit_known")) else 0,
-                "status": "active",
-                "service_name": str(item.get("service_name") or item.get("service") or "unknown"),
-                "remediation_text": str(item.get("remediation_text") or item.get("remediation_title") or ""),
-                "remediation_priority": str(item.get("remediation_priority") or "scheduled"),
-                "estimated_effort": str(item.get("estimated_effort") or item.get("effort_level") or "medium"),
-                "first_seen": str(item.get("first_seen") or report_created_at),
-                "last_seen": str(item.get("last_seen") or report_created_at),
-                "occurrence_count": int(item.get("occurrence_count") or 1),
-            }
-        return list(deduped.values())
-
-    if not rows:
-        try:
-            rebuild_project_findings(project_id)
-            if use_mongodb():
-                db = get_mongo_db()
-                rows = list(
-                    db.findings.find(
-                        {
-                            "project_id": project_id,
-                            "status": {"$in": ["active", "open", "stale"]},
-                            "last_seen": {"$gte": since},
-                        },
-                        {"_id": 0},
-                    )
-                )
-            else:
-                with db_connection() as connection:
-                    rows = fetchall(
-                        connection,
-                        """
-                          SELECT *
-                        FROM findings
-                          WHERE project_id = ? AND status IN ('active', 'open', 'stale') AND last_seen >= ?
-                        """,
-                        (project_id, since),
-                    )
-        except Exception:
-            pass
-
-    if not rows:
-        rows = _synthesize_rows_from_reports()
 
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -3295,6 +3160,191 @@ def get_project_findings(
         items.sort(key=lambda x: (severity_rank(x["severity"]), x["asset_count"]), reverse=reverse)
 
     return items
+
+
+def get_project_finding_detail(project_id: str, finding_key: str, since_days: int = 3650) -> dict[str, Any]:
+    if not DB_READY:
+        raise ScanInputError("Storage is unavailable.")
+
+    safe_key = (finding_key or "").strip()
+    if not safe_key:
+        raise ScanInputError("Finding key is required.")
+
+    since = now_minus_days(max(1, min(since_days, 3650)))
+    rows: list[dict[str, Any]] = []
+    if use_mongodb():
+        db = get_mongo_db()
+        rows = list(
+            db.findings.find(
+                {
+                    "project_id": project_id,
+                    "status": {"$in": ["active", "open", "stale"]},
+                    "last_seen": {"$gte": since},
+                    "$or": [{"dedup_key": safe_key}, {"vuln_key": safe_key}],
+                },
+                {"_id": 0},
+            )
+        )
+    else:
+        with db_connection() as connection:
+            rows = fetchall(
+                connection,
+                """
+                SELECT * FROM findings
+                WHERE project_id = ?
+                  AND status IN ('active', 'open', 'stale')
+                  AND last_seen >= ?
+                  AND (dedup_key = ? OR vuln_key = ?)
+                ORDER BY last_seen DESC
+                """,
+                (project_id, since, safe_key, safe_key),
+            )
+
+    if not rows:
+        items = get_project_findings(project_id=project_id, since_days=min(3650, since_days), sort_by="last_seen", sort_dir="desc")
+        candidate = next((item for item in items if str(item.get("vuln_key") or "") == safe_key), None)
+        if not candidate:
+            raise ScanInputError("Finding not found.")
+        search_title = str(candidate.get("title") or "").strip().lower()
+        if not search_title:
+            raise ScanInputError("Finding not found.")
+        if use_mongodb():
+            db = get_mongo_db()
+            rows = list(
+                db.findings.find(
+                    {
+                        "project_id": project_id,
+                        "status": {"$in": ["active", "open", "stale"]},
+                        "last_seen": {"$gte": since},
+                        "title": candidate.get("title") or "",
+                    },
+                    {"_id": 0},
+                )
+            )
+        else:
+            with db_connection() as connection:
+                rows = fetchall(
+                    connection,
+                    """
+                    SELECT * FROM findings
+                    WHERE project_id = ?
+                      AND status IN ('active', 'open', 'stale')
+                      AND last_seen >= ?
+                      AND title = ?
+                    ORDER BY last_seen DESC
+                    """,
+                    (project_id, since, candidate.get("title") or ""),
+                )
+    if not rows:
+        raise ScanInputError("Finding not found.")
+
+    primary = rows[0]
+    instances: list[dict[str, Any]] = []
+    cves: set[str] = set()
+    assets: set[str] = set()
+    ports: set[int] = set()
+    max_risk = 0.0
+    max_threat = 0.0
+    max_conf = 0.0
+    first_seen = str(primary.get("first_seen") or utc_now())
+    last_seen = str(primary.get("last_seen") or utc_now())
+    remediation_text = str(primary.get("remediation_text") or "")
+    remediation_priority = str(primary.get("remediation_priority") or "scheduled")
+    estimated_effort = str(primary.get("estimated_effort") or "medium")
+    exploit_known = bool(primary.get("exploit_known"))
+    status_counts = {"active": 0, "stale": 0}
+
+    for row in rows:
+        host_value = str(row.get("host") or row.get("asset") or "-")
+        asset_value = str(row.get("asset") or host_value or "-")
+        evidence_value = str(row.get("evidence") or "-")
+        status = normalize_finding_status(str(row.get("status") or "active"))
+        port_value = int(row.get("port") or 0)
+        cve_value = str(row.get("cve") or "").strip().upper()
+        conf_value = float(row.get("confidence_score") or 0.0)
+        risk_value = float(row.get("risk_score") or 0.0)
+        threat_value = float(row.get("threat_score") or 0.0)
+
+        instances.append(
+            {
+                "asset": asset_value,
+                "host": host_value,
+                "port": port_value,
+                "service": str(row.get("service_name") or "unknown"),
+                "service_source": str(row.get("service_source") or "heuristic"),
+                "service_confidence": float(row.get("service_confidence") or 0.0),
+                "status": status,
+                "severity": normalize_severity(str(row.get("severity") or "low")),
+                "evidence": evidence_value,
+                "last_seen": str(row.get("last_seen") or utc_now()),
+                "occurrences": int(row.get("occurrence_count") or 1),
+                "confidence": conf_value,
+                "risk_score": risk_value,
+                "threat_score": threat_value,
+            }
+        )
+
+        if cve_value:
+            cves.add(cve_value)
+        if asset_value and asset_value != "-":
+            assets.add(asset_value)
+        if port_value > 0:
+            ports.add(port_value)
+        max_risk = max(max_risk, risk_value)
+        max_threat = max(max_threat, threat_value)
+        max_conf = max(max_conf, conf_value)
+        first_seen = min(first_seen, str(row.get("first_seen") or first_seen))
+        last_seen = max(last_seen, str(row.get("last_seen") or last_seen))
+        exploit_known = exploit_known or bool(row.get("exploit_known"))
+        if status in status_counts:
+            status_counts[status] += 1
+        if str(row.get("remediation_text") or ""):
+            remediation_text = str(row.get("remediation_text") or remediation_text)
+        if str(row.get("remediation_priority") or "") == "immediate":
+            remediation_priority = "immediate"
+
+    severity = normalize_severity(str(primary.get("severity") or "low"))
+    detail = {
+        "finding_key": safe_key,
+        "dedup_key": str(primary.get("dedup_key") or safe_key),
+        "vuln_key": str(primary.get("vuln_key") or safe_key),
+        "title": str(primary.get("title") or "Finding"),
+        "title_norm": str(primary.get("title_norm") or normalize_finding_title(str(primary.get("title") or "Finding"))),
+        "type": str(primary.get("finding_type") or "-"),
+        "severity": severity,
+        "risk_score": round(max_risk, 1),
+        "threat_score": round(max_threat, 1),
+        "confidence_score": round(max_conf, 3),
+        "confidence": "verified" if max_conf >= 0.95 else "high" if max_conf >= 0.8 else "medium" if max_conf >= 0.6 else "low",
+        "exploit_known": exploit_known,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "asset_count": len(assets),
+        "occurrence_count": sum(int(row.get("occurrence_count") or 1) for row in rows),
+        "status_counts": status_counts,
+        "assets": sorted(assets),
+        "ports": sorted(ports),
+        "related_cves": sorted(cves),
+        "evidence": str(primary.get("evidence") or "-"),
+        "instances": sorted(instances, key=lambda item: (severity_rank(str(item.get("severity") or "low")), str(item.get("last_seen") or "")), reverse=True)[:120],
+        "technical_context": {
+            "service_names": sorted({str(row.get("service_name") or "unknown") for row in rows if str(row.get("service_name") or "").strip()}),
+            "service_sources": sorted({str(row.get("service_source") or "heuristic") for row in rows if str(row.get("service_source") or "").strip()}),
+            "top_ports": sorted(ports)[:20],
+        },
+        "remediation": {
+            "summary": remediation_text or "Validate exposure and apply vendor hardening guidance.",
+            "priority": remediation_priority,
+            "effort": estimated_effort,
+            "recommended_actions": [
+                "Validate service exposure against intended attack surface.",
+                "Patch or harden affected service version and disable weak defaults.",
+                "Restrict network reachability with ACLs, firewalls, or segmentation.",
+                "Re-scan and verify closure using the same profile and scope.",
+            ],
+        },
+    }
+    return detail
 
 
 # ============================================================
@@ -7389,6 +7439,21 @@ def project_findings_api(project_id: str) -> Any:
     return jsonify({"items": items})
 
 
+@app.route("/api/projects/<project_id>/findings/<finding_key>")
+def project_finding_detail_api(project_id: str, finding_key: str) -> Any:
+    try:
+        since_days = int(request.args.get("since_days", "3650"))
+    except ValueError:
+        since_days = 3650
+    try:
+        item = get_project_finding_detail(project_id=project_id, finding_key=finding_key, since_days=since_days)
+        return jsonify(item)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception:
+        return jsonify({"error": "Finding detail unavailable."}), 500
+
+
 def findings_csv_response(project_id: str, items: list[dict[str, Any]]) -> Any:
     output = io.StringIO()
     writer = csv.writer(output)
@@ -7590,143 +7655,416 @@ def merge_scan_results(results: list[dict[str, Any]], profile: str, port_strateg
     }
 
 
-@app.route("/api/scan", methods=["POST"])
-def scan_api() -> Any:
-    payload = request.get_json(silent=True) or {}
+def _create_scan_job_record(record: dict[str, Any]) -> None:
+    if use_mongodb():
+        db = get_mongo_db()
+        db.scan_jobs.update_one({"id": str(record.get("id") or "")}, {"$set": dict(record)}, upsert=True)
+        return
+
+    with db_connection() as connection:
+        execute(
+            connection,
+            """
+            INSERT INTO scan_jobs (
+                id, project_id, status, phase, progress, message, use_v2,
+                payload_json, result_json, error, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                project_id = excluded.project_id,
+                status = excluded.status,
+                phase = excluded.phase,
+                progress = excluded.progress,
+                message = excluded.message,
+                use_v2 = excluded.use_v2,
+                payload_json = excluded.payload_json,
+                result_json = excluded.result_json,
+                error = excluded.error,
+                updated_at = excluded.updated_at
+            """,
+            (
+                str(record.get("id") or ""),
+                str(record.get("project_id") or ""),
+                str(record.get("status") or "queued"),
+                str(record.get("phase") or "queued"),
+                int(record.get("progress") or 0),
+                str(record.get("message") or ""),
+                1 if bool(record.get("use_v2") or False) else 0,
+                str(record.get("payload_json") or "{}"),
+                str(record.get("result_json") or "{}"),
+                str(record.get("error") or ""),
+                str(record.get("created_at") or utc_now()),
+                str(record.get("updated_at") or utc_now()),
+            ),
+        )
+        connection.commit()
+
+
+def _update_scan_job_record(job_id: str, **fields: Any) -> None:
+    if not job_id:
+        return
+    updates = dict(fields)
+    updates["updated_at"] = str(updates.get("updated_at") or utc_now())
+
+    if use_mongodb():
+        db = get_mongo_db()
+        db.scan_jobs.update_one({"id": job_id}, {"$set": updates}, upsert=False)
+        return
+
+    allowed = {
+        "project_id",
+        "status",
+        "phase",
+        "progress",
+        "message",
+        "use_v2",
+        "payload_json",
+        "result_json",
+        "error",
+        "updated_at",
+    }
+    parts: list[str] = []
+    params: list[Any] = []
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        parts.append(f"{key} = ?")
+        if key == "use_v2":
+            params.append(1 if bool(value) else 0)
+        elif key == "progress":
+            params.append(int(value or 0))
+        else:
+            params.append(str(value) if value is not None else "")
+    if not parts:
+        return
+    params.append(job_id)
+    with db_connection() as connection:
+        execute(connection, f"UPDATE scan_jobs SET {', '.join(parts)} WHERE id = ?", tuple(params))
+        connection.commit()
+
+
+def _get_scan_job_record(job_id: str) -> dict[str, Any] | None:
+    if not job_id:
+        return None
+    if use_mongodb():
+        db = get_mongo_db()
+        row = db.scan_jobs.find_one({"id": job_id}, {"_id": 0})
+        if not row:
+            return None
+        return dict(row)
+
+    with db_connection() as connection:
+        row = fetchone(connection, "SELECT * FROM scan_jobs WHERE id = ?", (job_id,))
+    if not row:
+        return None
+    return dict(row)
+
+
+def _list_scan_job_records(project_id: str = "", limit: int = 20) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 20), 100))
+    if use_mongodb():
+        db = get_mongo_db()
+        query: dict[str, Any] = {}
+        if project_id:
+            query["project_id"] = project_id
+        rows = list(db.scan_jobs.find(query, {"_id": 0}).sort("created_at", DESCENDING).limit(safe_limit))
+        return [dict(row) for row in rows]
+
+    with db_connection() as connection:
+        if project_id:
+            rows = fetchall(
+                connection,
+                "SELECT * FROM scan_jobs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+                (project_id, safe_limit),
+            )
+        else:
+            rows = fetchall(connection, "SELECT * FROM scan_jobs ORDER BY created_at DESC LIMIT ?", (safe_limit,))
+    return [dict(row) for row in rows]
+
+
+def _public_scan_error_message(exc: Exception) -> str:
+    if isinstance(exc, ScanInputError):
+        return str(exc)
+    if isinstance(exc, nmap.PortScannerError):
+        return "Nmap execution failed. Ensure nmap is installed for full scan mode."
+    return "Scan failed."
+
+
+def _execute_scan_request(
+    payload: dict[str, Any],
+    *,
+    use_v2: bool,
+    progress_hook: Any = None,
+) -> dict[str, Any]:
     profile = (payload.get("profile") or "light").lower()
     port_strategy = (payload.get("port_strategy") or "standard").lower()
     response_format = str(payload.get("response_format") or "legacy").strip().lower()
     project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    client_ip_value = str(payload.get("_client_ip") or "unknown")
 
     if profile not in VALID_PROFILES:
-        return jsonify({"error": "Invalid profile. Allowed: light, deep, stealth, network."}), 400
-
+        raise ScanInputError("Invalid profile. Allowed: light, deep, stealth, network.")
     if port_strategy not in {"standard", "aggressive"}:
-        return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
+        raise ScanInputError("Invalid port strategy. Allowed: standard, aggressive.")
 
+    project = get_project(project_id)
+    if not project:
+        raise ScanInputError("Project not found.")
+
+    targets = resolve_scan_targets(payload, project["id"])
+    enforce_rate_limit(client_ip_value)
+
+    if callable(progress_hook):
+        progress_hook(status="running", phase="collect", progress=10, message="Starting scan collection")
+
+    if len(targets) == 1:
+        result = orchestrate_scan_v2(targets[0], profile, port_strategy) if use_v2 else orchestrate_scan(targets[0], profile, port_strategy)
+    else:
+        if use_v2:
+            partial_results = [orchestrate_scan_v2(target_value, profile, port_strategy) for target_value in targets]
+        else:
+            partial_results = [orchestrate_scan(target_value, profile, port_strategy) for target_value in targets]
+        result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
+
+    if callable(progress_hook):
+        progress_hook(status="running", phase="enrichment", progress=48, message="Running enrichment pipeline")
+
+    result["meta"]["project_id"] = project["id"]
+    result["meta"]["project_name"] = project["name"]
+
+    if use_v2:
+        result = _apply_intelligence_pipeline(result, mode="v2")
+        soc_mode = "v2"
+        export_scope = "v2"
+    else:
+        result = _apply_intelligence_pipeline(result, mode=_mode_from_classic_profile(profile))
+        soc_mode = _mode_from_classic_profile(profile)
+        export_scope = export_scope_from_profile(profile)
+
+    if callable(progress_hook):
+        progress_hook(status="running", phase="correlation", progress=72, message="Building SOC report")
+
+    soc_report = build_soc_report(
+        mode=soc_mode,
+        target=str(result.get("meta", {}).get("target") or ", ".join(targets)),
+        target_type=str(result.get("meta", {}).get("target_type") or "host"),
+        hosts=list(result.get("hosts") or []),
+        findings=list(result.get("finding_items") or []),
+        cve_items=list(result.get("cve_items") or []),
+        risk_score=float(result.get("true_risk_score") or 0.0),
+        historical_points=None,
+    )
+    result["soc_report"] = soc_report
+    result["meta"]["export_scope"] = export_scope
+
+    cache_latest_scan_for_export(project["id"], export_scope, result)
+
+    if response_format == "soc_json":
+        return {
+            "response_format": "soc_json",
+            "soc_report": soc_report,
+            "meta": result.get("meta") or {},
+            "persisted": False,
+        }
+
+    if callable(progress_hook):
+        progress_hook(status="running", phase="persist", progress=88, message="Persisting report and findings")
+
+    try:
+        report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
+        result["report_id"] = report_id
+        result["persisted"] = True
+    except Exception as exc:
+        result["persisted"] = False
+        result["warning"] = "Scan completed, but saving the report failed."
+        result["persist_error"] = "Persistence error"
+
+    if callable(progress_hook):
+        progress_hook(status="running", phase="finalize", progress=96, message="Finalizing response")
+
+    return result
+
+
+def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -> dict[str, Any]:
+    job_id = str(uuid.uuid4())
+    now_iso = utc_now()
+    safe_payload = {k: v for k, v in dict(payload).items() if not str(k).startswith("_")}
+    job_state = {
+        "id": job_id,
+        "status": "queued",
+        "phase": "queued",
+        "progress": 0,
+        "message": "Job queued",
+        "use_v2": bool(use_v2),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "project_id": str(payload.get("project_id") or DEFAULT_PROJECT_ID),
+        "payload_json": json.dumps(safe_payload, ensure_ascii=True),
+        "result_json": "{}",
+        "error": "",
+    }
+    _create_scan_job_record(job_state)
+
+    def _progress(**kwargs: Any) -> None:
+        _update_scan_job_record(
+            job_id,
+            status=str(kwargs.get("status") or "running"),
+            phase=str(kwargs.get("phase") or "running"),
+            progress=int(kwargs.get("progress") or 0),
+            message=str(kwargs.get("message") or "Running"),
+            updated_at=utc_now(),
+        )
+
+    def _worker() -> None:
+        _progress(status="running", phase="init", progress=3, message="Initializing job")
+        try:
+            run_payload = dict(payload)
+            run_payload["_client_ip"] = client_ip
+            result = _execute_scan_request(run_payload, use_v2=use_v2, progress_hook=_progress)
+            _update_scan_job_record(
+                job_id,
+                status="completed",
+                phase="done",
+                progress=100,
+                message="Completed",
+                updated_at=utc_now(),
+                result_json=json.dumps(result, ensure_ascii=True),
+                error="",
+            )
+        except Exception as exc:
+            _update_scan_job_record(
+                job_id,
+                status="failed",
+                phase="failed",
+                progress=100,
+                message=_public_scan_error_message(exc),
+                updated_at=utc_now(),
+                result_json="{}",
+                error=_public_scan_error_message(exc),
+            )
+
+    SCAN_JOB_EXECUTOR.submit(_worker)
+    return {
+        "id": job_id,
+        "status": "queued",
+        "phase": "queued",
+        "progress": 0,
+        "message": "Job queued",
+        "project_id": str(payload.get("project_id") or DEFAULT_PROJECT_ID),
+        "use_v2": bool(use_v2),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan_api() -> Any:
+    payload = request.get_json(silent=True) or {}
     client = request.headers.get("X-Forwarded-For", "")
     client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
-        project = get_project(project_id)
-        if not project:
-            raise ScanInputError("Project not found.")
-
-        targets = resolve_scan_targets(payload, project["id"])
-        enforce_rate_limit(client_ip_value)
-        if len(targets) == 1:
-            result = orchestrate_scan(targets[0], profile, port_strategy)
-        else:
-            partial_results = [orchestrate_scan(target_value, profile, port_strategy) for target_value in targets]
-            result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
-        result["meta"]["project_id"] = project["id"]
-        result["meta"]["project_name"] = project["name"]
-        result = _apply_intelligence_pipeline(result, mode=_mode_from_classic_profile(profile))
-
-        soc_report = build_soc_report(
-            mode=_mode_from_classic_profile(profile),
-            target=str(result.get("meta", {}).get("target") or ", ".join(targets)),
-            target_type=str(result.get("meta", {}).get("target_type") or "host"),
-            hosts=list(result.get("hosts") or []),
-            findings=list(result.get("finding_items") or []),
-            cve_items=list(result.get("cve_items") or []),
-            risk_score=float(result.get("true_risk_score") or 0.0),
-            historical_points=None,
-        )
-        result["soc_report"] = soc_report
-        result["meta"]["export_scope"] = export_scope_from_profile(profile)
-
-        cache_latest_scan_for_export(project["id"], str(result["meta"].get("export_scope") or "standard"), result)
-
-        if response_format == "soc_json":
-            return jsonify(soc_report)
-
-        try:
-            report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
-            result["report_id"] = report_id
-            result["persisted"] = True
-        except Exception as exc:
-            result["persisted"] = False
-            result["warning"] = "Scan completed, but saving the report failed."
-            result["persist_error"] = str(exc)
+        result = _execute_scan_request({**payload, "_client_ip": client_ip_value}, use_v2=False)
+        if str(result.get("response_format") or "") == "soc_json":
+            return jsonify(result.get("soc_report") or {})
         return jsonify(result)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
-    except nmap.PortScannerError as exc:
-        return jsonify(
-            {
-                "error": "Nmap execution failed. Ensure nmap is installed for full scan mode.",
-                "details": str(exc),
-            }
-        ), 500
     except Exception as exc:
-        return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
+        return jsonify({"error": _public_scan_error_message(exc)}), 500
 
 
 @app.route("/api/scan/v2", methods=["POST"])
 def scan_api_v2() -> Any:
     payload = request.get_json(silent=True) or {}
-    profile = (payload.get("profile") or "light").lower()
-    port_strategy = (payload.get("port_strategy") or "standard").lower()
-    response_format = str(payload.get("response_format") or "legacy").strip().lower()
-    project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
-
-    if profile not in VALID_PROFILES:
-        return jsonify({"error": "Invalid profile. Allowed: light, deep, stealth, network."}), 400
-
-    if port_strategy not in {"standard", "aggressive"}:
-        return jsonify({"error": "Invalid port strategy. Allowed: standard, aggressive."}), 400
-
     client = request.headers.get("X-Forwarded-For", "")
     client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
-        project = get_project(project_id)
-        if not project:
-            raise ScanInputError("Project not found.")
-
-        targets = resolve_scan_targets(payload, project["id"])
-        enforce_rate_limit(client_ip_value)
-        if len(targets) == 1:
-            result = orchestrate_scan_v2(targets[0], profile, port_strategy)
-        else:
-            partial_results = [orchestrate_scan_v2(target_value, profile, port_strategy) for target_value in targets]
-            result = merge_scan_results(partial_results, profile=profile, port_strategy=port_strategy)
-        result["meta"]["project_id"] = project["id"]
-        result["meta"]["project_name"] = project["name"]
-        result = _apply_intelligence_pipeline(result, mode="v2")
-
-        soc_report = build_soc_report(
-            mode="v2",
-            target=str(result.get("meta", {}).get("target") or ", ".join(targets)),
-            target_type=str(result.get("meta", {}).get("target_type") or "host"),
-            hosts=list(result.get("hosts") or []),
-            findings=list(result.get("finding_items") or []),
-            cve_items=list(result.get("cve_items") or []),
-            risk_score=float(result.get("true_risk_score") or 0.0),
-            historical_points=None,
-        )
-        result["soc_report"] = soc_report
-        result["meta"]["export_scope"] = "v2"
-
-        cache_latest_scan_for_export(project["id"], "v2", result)
-
-        if response_format == "soc_json":
-            return jsonify(soc_report)
-
-        try:
-            report_id = save_report_entry(result, project_id=project["id"], project_name=project["name"])
-            result["report_id"] = report_id
-            result["persisted"] = True
-        except Exception as exc:
-            result["persisted"] = False
-            result["warning"] = "Scan completed, but saving the report failed."
-            result["persist_error"] = str(exc)
+        result = _execute_scan_request({**payload, "_client_ip": client_ip_value}, use_v2=True)
+        if str(result.get("response_format") or "") == "soc_json":
+            return jsonify(result.get("soc_report") or {})
         return jsonify(result)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
-        return jsonify({"error": "Scan failed.", "details": str(exc)}), 500
+        return jsonify({"error": _public_scan_error_message(exc)}), 500
+
+
+@app.route("/api/scan/jobs", methods=["POST"])
+def create_scan_job_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    use_v2 = bool(payload.get("use_v2") or False)
+    client = request.headers.get("X-Forwarded-For", "")
+    client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
+
+    try:
+        project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+        if not get_project(project_id):
+            raise ScanInputError("Project not found.")
+        job_data = _submit_scan_job(payload, use_v2=use_v2, client_ip=client_ip_value)
+        return jsonify(job_data), 202
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception:
+        return jsonify({"error": "Could not enqueue scan job."}), 500
+
+
+@app.route("/api/scan/jobs")
+def list_scan_jobs_api() -> Any:
+    project_id = (request.args.get("project_id") or "").strip()
+    limit_raw = request.args.get("limit", "20")
+    try:
+        limit = max(1, min(int(limit_raw), 100))
+    except Exception:
+        limit = 20
+
+    items = _list_scan_job_records(project_id=project_id, limit=limit)
+    out = [
+        {
+            "id": str(item.get("id") or ""),
+            "status": str(item.get("status") or "queued"),
+            "phase": str(item.get("phase") or "queued"),
+            "progress": int(item.get("progress") or 0),
+            "message": str(item.get("message") or ""),
+            "project_id": str(item.get("project_id") or ""),
+            "use_v2": bool(item.get("use_v2") or False),
+            "created_at": str(item.get("created_at") or ""),
+            "updated_at": str(item.get("updated_at") or ""),
+        }
+        for item in items[:limit]
+    ]
+    return jsonify({"items": out})
+
+
+@app.route("/api/scan/jobs/<job_id>")
+def get_scan_job_api(job_id: str) -> Any:
+    payload = _get_scan_job_record(job_id)
+    if not payload:
+        return jsonify({"error": "Job not found."}), 404
+
+    response = {
+        "id": str(payload.get("id") or ""),
+        "status": str(payload.get("status") or "queued"),
+        "phase": str(payload.get("phase") or "queued"),
+        "progress": int(payload.get("progress") or 0),
+        "message": str(payload.get("message") or ""),
+        "project_id": str(payload.get("project_id") or ""),
+        "use_v2": bool(payload.get("use_v2") or False),
+        "created_at": str(payload.get("created_at") or ""),
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+    if response["status"] == "completed":
+        result_payload = payload.get("result_json")
+        if isinstance(result_payload, str):
+            try:
+                result_payload = json.loads(result_payload)
+            except Exception:
+                result_payload = {}
+        if isinstance(result_payload, dict) and result_payload:
+            response["result"] = result_payload
+    if response["status"] == "failed":
+        response["error"] = str(payload.get("error") or "Scan failed.")
+    return jsonify(response)
 
 
 @app.route("/api/reports")

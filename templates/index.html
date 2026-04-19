@@ -267,6 +267,7 @@
                         </div>
                     </form>
                     <p id="scanModeNote" class="note">Use this scanner only for authorized assets.</p>
+                    <div id="scanJobStatus" class="note hidden"></div>
                     <div id="scanError" class="error hidden"></div>
                 </article>
 
@@ -493,6 +494,16 @@
                     </div>
 
                     <div id="findingsTable" class="table-host findings-with-confidence"></div>
+                </article>
+
+                <article class="panel" id="findingDetailPanel">
+                    <div class="panel-head">
+                        <h3>Finding Drilldown</h3>
+                        <span class="panel-sub-badge">SOC Context</span>
+                    </div>
+                    <div id="findingDetail" class="list-scroll">
+                        <div class="list-item"><div class="list-line">Select a finding to inspect technical context, evidence, CVEs, and remediation guidance.</div></div>
+                    </div>
                 </article>
             </section>
 
