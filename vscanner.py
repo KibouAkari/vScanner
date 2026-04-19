@@ -6576,6 +6576,46 @@ def diagnostics_storage_api() -> Any:
         return jsonify({"error": "Diagnostics unavailable.", "details": str(exc)}), 500
 
 
+@app.route("/api/diagnostics/storage/repair", methods=["POST"])
+def diagnostics_storage_repair_api() -> Any:
+    payload = request.get_json(silent=True) or {}
+    project_id = (str(payload.get("project_id") or request.args.get("project_id") or "")).strip() or None
+    dry_run = str(payload.get("dry_run") or request.args.get("dry_run") or "false").strip().lower() in {"1", "true", "yes"}
+
+    try:
+        before = get_storage_diagnostics(project_id=project_id)
+        candidates = [
+            str(item.get("project_id") or "")
+            for item in (before.get("items") or [])
+            if str(item.get("project_id") or "") and bool(item.get("mismatch"))
+        ]
+        repaired: list[str] = []
+        errors: list[dict[str, str]] = []
+
+        if not dry_run:
+            for pid in candidates:
+                try:
+                    rebuild_project_findings(pid)
+                    repaired.append(pid)
+                except Exception as exc:
+                    errors.append({"project_id": pid, "error": str(exc)})
+
+        after = get_storage_diagnostics(project_id=project_id)
+        return jsonify(
+            {
+                "dry_run": dry_run,
+                "requested_project_id": project_id,
+                "candidate_projects": candidates,
+                "repaired_projects": repaired,
+                "errors": errors,
+                "before": before,
+                "after": after,
+            }
+        )
+    except Exception as exc:
+        return jsonify({"error": "Diagnostics repair failed.", "details": str(exc)}), 500
+
+
 @app.route("/api/projects", methods=["GET", "POST"])
 def projects_api() -> Any:
     if request.method == "GET":
