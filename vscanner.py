@@ -392,6 +392,12 @@ def is_active_finding_status(raw: str) -> bool:
     return normalize_finding_status(raw) == "active"
 
 
+def is_cve_candidate_finding(finding: dict[str, Any]) -> bool:
+    cve_value = str(finding.get("cve") or "").strip().upper()
+    finding_type = str(finding.get("finding_type") or finding.get("type") or "").strip().lower()
+    return bool(cve_value) or finding_type == "cve_candidate"
+
+
 def profile_confidence_score(profile: str) -> float:
     normalized = canonical_profile(profile)
     if normalized == "deep":
@@ -1889,7 +1895,7 @@ def filter_report_by_host(data: dict[str, Any], host_filter: str) -> dict[str, A
     filtered["metrics"] = {
         "hosts_scanned": len(selected_hosts),
         "open_ports": host_open_count,
-        "cve_candidates": len(selected_cves),
+        "cve_candidates": max(len(selected_cves), sum(1 for item in selected_findings if is_cve_candidate_finding(item))),
         "exposed_services": sum(1 for item in selected_findings if item.get("type") == "exposed_port"),
     }
     filtered["meta"] = dict(data.get("meta") or {})
@@ -2010,18 +2016,23 @@ def upsert_findings(
         for value in (scanned_assets or [])
         if str(value or "").strip() and str(value or "").strip() != "-"
     ]
+    allowed_scan_hosts = set(normalized_scanned_assets)
     fallback_host = normalized_scanned_assets[0] if len(set(normalized_scanned_assets)) == 1 else ""
     unique_scan_items: dict[tuple[str, str], dict[str, Any]] = {}
 
     for item in enriched_findings:
         host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
+        if host_value and host_value != "-" and allowed_scan_hosts and host_value not in allowed_scan_hosts:
+            if fallback_host:
+                host_value = fallback_host
+            else:
+                continue
         host_level = False
         if not host_value or host_value == "-":
             if fallback_host:
                 host_value = fallback_host
             else:
-                host_value = "unknown.local"
-                host_level = True
+                continue
 
         try:
             port_value = int(item.get("port") or 0)
@@ -2383,12 +2394,22 @@ def sync_assets_from_scan(project_id: str, result: dict[str, Any]) -> dict[str, 
         return {}
 
     asset_criticalities: dict[str, str] = {}
+    allowed_hosts: set[str] = set()
     target_value = str(result.get("meta", {}).get("target") or "").strip()
     if target_value and "," not in target_value:
-        asset_criticalities[target_value.lower()] = normalize_asset_criticality(asset_criticalities.get(target_value.lower(), "medium"))
+        normalized_target = target_value.lower()
+        allowed_hosts.add(normalized_target)
+        asset_criticalities[normalized_target] = normalize_asset_criticality(asset_criticalities.get(normalized_target, "medium"))
+    for host in result.get("hosts") or []:
+        for key in ("host", "ip", "address", "hostname"):
+            host_alias = str(host.get(key) or "").strip().lower()
+            if host_alias and host_alias != "-":
+                allowed_hosts.add(host_alias)
     for finding in result.get("finding_items") or []:
         host_value = str(finding.get("host") or finding.get("asset") or "").strip().lower()
         if not host_value or host_value == "-":
+            continue
+        if allowed_hosts and host_value not in allowed_hosts:
             continue
         inferred = normalize_asset_criticality(
             str(finding.get("asset_criticality") or infer_asset_criticality(host_value, int(finding.get("port") or 0), str(finding.get("type") or "-"), str(finding.get("title") or "Finding")))
@@ -2642,10 +2663,10 @@ def build_soc_dashboard_views(
             continue
         if service_name in {"", "-", "host"}:
             continue
-        if service_name == "unknown":
-            service_name = f"unknown-{port_value}"
+        if service_name == "unknown" or service_name.startswith("unknown-"):
+            service_name = "unknown"
 
-        service_key = (service_name, port_value)
+        service_key = (service_name, 0 if service_name == "unknown" else port_value)
         service_bucket = service_buckets.setdefault(
             service_key,
             {
@@ -2782,7 +2803,7 @@ def build_soc_dashboard_views(
             "avg_risk": average_asset_risk,
             "open_ports": len({int(finding.get("port") or 0) for finding in active_findings if int(finding.get("port") or 0) > 0}),
             "exposed_services": len(service_inventory),
-            "cve_count": sum(1 for finding in active_findings if str(finding.get("cve") or "").strip()),
+            "cve_count": sum(1 for finding in active_findings if is_cve_candidate_finding(finding)),
         },
         "risk_distribution": risk_distribution,
         "top_assets": top_assets[:16],
@@ -2854,7 +2875,7 @@ def get_project_dashboard(project_id: str, window_days: int = 30) -> dict[str, A
         for item in data_json.get("finding_items") or []:
             host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
             if not host_value or host_value == "-":
-                host_value = "unknown.local"
+                continue
             try:
                 port_value = int(item.get("port") or 0)
             except Exception:
@@ -3082,7 +3103,7 @@ def get_project_findings(
         for item in data_json.get("finding_items") or []:
             host_value = str(item.get("host") or item.get("asset") or "").strip().lower()
             if not host_value or host_value == "-":
-                host_value = "unknown.local"
+                continue
             try:
                 port_value = int(item.get("port") or 0)
             except Exception:
@@ -5017,7 +5038,7 @@ def build_dashboard_exposure_views(
         "top_vulnerabilities": top_vulnerabilities,
         "risk_distribution": risk_distribution,
         "current_findings_count": len(findings),
-        "cve_count": sum(1 for f in findings if str(f.get("cve") or "").strip()),
+        "cve_count": sum(1 for f in findings if is_cve_candidate_finding(f)),
     }
 
 
@@ -6014,7 +6035,10 @@ def _apply_intelligence_pipeline(result: dict[str, Any], mode: str) -> dict[str,
     enriched["total_findings"] = len(merged)
 
     metrics = dict(enriched.get("metrics") or {})
-    metrics["cve_candidates"] = len(enriched.get("cve_items") or [])
+    metrics["cve_candidates"] = max(
+        len(enriched.get("cve_items") or []),
+        sum(1 for item in merged if is_cve_candidate_finding(item)),
+    )
     enriched["metrics"] = metrics
 
     # Add host role classification for network-oriented context.
@@ -6316,7 +6340,7 @@ def orchestrate_scan(raw_target: str, profile: str, port_strategy: str) -> dict[
         "metrics": {
             "open_ports": total_open_ports,
             "exposed_services": exposed_services,
-            "cve_candidates": len(dedup_cves),
+            "cve_candidates": max(len(dedup_cves), sum(1 for item in dedup_findings if is_cve_candidate_finding(item))),
             "hosts_scanned": len(host_results),
         },
         "intel": intel_data,
@@ -6697,7 +6721,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         "metrics": {
             "open_ports": len(open_ports),
             "exposed_services": sum(1 for f in host_findings if "exposed" in str(f.get("title", "")).lower()),
-            "cve_candidates": len(dedup_cves),
+            "cve_candidates": max(len(dedup_cves), sum(1 for item in dedup_findings if is_cve_candidate_finding(item))),
             "hosts_scanned": 1,
         },
         "intel": None,
@@ -7532,7 +7556,7 @@ def merge_scan_results(results: list[dict[str, Any]], profile: str, port_strateg
         "metrics": {
             "open_ports": merged_open_ports,
             "exposed_services": sum(1 for f in dedup_findings if str(f.get("type") or "").lower() == "exposed_port"),
-            "cve_candidates": len(dedup_cves),
+            "cve_candidates": max(len(dedup_cves), sum(1 for item in dedup_findings if is_cve_candidate_finding(item))),
             "hosts_scanned": len(merged_hosts),
         },
         "intel": None,

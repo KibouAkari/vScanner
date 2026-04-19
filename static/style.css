@@ -396,7 +396,7 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 .risk-item { border-radius: 8px; border: 1px solid var(--panel-border); background: rgba(8,16,28,0.7); padding: 0.38rem 0.45rem; display: flex; justify-content: space-between; font-size: 0.74rem; animation: riseIn 0.4s ease both; }
 
 /* List items */
-.list-scroll { display: grid; gap: 0.5rem; max-height: clamp(190px, 32vh, 330px); overflow: auto; }
+.list-scroll { display: grid; gap: 0.5rem; max-height: clamp(190px, 32vh, 330px); overflow: auto; align-content: start; grid-auto-rows: min-content; }
 .list-item { border: 1px solid var(--panel-border); background: rgba(8,16,28,0.7); border-radius: var(--radius-sm); padding: 0.55rem 0.65rem; display: grid; gap: 0.25rem; transition: all 0.2s ease; }
 .list-item:hover { border-color: rgba(57,212,181,0.35); background: rgba(57,212,181,0.04); transform: translateY(-1px); }
 .list-line { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; font-size: 0.8rem; color: #cde0f8; }
