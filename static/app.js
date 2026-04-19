@@ -2219,6 +2219,11 @@ scanForm.addEventListener("submit", async (event) => {
         reportPdfButton.disabled = false;
         reportCsvButton.disabled = false;
 
+        if (data.persisted === false) {
+            const persistMsg = data.persist_error ? `Save warning: ${data.persist_error}` : (data.warning || "Scan was completed but persistence reported an error.");
+            showError(persistMsg);
+        }
+
     renderScanResult(data);
     saveLastScan(exportScope, data);
         await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);

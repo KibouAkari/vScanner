@@ -2086,82 +2086,171 @@ def upsert_findings(
 
     with db_connection() as connection:
         for item in unique_scan_items.values():
-            execute(
-                connection,
-                """
-                INSERT INTO findings (
-                    id, project_id, asset_id, host, asset, vuln_key, dedup_key, scan_id, port, title_norm, severity,
-                    title, evidence, finding_type, cve, risk_score, threat_score, confidence_score, exploit_known,
-                    status, service_name, service_confidence, service_source, remediation_text, remediation_priority,
-                    estimated_effort, first_seen, last_seen, occurrence_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                ON CONFLICT(project_id, asset, vuln_key)
-                DO UPDATE SET
-                    asset_id = excluded.asset_id,
-                    host = excluded.host,
-                    dedup_key = excluded.dedup_key,
-                    scan_id = excluded.scan_id,
-                    port = excluded.port,
-                    title_norm = excluded.title_norm,
-                    severity = CASE
-                        WHEN excluded.severity = 'critical' THEN 'critical'
-                        WHEN findings.severity = 'critical' THEN 'critical'
-                        WHEN excluded.severity = 'high' AND findings.severity IN ('medium','low','info') THEN 'high'
-                        WHEN findings.severity = 'high' THEN 'high'
-                        WHEN excluded.severity = 'medium' AND findings.severity IN ('low','info') THEN 'medium'
-                        WHEN findings.severity = 'medium' THEN 'medium'
-                        WHEN excluded.severity = 'low' AND findings.severity = 'info' THEN 'low'
-                        ELSE findings.severity
-                    END,
-                    title = excluded.title,
-                    evidence = excluded.evidence,
-                    finding_type = excluded.finding_type,
-                    cve = excluded.cve,
-                    risk_score = CASE WHEN excluded.risk_score > findings.risk_score THEN excluded.risk_score ELSE findings.risk_score END,
-                    threat_score = CASE WHEN excluded.threat_score > findings.threat_score THEN excluded.threat_score ELSE findings.threat_score END,
-                    confidence_score = excluded.confidence_score,
-                    exploit_known = CASE WHEN excluded.exploit_known > findings.exploit_known THEN excluded.exploit_known ELSE findings.exploit_known END,
-                    status = 'active',
-                    service_name = excluded.service_name,
-                    service_confidence = excluded.service_confidence,
-                    service_source = excluded.service_source,
-                    remediation_text = excluded.remediation_text,
-                    remediation_priority = excluded.remediation_priority,
-                    estimated_effort = excluded.estimated_effort,
-                    last_seen = excluded.last_seen,
-                    occurrence_count = findings.occurrence_count + 1
-                """,
-                (
-                    str(uuid.uuid4()),
-                    project_id,
-                    item["asset_id"],
-                    item["host"],
-                    item["asset"],
-                    item["vuln_key"],
-                    item["dedup_key"],
-                    item["scan_id"],
-                    int(item.get("port") or 0),
-                    str(item.get("title_norm") or "finding"),
-                    item["severity"],
-                    item["title"],
-                    item["evidence"],
-                    item["finding_type"],
-                    item["cve"],
-                    float(item.get("risk_score") or 0.0),
-                    float(item.get("threat_score") or 0.0),
-                    float(item.get("confidence_score") or profile_confidence),
-                    int(item.get("exploit_known") or 0),
-                    "active",
-                    item["service_name"],
-                    float(item.get("service_confidence") or 0.0),
-                    item["service_source"],
-                    item["remediation_text"],
-                    item["remediation_priority"],
-                    item["estimated_effort"],
-                    now,
-                    now,
-                ),
-            )
+            try:
+                execute(
+                    connection,
+                    """
+                    INSERT INTO findings (
+                        id, project_id, asset_id, host, asset, vuln_key, dedup_key, scan_id, port, title_norm, severity,
+                        title, evidence, finding_type, cve, risk_score, threat_score, confidence_score, exploit_known,
+                        status, service_name, service_confidence, service_source, remediation_text, remediation_priority,
+                        estimated_effort, first_seen, last_seen, occurrence_count
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(project_id, asset, vuln_key)
+                    DO UPDATE SET
+                        asset_id = excluded.asset_id,
+                        host = excluded.host,
+                        dedup_key = excluded.dedup_key,
+                        scan_id = excluded.scan_id,
+                        port = excluded.port,
+                        title_norm = excluded.title_norm,
+                        severity = CASE
+                            WHEN excluded.severity = 'critical' THEN 'critical'
+                            WHEN findings.severity = 'critical' THEN 'critical'
+                            WHEN excluded.severity = 'high' AND findings.severity IN ('medium','low','info') THEN 'high'
+                            WHEN findings.severity = 'high' THEN 'high'
+                            WHEN excluded.severity = 'medium' AND findings.severity IN ('low','info') THEN 'medium'
+                            WHEN findings.severity = 'medium' THEN 'medium'
+                            WHEN excluded.severity = 'low' AND findings.severity = 'info' THEN 'low'
+                            ELSE findings.severity
+                        END,
+                        title = excluded.title,
+                        evidence = excluded.evidence,
+                        finding_type = excluded.finding_type,
+                        cve = excluded.cve,
+                        risk_score = CASE WHEN excluded.risk_score > findings.risk_score THEN excluded.risk_score ELSE findings.risk_score END,
+                        threat_score = CASE WHEN excluded.threat_score > findings.threat_score THEN excluded.threat_score ELSE findings.threat_score END,
+                        confidence_score = excluded.confidence_score,
+                        exploit_known = CASE WHEN excluded.exploit_known > findings.exploit_known THEN excluded.exploit_known ELSE findings.exploit_known END,
+                        status = 'active',
+                        service_name = excluded.service_name,
+                        service_confidence = excluded.service_confidence,
+                        service_source = excluded.service_source,
+                        remediation_text = excluded.remediation_text,
+                        remediation_priority = excluded.remediation_priority,
+                        estimated_effort = excluded.estimated_effort,
+                        last_seen = excluded.last_seen,
+                        occurrence_count = findings.occurrence_count + 1
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        project_id,
+                        item["asset_id"],
+                        item["host"],
+                        item["asset"],
+                        item["vuln_key"],
+                        item["dedup_key"],
+                        item["scan_id"],
+                        int(item.get("port") or 0),
+                        str(item.get("title_norm") or "finding"),
+                        item["severity"],
+                        item["title"],
+                        item["evidence"],
+                        item["finding_type"],
+                        item["cve"],
+                        float(item.get("risk_score") or 0.0),
+                        float(item.get("threat_score") or 0.0),
+                        float(item.get("confidence_score") or profile_confidence),
+                        int(item.get("exploit_known") or 0),
+                        "active",
+                        item["service_name"],
+                        float(item.get("service_confidence") or 0.0),
+                        item["service_source"],
+                        item["remediation_text"],
+                        item["remediation_priority"],
+                        item["estimated_effort"],
+                        now,
+                        now,
+                    ),
+                )
+            except Exception:
+                existing = fetchone(
+                    connection,
+                    "SELECT id, severity, risk_score, threat_score, exploit_known, occurrence_count FROM findings WHERE project_id = ? AND asset = ? AND vuln_key = ?",
+                    (project_id, item["asset"], item["vuln_key"]),
+                )
+                if existing:
+                    execute(
+                        connection,
+                        """
+                        UPDATE findings
+                        SET asset_id = ?, host = ?, dedup_key = ?, scan_id = ?, port = ?, title_norm = ?, severity = ?,
+                            title = ?, evidence = ?, finding_type = ?, cve = ?,
+                            risk_score = ?, threat_score = ?, confidence_score = ?, exploit_known = ?,
+                            status = 'active', service_name = ?, service_confidence = ?, service_source = ?,
+                            remediation_text = ?, remediation_priority = ?, estimated_effort = ?,
+                            last_seen = ?, occurrence_count = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            item["asset_id"],
+                            item["host"],
+                            item["dedup_key"],
+                            item["scan_id"],
+                            int(item.get("port") or 0),
+                            str(item.get("title_norm") or "finding"),
+                            best_severity(str(existing.get("severity") or "low"), str(item.get("severity") or "low")),
+                            item["title"],
+                            item["evidence"],
+                            item["finding_type"],
+                            item["cve"],
+                            max(float(existing.get("risk_score") or 0.0), float(item.get("risk_score") or 0.0)),
+                            max(float(existing.get("threat_score") or 0.0), float(item.get("threat_score") or 0.0)),
+                            float(item.get("confidence_score") or profile_confidence),
+                            max(int(existing.get("exploit_known") or 0), int(item.get("exploit_known") or 0)),
+                            item["service_name"],
+                            float(item.get("service_confidence") or 0.0),
+                            item["service_source"],
+                            item["remediation_text"],
+                            item["remediation_priority"],
+                            item["estimated_effort"],
+                            now,
+                            int(existing.get("occurrence_count") or 0) + 1,
+                            str(existing.get("id") or ""),
+                        ),
+                    )
+                else:
+                    execute(
+                        connection,
+                        """
+                        INSERT INTO findings (
+                            id, project_id, asset_id, host, asset, vuln_key, dedup_key, scan_id, port, title_norm, severity,
+                            title, evidence, finding_type, cve, risk_score, threat_score, confidence_score, exploit_known,
+                            status, service_name, service_confidence, service_source, remediation_text, remediation_priority,
+                            estimated_effort, first_seen, last_seen, occurrence_count
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            project_id,
+                            item["asset_id"],
+                            item["host"],
+                            item["asset"],
+                            item["vuln_key"],
+                            item["dedup_key"],
+                            item["scan_id"],
+                            int(item.get("port") or 0),
+                            str(item.get("title_norm") or "finding"),
+                            item["severity"],
+                            item["title"],
+                            item["evidence"],
+                            item["finding_type"],
+                            item["cve"],
+                            float(item.get("risk_score") or 0.0),
+                            float(item.get("threat_score") or 0.0),
+                            float(item.get("confidence_score") or profile_confidence),
+                            int(item.get("exploit_known") or 0),
+                            "active",
+                            item["service_name"],
+                            float(item.get("service_confidence") or 0.0),
+                            item["service_source"],
+                            item["remediation_text"],
+                            item["remediation_priority"],
+                            item["estimated_effort"],
+                            now,
+                            now,
+                        ),
+                    )
 
         for asset_id in sorted(scanned_asset_ids):
             dedup_keys = sorted(seen_dedup_keys_by_asset.get(asset_id, set()))
