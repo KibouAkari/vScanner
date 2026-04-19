@@ -2144,7 +2144,6 @@ def upsert_findings(
                         "vuln_key": item["vuln_key"],
                         "dedup_key": item["dedup_key"],
                         "first_seen": now,
-                        "occurrence_count": 0,
                     },
                     "$set": {
                         "scan_id": item["scan_id"],
