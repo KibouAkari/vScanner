@@ -195,6 +195,42 @@ Recommended environment variables:
 - `MONGODB_URI=<mongodb-atlas-uri>` (optional)
 - `MONGODB_DB_NAME=vscanner` (optional)
 
+### Optional Auth And Session Protection
+
+Protected deployments can require a signed session before any project, findings, report, or scan APIs are accessible.
+
+- `VSCANNER_AUTH_REQUIRED=1` enables login protection for API routes.
+- `VSCANNER_SESSION_SECRET=<random-long-secret>` sets the Flask session signing key.
+- `VSCANNER_AUTH_USERS_JSON=<json>` defines users, roles, and project scope.
+
+Supported `VSCANNER_AUTH_USERS_JSON` shapes:
+
+```json
+{
+  "users": [
+    {
+      "username": "admin",
+      "password": "change-me",
+      "role": "admin",
+      "projects": ["*"]
+    },
+    {
+      "username": "analyst",
+      "password_hash": "pbkdf2:sha256:600000$...",
+      "role": "viewer",
+      "projects": ["default"]
+    }
+  ]
+}
+```
+
+Notes:
+
+- `role` can be `admin` or `viewer`.
+- `projects` accepts explicit project IDs or `"*"` for full access.
+- Use `password_hash` for deployed environments; plain `password` is supported for local testing only.
+- Findings APIs now default to active items. Use `status=all` on findings endpoints when you want stale history included explicitly.
+
 ## Optional Rust Data Plane (V2)
 
 Keep Python as control plane and use Rust as optional data plane for faster connect probing.

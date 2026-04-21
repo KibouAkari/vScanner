@@ -18,14 +18,14 @@ import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 import nmap
 import requests
 import urllib3
 from flask import Flask, jsonify, render_template, request, send_file, session
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.colors import HexColor
+from reportlab.lib.colors import Color, HexColor
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.pdfgen import canvas
 from reportlab.platypus import (
@@ -589,6 +589,40 @@ def normalize_finding_status(raw: str) -> str:
 
 def is_active_finding_status(raw: str) -> bool:
     return normalize_finding_status(raw) == "active"
+
+
+def normalize_finding_status_filter(status_filter: str | None) -> str:
+    value = str(status_filter or "active").strip().lower() or "active"
+    if value in {"all", "active", "stale"}:
+        return value
+    raise ScanInputError("Invalid finding status filter.")
+
+
+def finding_status_filter_values(status_filter: str | None) -> tuple[str, ...]:
+    scope = normalize_finding_status_filter(status_filter)
+    if scope == "all":
+        return ("active", "open", "stale")
+    if scope == "stale":
+        return ("stale",)
+    return ("active", "open")
+
+
+def _finding_row_asset_value(row: dict[str, Any]) -> str:
+    return str(row.get("asset") or row.get("host") or "-")
+
+
+def _finding_row_instance_key(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("asset_id") or "").strip(),
+            _finding_row_asset_value(row).strip().lower(),
+            str(int(row.get("port") or 0)),
+        ]
+    )
+
+
+def _finding_row_scan_hits(row: dict[str, Any]) -> int:
+    return max(1, int(row.get("occurrence_count") or 1))
 
 
 def is_cve_candidate_finding(finding: dict[str, Any]) -> bool:
@@ -3372,11 +3406,14 @@ def get_project_findings(
     since_days: int = 90,
     sort_by: str = "severity",
     sort_dir: str = "desc",
+    status_filter: str = "active",
 ) -> list[dict[str, Any]]:
     if not DB_READY:
         return []
 
     since = now_minus_days(max(1, min(since_days, 3650)))
+
+    allowed_statuses = finding_status_filter_values(status_filter)
 
     if use_mongodb():
         db = get_mongo_db()
@@ -3384,22 +3421,23 @@ def get_project_findings(
             db.findings.find(
                 {
                     "project_id": project_id,
-                    "status": {"$in": ["active", "open", "stale"]},
+                    "status": {"$in": list(allowed_statuses)},
                     "last_seen": {"$gte": since},
                 },
                 {"_id": 0},
             )
         )
     else:
+        status_placeholders = ", ".join("?" for _ in allowed_statuses)
         with db_connection() as connection:
             rows = fetchall(
                 connection,
                 """
                   SELECT *
                 FROM findings
-                  WHERE project_id = ? AND status IN ('active', 'open', 'stale') AND last_seen >= ?
+                  WHERE project_id = ? AND status IN (""" + status_placeholders + """) AND last_seen >= ?
                 """,
-                (project_id, since),
+                (project_id, *allowed_statuses, since),
             )
 
     buckets: dict[str, dict[str, Any]] = {}
@@ -3444,17 +3482,22 @@ def get_project_findings(
                 "remediation_priority": str(row.get("remediation_priority") or "scheduled"),
                 "estimated_effort": str(row.get("estimated_effort") or "medium"),
                 "assets": [],
-                "asset_count": 0,
+                "asset_set": set(),
+                "instance_set": set(),
                 "occurrence_count": 0,
+                "scan_hit_count": 0,
                 "first_seen": row.get("first_seen"),
                 "last_seen": row.get("last_seen"),
             }
 
         bucket = buckets[vuln_key]
         bucket["severity"] = best_severity(bucket["severity"], item_sev)
-        bucket["assets"].append(row.get("asset", row.get("host", "-")))
-        bucket["asset_count"] += 1
-        bucket["occurrence_count"] += int(row.get("occurrence_count") or 1)
+        asset_value = _finding_row_asset_value(row)
+        bucket["assets"].append(asset_value)
+        bucket["asset_set"].add(asset_value)
+        bucket["instance_set"].add(_finding_row_instance_key(row))
+        bucket["scan_hit_count"] += _finding_row_scan_hits(row)
+        bucket["occurrence_count"] = len(bucket["instance_set"])
         bucket["advanced_risk_score"] = max(float(bucket.get("advanced_risk_score") or 0.0), float(row.get("risk_score") or 0.0))
         bucket["threat_score"] = max(float(bucket.get("threat_score") or 0.0), float(row.get("threat_score") or 0.0))
         bucket["weighted_confidence"] = max(float(bucket.get("weighted_confidence") or 0.0), float(row.get("confidence_score") or 0.0))
@@ -3468,7 +3511,9 @@ def get_project_findings(
 
     items = list(buckets.values())
     for item in items:
-        item["assets"] = sorted(set(item["assets"]))[:60]
+        item["assets"] = sorted(item.pop("asset_set"))[:60]
+        item["asset_count"] = len(item["assets"])
+        item.pop("instance_set", None)
         score_val = max(float(item.get("advanced_risk_score") or 0.0), float(item.get("threat_score") or 0.0))
         if score_val >= 85:
             item["risk_level"] = "critical"
@@ -3502,7 +3547,7 @@ def get_project_findings(
     return items
 
 
-def get_project_finding_detail(project_id: str, finding_key: str, since_days: int = 3650) -> dict[str, Any]:
+def get_project_finding_detail(project_id: str, finding_key: str, since_days: int = 3650, status_filter: str = "active") -> dict[str, Any]:
     if not DB_READY:
         raise ScanInputError("Storage is unavailable.")
 
@@ -3512,13 +3557,15 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
 
     since = now_minus_days(max(1, min(since_days, 3650)))
     rows: list[dict[str, Any]] = []
+    allowed_statuses = finding_status_filter_values(status_filter)
+    status_placeholders = ", ".join("?" for _ in allowed_statuses)
     if use_mongodb():
         db = get_mongo_db()
         rows = list(
             db.findings.find(
                 {
                     "project_id": project_id,
-                    "status": {"$in": ["active", "open", "stale"]},
+                    "status": {"$in": list(allowed_statuses)},
                     "last_seen": {"$gte": since},
                     "$or": [{"dedup_key": safe_key}, {"vuln_key": safe_key}],
                 },
@@ -3532,16 +3579,16 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
                 """
                 SELECT * FROM findings
                 WHERE project_id = ?
-                  AND status IN ('active', 'open', 'stale')
+                  AND status IN (""" + status_placeholders + """)
                   AND last_seen >= ?
                   AND (dedup_key = ? OR vuln_key = ?)
                 ORDER BY last_seen DESC
                 """,
-                (project_id, since, safe_key, safe_key),
+                (project_id, *allowed_statuses, since, safe_key, safe_key),
             )
 
     if not rows:
-        items = get_project_findings(project_id=project_id, since_days=min(3650, since_days), sort_by="last_seen", sort_dir="desc")
+        items = get_project_findings(project_id=project_id, since_days=min(3650, since_days), sort_by="last_seen", sort_dir="desc", status_filter=status_filter)
         candidate = next((item for item in items if str(item.get("vuln_key") or "") == safe_key), None)
         if not candidate:
             raise ScanInputError("Finding not found.")
@@ -3554,7 +3601,7 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
                 db.findings.find(
                     {
                         "project_id": project_id,
-                        "status": {"$in": ["active", "open", "stale"]},
+                        "status": {"$in": list(allowed_statuses)},
                         "last_seen": {"$gte": since},
                         "title": candidate.get("title") or "",
                     },
@@ -3568,12 +3615,12 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
                     """
                     SELECT * FROM findings
                     WHERE project_id = ?
-                      AND status IN ('active', 'open', 'stale')
+                                            AND status IN (""" + status_placeholders + """)
                       AND last_seen >= ?
                       AND title = ?
                     ORDER BY last_seen DESC
                     """,
-                    (project_id, since, candidate.get("title") or ""),
+                                        (project_id, *allowed_statuses, since, candidate.get("title") or ""),
                 )
     if not rows:
         raise ScanInputError("Finding not found.")
@@ -3583,6 +3630,7 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
     cves: set[str] = set()
     assets: set[str] = set()
     ports: set[int] = set()
+    instance_keys: set[str] = set()
     max_risk = 0.0
     max_threat = 0.0
     max_conf = 0.0
@@ -3617,13 +3665,14 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
                 "severity": normalize_severity(str(row.get("severity") or "low")),
                 "evidence": evidence_value,
                 "last_seen": str(row.get("last_seen") or utc_now()),
-                "occurrences": int(row.get("occurrence_count") or 1),
+                "occurrences": _finding_row_scan_hits(row),
                 "confidence": conf_value,
                 "risk_score": risk_value,
                 "threat_score": threat_value,
             }
         )
 
+        instance_keys.add(_finding_row_instance_key(row))
         if cve_value:
             cves.add(cve_value)
         if asset_value and asset_value != "-":
@@ -3660,7 +3709,8 @@ def get_project_finding_detail(project_id: str, finding_key: str, since_days: in
         "first_seen": first_seen,
         "last_seen": last_seen,
         "asset_count": len(assets),
-        "occurrence_count": sum(int(row.get("occurrence_count") or 1) for row in rows),
+        "occurrence_count": len(instance_keys),
+        "scan_hit_count": sum(_finding_row_scan_hits(row) for row in rows),
         "status_counts": status_counts,
         "assets": sorted(assets),
         "ports": sorted(ports),
@@ -3699,7 +3749,7 @@ _PDF_SECONDARY = HexColor("#64b2ff")
 _PDF_TEXT = HexColor("#ecf4ff")
 _PDF_MUTED = HexColor("#9db4cc")
 _PDF_BORDER = HexColor("#1e3347")
-_PDF_SEV_COLORS: dict[str, HexColor] = {
+_PDF_SEV_COLORS: dict[str, Color] = {
     "critical": HexColor("#ff5d73"),
     "high": HexColor("#ffc35c"),
     "medium": HexColor("#67b9ff"),
@@ -3763,7 +3813,7 @@ def _sev_style_cmds(sev_list: list[str], start_row: int = 1) -> list:
     return cmds
 
 
-def _styled_table(data: list, col_widths: list, extra: list | None = None) -> Table:
+def _styled_table(data: list[list[Any]], col_widths: list[float], extra: list | None = None) -> Table:
     cmds = list(_TBL_BASE)
     if extra:
         cmds.extend(extra)
@@ -3776,6 +3826,10 @@ def _fit_col_widths(widths: list[float], total_width: float) -> list[float]:
     vals = [max(float(w), 1.0) for w in widths]
     base = sum(vals) or 1.0
     return [total_width * (w / base) for w in vals]
+
+
+def _pdf_rect(*args: Any, **kwargs: Any) -> Rect:
+    return cast(Rect, Rect(*args, **kwargs))
 
 
 def _section_bar(title: str, width: float) -> Table:
@@ -3844,17 +3898,17 @@ def _risk_bars(risk_dist: dict, width: float) -> Drawing:
     h = row_h * 4 + 4
 
     d = Drawing(width, h)
-    d.add(Rect(0, 0, width, h, fillColor=HexColor("#0a1520"), strokeColor=None))
+    d.add(_pdf_rect(0, 0, width, h, fillColor=HexColor("#0a1520"), strokeColor=None))
     for i, ((label, hx), val) in enumerate(zip(SEV, values)):
         y0 = h - (i + 1) * row_h
         bw = int((val / total) * bar_area)
         clr = HexColor(hx)
         bg = HexColor("#0a1520") if i % 2 == 0 else HexColor("#0d1b2b")
-        d.add(Rect(0, y0, width, row_h, fillColor=bg, strokeColor=None))
+        d.add(_pdf_rect(0, y0, width, row_h, fillColor=bg, strokeColor=None))
         d.add(_GStr(8, y0 + pad + 2, label, fontSize=7.5, fillColor=HexColor("#9db4cc"), fontName="Helvetica-Bold"))
-        d.add(Rect(lbl_w, y0 + pad, bar_area, bar_h, fillColor=HexColor("#071018"), strokeColor=None, rx=3, ry=3))
+        d.add(_pdf_rect(lbl_w, y0 + pad, bar_area, bar_h, fillColor=HexColor("#071018"), strokeColor=None, rx=3, ry=3))
         if bw > 0:
-            d.add(Rect(lbl_w, y0 + pad, bw, bar_h, fillColor=clr, strokeColor=None, rx=3, ry=3))
+            d.add(_pdf_rect(lbl_w, y0 + pad, bw, bar_h, fillColor=clr, strokeColor=None, rx=3, ry=3))
         d.add(_GStr(lbl_w + bar_area + 8, y0 + pad + 2, str(val), fontSize=9, fillColor=clr, fontName="Helvetica-Bold"))
     return d
 
@@ -4005,7 +4059,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
     if recent_scans:
         hdr = ["Date / Time", "Target", "Profile", "Risk Level", "Score", "Findings"]
         cw = _fit_col_widths([108, 142, 78, 72, 50, 60], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         sevs: list[str] = []
         for item in recent_scans:
             dt = str(item.get("created_at", ""))[:16].replace("T", " ")
@@ -4030,7 +4084,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Host / Asset", "Criticality", "Findings", "Risk Score", "Exposure", "Last Seen"]
         cw = _fit_col_widths([152, 72, 64, 66, 78, 88], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         for item in top_assets[:30]:
             rs = item.get("risk_score", 0)
             rows.append([
@@ -4050,7 +4104,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Service", "Product", "Version", "Host Count", "Port", "First Seen"]
         cw = _fit_col_widths([100, 118, 80, 72, 60, 95], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         for item in service_inv[:30]:
             ports = item.get("ports") or []
             rows.append([
@@ -4071,7 +4125,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Severity", "Title", "CVE", "Affected Assets", "Scan Hits"]
         cw = _fit_col_widths([70, 200, 80, 90, 90], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         sevs = []
         for item in top_vulns[:80]:
             sev = str(item.get("severity", "low")).lower()
@@ -4093,7 +4147,7 @@ def build_project_pdf(project_id: str, window_days: int = 30) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Sev", "Title", "CVE", "Type", "Assets", "Occurrences"]
         cw = _fit_col_widths([50, 212, 76, 86, 52, 54], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         sevs = []
         for item in findings[:250]:
             sev = str(item.get("severity", "low")).lower()
@@ -4201,7 +4255,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Host / IP", "Open Ports", "Services", "OS / Info", "Risk"]
         cw = _fit_col_widths([155, 72, 70, 158, 60], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         sevs: list[str] = []
         for hdata in hosts[:40]:
             open_ports = hdata.get("open_ports") or [p for p in (hdata.get("ports") or []) if p.get("state") == "open"]
@@ -4224,7 +4278,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Host", "Port", "Proto", "State", "Service", "Product", "Version"]
         cw = _fit_col_widths([108, 38, 36, 40, 78, 115, 100], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         for hdata in hosts[:25]:
             open_ports = hdata.get("open_ports") or [p for p in (hdata.get("ports") or []) if p.get("state") == "open"]
             for port_info in open_ports[:35]:
@@ -4248,7 +4302,7 @@ def build_report_pdf(report: dict[str, Any]) -> io.BytesIO:
         story.append(Spacer(1, 4))
         hdr = ["Sev", "Host", "Title", "Evidence", "CVE", "Type"]
         cw = _fit_col_widths([50, 92, 142, 118, 64, 54], W)
-        rows = [hdr]
+        rows: list[list[Any]] = [hdr]
         sevs = []
         for item in findings[:300]:
             sev = str(item.get("severity", "low")).lower()
@@ -8304,6 +8358,7 @@ def reset_data_api() -> Any:
 @app.route("/api/projects/<project_id>/findings")
 def project_findings_api(project_id: str) -> Any:
     severity = (request.args.get("severity") or "all").lower()
+    status = (request.args.get("status") or "active").lower()
     search = (request.args.get("search") or "").strip()
     sort_by = (request.args.get("sort_by") or "severity").lower()
     sort_dir = (request.args.get("sort_dir") or "desc").lower()
@@ -8315,9 +8370,15 @@ def project_findings_api(project_id: str) -> Any:
     if severity not in {"all", "critical", "high", "medium", "low", "info"}:
         return jsonify({"error": "Invalid severity filter."}), 400
 
+    try:
+        normalize_finding_status_filter(status)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     items = get_project_findings(
         project_id=project_id,
         severity=severity,
+        status_filter=status,
         search=search,
         since_days=since_days,
         sort_by=sort_by,
@@ -8328,12 +8389,13 @@ def project_findings_api(project_id: str) -> Any:
 
 @app.route("/api/projects/<project_id>/findings/<finding_key>")
 def project_finding_detail_api(project_id: str, finding_key: str) -> Any:
+    status = (request.args.get("status") or "active").lower()
     try:
         since_days = int(request.args.get("since_days", "3650"))
     except ValueError:
         since_days = 3650
     try:
-        item = get_project_finding_detail(project_id=project_id, finding_key=finding_key, since_days=since_days)
+        item = get_project_finding_detail(project_id=project_id, finding_key=finding_key, since_days=since_days, status_filter=status)
         return jsonify(item)
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 404
@@ -8397,6 +8459,7 @@ def findings_csv_response(project_id: str, items: list[dict[str, Any]]) -> Any:
 @app.route("/api/projects/<project_id>/findings.csv")
 def project_findings_csv_api(project_id: str) -> Any:
     severity = (request.args.get("severity") or "all").lower()
+    status = (request.args.get("status") or "active").lower()
     search = (request.args.get("search") or "").strip()
     sort_by = (request.args.get("sort_by") or "severity").lower()
     sort_dir = (request.args.get("sort_dir") or "desc").lower()
@@ -8408,6 +8471,7 @@ def project_findings_csv_api(project_id: str) -> Any:
     items = get_project_findings(
         project_id=project_id,
         severity=severity,
+        status_filter=status,
         search=search,
         since_days=since_days,
         sort_by=sort_by,

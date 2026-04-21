@@ -1431,6 +1431,7 @@ async function loadFindingDetail(findingKey) {
                 <div class="finding-detail-kpi"><span>Risk</span><strong>${esc(data.risk_score || 0)}</strong></div>
                 <div class="finding-detail-kpi"><span>Assets</span><strong>${esc(data.asset_count || 0)}</strong></div>
                 <div class="finding-detail-kpi"><span>Occurrences</span><strong>${esc(data.occurrence_count || 0)}</strong></div>
+                <div class="finding-detail-kpi"><span>Scan Hits</span><strong>${esc(data.scan_hit_count || data.occurrence_count || 0)}</strong></div>
             </div>
             <div class="list-item">
                 <div class="list-line"><strong>${esc(data.title || "Finding")}</strong><span>${esc(data.type || "-")}</span></div>
