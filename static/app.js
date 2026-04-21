@@ -82,6 +82,16 @@ const confirmModalPhraseLabel = document.getElementById("confirmModalPhraseLabel
 const confirmPhraseInput = document.getElementById("confirmPhraseInput");
 const confirmModalCancel = document.getElementById("confirmModalCancel");
 const confirmModalOk = document.getElementById("confirmModalOk");
+const authSummary = document.getElementById("authSummary");
+const authSummaryText = document.getElementById("authSummaryText");
+const authLogoutButton = document.getElementById("authLogoutButton");
+const authModal = document.getElementById("authModal");
+const authModalMessage = document.getElementById("authModalMessage");
+const authForm = document.getElementById("authForm");
+const authUsername = document.getElementById("authUsername");
+const authPassword = document.getElementById("authPassword");
+const authError = document.getElementById("authError");
+const authSubmitButton = document.getElementById("authSubmitButton");
 
 const ORDER = ["critical", "high", "medium", "low"];
 const COLORS = {
@@ -106,6 +116,25 @@ const CHART_ANIMATION_MS = 320;
 let selectedFindingKey = "";
 let activeScanJobId = "";
 let activeScanStatusController = null;
+let workspaceInitialized = false;
+
+const authState = {
+    required: false,
+    authenticated: false,
+    user: null,
+    projects: [],
+    defaultProjectId: "default",
+};
+
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+    const response = await nativeFetch(input, { ...init, credentials: init?.credentials || "same-origin" });
+    const requestUrl = typeof input === "string" ? input : String(input?.url || "");
+    if (response.status === 401 && !requestUrl.startsWith("/api/auth/")) {
+        showAuthDialog("Your session is required or has expired. Sign in to continue.");
+    }
+    return response;
+};
 
 const I18N = {
     de: {
@@ -573,6 +602,124 @@ function t(key) {
     return base[key] || I18N.en[key] || I18N.de[key] || key;
 }
 
+function showAuthError(message) {
+    if (!authError) {
+        return;
+    }
+    authError.textContent = String(message || "Authentication failed.");
+    authError.classList.remove("hidden");
+}
+
+function clearAuthError() {
+    if (!authError) {
+        return;
+    }
+    authError.textContent = "";
+    authError.classList.add("hidden");
+}
+
+function setAuthUi(data = {}) {
+    authState.required = !!data.required;
+    authState.authenticated = !!data.authenticated;
+    authState.user = data.user && typeof data.user === "object" ? data.user : null;
+    authState.projects = Array.isArray(data.projects) ? data.projects : [];
+    authState.defaultProjectId = String(data.default_project_id || "default");
+
+    if (authSummary) {
+        authSummary.classList.toggle("hidden", !authState.required || !authState.authenticated);
+    }
+    if (authSummaryText) {
+        const username = String(authState.user?.username || "user");
+        const role = String(authState.user?.role || "viewer");
+        authSummaryText.textContent = authState.required && authState.authenticated
+            ? `${username} · ${role}`
+            : "Protected deployment";
+    }
+
+    const isAdmin = !!authState.user?.admin;
+    if (newProjectButton) {
+        newProjectButton.disabled = authState.required && authState.authenticated && !isAdmin;
+    }
+    if (resetProjectButton) {
+        resetProjectButton.disabled = authState.required && authState.authenticated && !isAdmin;
+    }
+    if (deleteProjectButton) {
+        deleteProjectButton.disabled = authState.required && authState.authenticated && !isAdmin;
+    }
+
+    if (authState.required && !authState.authenticated) {
+        activeProjectId = "";
+    } else if (authState.projects.length) {
+        const visibleIds = authState.projects.map((item) => String(item.id || "")).filter(Boolean);
+        if (!visibleIds.includes(activeProjectId)) {
+            activeProjectId = visibleIds[0] || authState.defaultProjectId || "default";
+        }
+    }
+}
+
+function showAuthDialog(message = "") {
+    if (!authModal) {
+        return;
+    }
+    if (authModalMessage) {
+        authModalMessage.textContent = String(message || "Authenticate to access project data and scan actions.");
+    }
+    clearAuthError();
+    authModal.classList.remove("hidden");
+    authModal.setAttribute("aria-hidden", "false");
+    window.setTimeout(() => authUsername?.focus(), 0);
+}
+
+function hideAuthDialog() {
+    if (!authModal) {
+        return;
+    }
+    authModal.classList.add("hidden");
+    authModal.setAttribute("aria-hidden", "true");
+    clearAuthError();
+    if (authPassword) {
+        authPassword.value = "";
+    }
+}
+
+async function loadSessionState() {
+    const response = await nativeFetch("/api/auth/session", { credentials: "same-origin" });
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data?.error || "Session state unavailable");
+    }
+    setAuthUi(data || {});
+    return data || {};
+}
+
+async function ensureAuthenticatedSession() {
+    const state = await loadSessionState();
+    if (state.required && !state.authenticated) {
+        showAuthDialog("Sign in to continue.");
+        return false;
+    }
+    hideAuthDialog();
+    return true;
+}
+
+async function submitLogin(username, password) {
+    const { response, data } = await fetchJsonWithTimeout(
+        "/api/auth/login",
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password }),
+        },
+        20000,
+    );
+    if (!response.ok) {
+        throw new Error(data?.error || "Authentication failed.");
+    }
+    setAuthUi(data || {});
+    hideAuthDialog();
+    await initializeWorkspace(true);
+}
+
 async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 180000) {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -977,7 +1124,7 @@ function createScanStatusController(container, variant = "risk", initial = {}) {
                     <span class="scan-status-eta">ETA --:--</span>
                 </div>
                 <div class="scan-status-message">Preparing scan pipeline...</div>
-                <div class="scan-status-progress-track"><div class="scan-status-progress-fill" style="width:0%"></div></div>
+                <div class="scan-status-progress-track"><div class="scan-status-progress-fill"></div></div>
                 <div class="scan-status-bottomline">
                     <span class="scan-status-progress-value">0%</span>
                     <span class="scan-status-jobref">Job ${esc(shortJobId || "pending")}</span>
@@ -993,6 +1140,10 @@ function createScanStatusController(container, variant = "risk", initial = {}) {
     const valueEl = container.querySelector(".scan-status-progress-value");
 
     const etaEl = container.querySelector(".scan-status-eta");
+
+    if (fillEl) {
+        fillEl.style.width = "0%";
+    }
 
     let completed = false;
     let rafId = 0;
@@ -2543,8 +2694,9 @@ async function loadHealth() {
 function syncProjectSelects(items) {
     const options = (items || []).map((project) => `<option value="${esc(project.id)}">${esc(project.name)}</option>`).join("");
     projectSelect.innerHTML = options;
+    projectSelect.disabled = !(items || []).length;
     if (!(items || []).some((item) => item.id === activeProjectId)) {
-        activeProjectId = (items || [])[0]?.id || "default";
+        activeProjectId = (items || [])[0]?.id || authState.defaultProjectId || "default";
     }
     projectSelect.value = activeProjectId;
 }
@@ -2556,6 +2708,7 @@ async function loadProjects() {
         throw new Error(data.error || "Projects could not be loaded");
     }
     syncProjectSelects(data.items || []);
+    return data.items || [];
 }
 
 async function loadDashboard() {
@@ -2737,6 +2890,40 @@ historyList.addEventListener("click", async (event) => {
             showError(error.message || "Could not delete scan.");
         }
     }
+});
+
+authForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    clearAuthError();
+    const username = String(authUsername?.value || "").trim();
+    const password = String(authPassword?.value || "");
+    if (!username || !password) {
+        showAuthError("Username and password are required.");
+        return;
+    }
+    if (authSubmitButton) {
+        authSubmitButton.disabled = true;
+    }
+    try {
+        await submitLogin(username, password);
+    } catch (error) {
+        showAuthError(error.message || "Authentication failed.");
+    } finally {
+        if (authSubmitButton) {
+            authSubmitButton.disabled = false;
+        }
+    }
+});
+
+authLogoutButton?.addEventListener("click", async () => {
+    try {
+        await fetchJsonWithTimeout("/api/auth/logout", { method: "POST" }, 10000);
+    } catch (_) {
+        // Keep client-side session UX consistent even if logout request fails during a reload.
+    }
+    workspaceInitialized = false;
+    setAuthUi({ required: authState.required, authenticated: false, user: null, projects: [] });
+    showAuthDialog("You have been signed out.");
 });
 
 scanForm.addEventListener("submit", async (event) => {
@@ -3349,6 +3536,22 @@ function restoreLastScan() {
     } catch (_) {}
 }
 
+async function initializeWorkspace(forceRefresh = false) {
+    if (workspaceInitialized && !forceRefresh) {
+        return;
+    }
+    restoreLastScan();
+    await loadHealth();
+    const projects = await loadProjects();
+    if (!projects.length) {
+        workspaceInitialized = true;
+        showError("No projects are assigned to this account.");
+        return;
+    }
+    await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
+    workspaceInitialized = true;
+}
+
 (async function bootstrap() {
     try {
         const savedMode = localStorage.getItem("vscanner.mode") || "dark";
@@ -3370,23 +3573,22 @@ function restoreLastScan() {
         activateTab(pathToTab(window.location.pathname));
         await renderNetworkHints();
         await renderNetworkPageHints();
-        restoreLastScan();
-        await loadHealth();
-        await loadProjects();
-        await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
+        const ready = await ensureAuthenticatedSession();
+        if (ready) {
+            await initializeWorkspace();
+        }
     } catch (error) {
         showError(error.message || "Initial load failed");
     }
-        // Cursor glow
-        const cursorGlow = document.getElementById("cursor-glow");
-        if (cursorGlow) {
-                document.addEventListener("mousemove", (e) => {
-                        cursorGlow.style.left = `${e.clientX}px`;
-                        cursorGlow.style.top = `${e.clientY}px`;
-                        cursorGlow.style.opacity = "1";
-                });
-                document.addEventListener("mouseleave", () => {
-                        cursorGlow.style.opacity = "0";
-                });
-        }
+    const cursorGlow = document.getElementById("cursor-glow");
+    if (cursorGlow) {
+        document.addEventListener("mousemove", (e) => {
+            cursorGlow.style.left = `${e.clientX}px`;
+            cursorGlow.style.top = `${e.clientY}px`;
+            cursorGlow.style.opacity = "1";
+        });
+        document.addEventListener("mouseleave", () => {
+            cursorGlow.style.opacity = "0";
+        });
+    }
 })();

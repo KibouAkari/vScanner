@@ -79,6 +79,10 @@
                     <p id="workspaceSubtitle">Clean dashboard, adaptive scan profiles, deduplicated asset-aware findings.</p>
                 </div>
                 <div class="top-actions">
+                    <div id="authSummary" class="auth-summary hidden" aria-live="polite">
+                        <span id="authSummaryText">Protected deployment</span>
+                        <button id="authLogoutButton" class="btn ghost" type="button">Sign Out</button>
+                    </div>
                     <select id="projectSelect" class="input"></select>
                     <button id="newProjectButton" class="btn ghost" type="button">New Project</button>
                     <button id="projectCsvButton" class="btn ghost" type="button">Project CSV</button>
@@ -595,6 +599,32 @@
                 <button id="confirmModalCancel" class="btn ghost" type="button">Cancel</button>
                 <button id="confirmModalOk" class="btn primary" type="button" disabled>Confirm</button>
             </div>
+        </div>
+    </div>
+    <div id="authModal" class="auth-modal hidden" aria-hidden="true">
+        <div class="auth-dialog panel" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+            <div class="auth-dialog-head">
+                <div>
+                    <div class="eyebrow">Protected Deployment</div>
+                    <h3 id="authModalTitle">Sign In</h3>
+                </div>
+                <span class="panel-sub-badge">Session Required</span>
+            </div>
+            <p id="authModalMessage" class="note">Authenticate to access project data and scan actions.</p>
+            <form id="authForm" class="auth-form">
+                <div>
+                    <label for="authUsername">Username</label>
+                    <input id="authUsername" class="input" type="text" autocomplete="username" required />
+                </div>
+                <div>
+                    <label for="authPassword">Password</label>
+                    <input id="authPassword" class="input" type="password" autocomplete="current-password" required />
+                </div>
+                <div id="authError" class="error hidden"></div>
+                <div class="auth-actions">
+                    <button id="authSubmitButton" class="btn primary" type="submit">Sign In</button>
+                </div>
+            </form>
         </div>
     </div>
     <script src="{{ url_for('static', filename='vendor/chart.umd.min.js') }}"></script>

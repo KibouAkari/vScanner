@@ -23,7 +23,7 @@ from typing import Any, Iterable
 import nmap
 import requests
 import urllib3
-from flask import Flask, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file, session
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.colors import HexColor
 from reportlab.lib.styles import ParagraphStyle
@@ -42,6 +42,7 @@ from reportlab.platypus import (
 from reportlab.graphics.shapes import Drawing, Rect
 from reportlab.graphics.shapes import String as _GStr
 from urllib3.exceptions import InsecureRequestWarning
+from werkzeug.security import check_password_hash
 
 from scanner_v2 import run_scan_sync as run_scan_v2_sync
 from scanner_v2.enrichment import enrich_findings_with_external_cve
@@ -74,6 +75,16 @@ urllib3.disable_warnings(category=InsecureRequestWarning)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024
+_SESSION_SECRET = os.getenv("VSCANNER_SESSION_SECRET", "").strip() or hashlib.sha256(
+    (os.getenv("ADMIN_API_TOKEN", "") or os.getenv("DATABASE_URL", "") or os.getenv("MONGODB_URI", "") or "vscanner-session").encode("utf-8")
+).hexdigest()
+app.config.update(
+    SECRET_KEY=_SESSION_SECRET,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.getenv("VERCEL") or os.getenv("VSCANNER_SECURE_COOKIE", "0") == "1"),
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
 
 LOG_LEVEL = os.getenv("VSCANNER_LOG_LEVEL", "INFO").strip().upper() or "INFO"
 SCAN_LOGGER = logging.getLogger("vscanner.scan")
@@ -262,6 +273,8 @@ ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
 INTEL_ALLOW_PRIVATE_TARGETS = os.getenv("VSCANNER_ALLOW_PRIVATE_INTEL", "0") == "1"
 PUBLIC_DIAGNOSTICS_ENABLED = os.getenv("VSCANNER_PUBLIC_DIAGNOSTICS", "0") == "1"
 TRUST_X_FORWARDED_FOR = os.getenv("VSCANNER_TRUST_X_FORWARDED_FOR", "1" if os.getenv("VERCEL") else "0") == "1"
+AUTH_USERS_JSON = os.getenv("VSCANNER_AUTH_USERS_JSON", "").strip()
+AUTH_REQUIRED = os.getenv("VSCANNER_AUTH_REQUIRED", "0") == "1"
 
 if os.getenv("VERCEL") and not DB_URL:
     DB_PATH = "/tmp/vscanner_reports.db"  # nosec B108 - intentional Vercel serverless path
@@ -285,6 +298,170 @@ DB_READY = False
 DEFAULT_PROJECT_ID = "default"
 DEFAULT_PROJECT_NAME = "General"
 VALID_PROFILES = {"light", "deep", "stealth", "network", "quick", "adaptive", "low_noise"}
+
+
+def auth_enabled() -> bool:
+    return AUTH_REQUIRED or bool(AUTH_USERS_JSON)
+
+
+def _load_auth_users() -> dict[str, dict[str, Any]]:
+    raw = AUTH_USERS_JSON
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+
+    if isinstance(parsed, dict) and isinstance(parsed.get("users"), list):
+        raw_users = parsed.get("users") or []
+    elif isinstance(parsed, dict):
+        raw_users = []
+        for username, payload in parsed.items():
+            if isinstance(payload, dict):
+                raw_users.append({"username": username, **payload})
+    elif isinstance(parsed, list):
+        raw_users = parsed
+    else:
+        raw_users = []
+
+    users: dict[str, dict[str, Any]] = {}
+    for item in raw_users:
+        if not isinstance(item, dict):
+            continue
+        username = str(item.get("username") or item.get("user") or "").strip()
+        if not username:
+            continue
+        role = str(item.get("role") or ("admin" if bool(item.get("is_admin")) else "viewer")).strip().lower() or "viewer"
+        projects_raw = item.get("projects") or item.get("allowed_projects") or (["*"] if role == "admin" else [])
+        if not isinstance(projects_raw, list):
+            projects_raw = [projects_raw]
+        projects = []
+        for project_id in projects_raw:
+            value = str(project_id or "").strip()
+            if value and value not in projects:
+                projects.append(value)
+        if role == "admin" and "*" not in projects:
+            projects.append("*")
+
+        users[username.lower()] = {
+            "username": username,
+            "role": role,
+            "projects": projects,
+            "password_hash": str(item.get("password_hash") or "").strip(),
+            "password": str(item.get("password") or "").strip(),
+        }
+    return users
+
+
+def _auth_public_api_paths() -> set[str]:
+    return {"/api/health", "/api/auth/session", "/api/auth/login", "/api/client-ip", "/api/network-hints"}
+
+
+def _current_principal() -> dict[str, Any] | None:
+    payload = session.get("auth")
+    if not isinstance(payload, dict):
+        return None
+    username = str(payload.get("username") or "").strip()
+    role = str(payload.get("role") or "viewer").strip().lower() or "viewer"
+    projects = payload.get("projects") or []
+    if not isinstance(projects, list):
+        projects = []
+    normalized_projects: list[str] = []
+    for project_id in projects:
+        value = str(project_id or "").strip()
+        if value and value not in normalized_projects:
+            normalized_projects.append(value)
+    if not username:
+        return None
+    return {"username": username, "role": role, "projects": normalized_projects}
+
+
+def _principal_is_admin(principal: dict[str, Any] | None = None) -> bool:
+    active = principal or _current_principal()
+    if not active:
+        return False
+    return str(active.get("role") or "").lower() == "admin" or "*" in list(active.get("projects") or [])
+
+
+def _accessible_project_ids(principal: dict[str, Any] | None = None) -> set[str] | None:
+    if not auth_enabled():
+        return None
+    active = principal or _current_principal()
+    if not active:
+        return set()
+    if _principal_is_admin(active):
+        return None
+    return {str(project_id or "").strip() for project_id in (active.get("projects") or []) if str(project_id or "").strip()}
+
+
+def _principal_can_access_project(project_id: str | None, principal: dict[str, Any] | None = None) -> bool:
+    if not auth_enabled():
+        return True
+    safe_project_id = str(project_id or "").strip()
+    if not safe_project_id:
+        return False
+    scope = _accessible_project_ids(principal)
+    if scope is None:
+        return True
+    return safe_project_id in scope
+
+
+def _filter_projects_for_principal(items: list[dict[str, Any]], principal: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    if not auth_enabled():
+        return items
+    scope = _accessible_project_ids(principal)
+    if scope is None:
+        return items
+    return [item for item in items if str(item.get("id") or "").strip() in scope]
+
+
+def _default_accessible_project_id(principal: dict[str, Any] | None = None) -> str:
+    if not auth_enabled():
+        return DEFAULT_PROJECT_ID
+    active = principal or _current_principal()
+    if _principal_is_admin(active):
+        return DEFAULT_PROJECT_ID
+    scope = sorted(_accessible_project_ids(active) or set())
+    if scope:
+        return scope[0]
+    return ""
+
+
+def _resolve_requested_project_id(raw_project_id: str | None = None) -> str:
+    requested = str(raw_project_id or "").strip()
+    if requested:
+        return requested
+    return _default_accessible_project_id() or DEFAULT_PROJECT_ID
+
+
+def _get_report_project_id(report_id: str) -> str:
+    safe_report_id = str(report_id or "").strip()
+    if not safe_report_id:
+        return ""
+    if use_mongodb():
+        db = get_mongo_db()
+        row = db.reports.find_one({"id": safe_report_id}, {"_id": 0, "project_id": 1}) or {}
+        return str(row.get("project_id") or "")
+    with db_connection() as connection:
+        row = fetchone(connection, "SELECT project_id FROM reports WHERE id = ?", (safe_report_id,)) or {}
+    return str(row.get("project_id") or "")
+
+
+def _auth_session_payload() -> dict[str, Any]:
+    principal = _current_principal()
+    accessible_projects = _filter_projects_for_principal(list_projects(), principal=principal)
+    return {
+        "required": auth_enabled(),
+        "authenticated": bool(principal),
+        "user": {
+            "username": str(principal.get("username") or ""),
+            "role": str(principal.get("role") or "viewer"),
+            "admin": _principal_is_admin(principal),
+        } if principal else None,
+        "default_project_id": _default_accessible_project_id(principal),
+        "projects": accessible_projects,
+    }
 
 CVE_RULES = [
     {
@@ -7246,6 +7423,7 @@ def enforce_api_safety_controls() -> Any:
     if not request.path.startswith("/api/"):
         return None
 
+    path = str(request.path or "")
     client_ip = _extract_client_ip()
     try:
         _apply_ip_rate_limit(
@@ -7266,6 +7444,85 @@ def enforce_api_safety_controls() -> Any:
             )
     except ScanInputError as exc:
         return jsonify({"error": str(exc)}), 429
+
+    if auth_enabled():
+        if path in _auth_public_api_paths():
+            return None
+
+        if (path.startswith("/api/admin/") or path.startswith("/api/diagnostics/")) and _is_admin_authorized():
+            return None
+
+        principal = _current_principal()
+        if not principal:
+            return jsonify({"error": "Authentication required.", "auth_required": True}), 401
+
+        if path.startswith("/api/admin/") or path.startswith("/api/diagnostics/"):
+            if not _principal_is_admin(principal):
+                return jsonify({"error": "Forbidden."}), 403
+            return None
+
+        project_id = str((request.view_args or {}).get("project_id") or "").strip()
+        report_id = str((request.view_args or {}).get("report_id") or "").strip()
+        job_id = str((request.view_args or {}).get("job_id") or "").strip()
+
+        if path == "/api/projects" and request.method == "POST" and not _principal_is_admin(principal):
+            return jsonify({"error": "Forbidden."}), 403
+
+        if project_id:
+            if not _principal_can_access_project(project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+            if (request.method == "DELETE" or path.endswith("/reset") or (path.endswith("/settings") and request.method in {"PUT", "PATCH"})) and not _principal_is_admin(principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path == "/api/scan/jobs" and request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            scan_project_id = _resolve_requested_project_id(payload.get("project_id"))
+            if not _principal_can_access_project(scan_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path in {"/api/scan", "/api/scan/v2"}:
+            payload = request.get_json(silent=True) or {}
+            scan_project_id = _resolve_requested_project_id(payload.get("project_id"))
+            if not _principal_can_access_project(scan_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path == "/api/scan/jobs" and request.method == "GET":
+            requested_project_id = str(request.args.get("project_id") or "").strip()
+            if requested_project_id and not _principal_can_access_project(requested_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path in {"/api/dashboard", "/api/findings", "/api/assets", "/api/reports"}:
+            requested_project_id = str(request.args.get("project_id") or "").strip()
+            if requested_project_id and not _principal_can_access_project(requested_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path.startswith("/api/assets/") and request.method in {"PUT", "PATCH"}:
+            payload = request.get_json(silent=True) or {}
+            requested_project_id = _resolve_requested_project_id(payload.get("project_id") or request.args.get("project_id"))
+            if not _principal_can_access_project(requested_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path == "/api/assets" and request.method == "POST":
+            payload = request.get_json(silent=True) or {}
+            requested_project_id = _resolve_requested_project_id(payload.get("project_id"))
+            if not _principal_can_access_project(requested_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if path.startswith("/api/reports/latest/"):
+            requested_project_id = _resolve_requested_project_id(request.args.get("project_id"))
+            if not _principal_can_access_project(requested_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if report_id:
+            report_project_id = _get_report_project_id(report_id)
+            if report_project_id and not _principal_can_access_project(report_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
+
+        if job_id:
+            job_payload = _get_scan_job_record(job_id)
+            job_project_id = str((job_payload or {}).get("project_id") or "")
+            if job_project_id and not _principal_can_access_project(job_project_id, principal):
+                return jsonify({"error": "Forbidden."}), 403
 
     return None
 
@@ -7329,6 +7586,53 @@ def health() -> Any:
             "db_engine": engine,
         }
     )
+
+
+@app.route("/api/auth/session")
+def auth_session_api() -> Any:
+    return jsonify(_auth_session_payload())
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def auth_login_api() -> Any:
+    if not auth_enabled():
+        return jsonify({"required": False, "authenticated": True}), 200
+
+    payload = request.get_json(silent=True) or {}
+    username = str(payload.get("username") or "").strip()
+    password = str(payload.get("password") or "")
+    if not username or not password:
+        return jsonify({"error": "Username and password are required."}), 400
+
+    users = _load_auth_users()
+    account = users.get(username.lower())
+    if not account:
+        return jsonify({"error": "Invalid credentials."}), 401
+
+    password_hash = str(account.get("password_hash") or "").strip()
+    configured_password = str(account.get("password") or "")
+    valid = False
+    if password_hash:
+        valid = bool(check_password_hash(password_hash, password))
+    elif configured_password:
+        valid = hmac.compare_digest(configured_password, password)
+    if not valid:
+        return jsonify({"error": "Invalid credentials."}), 401
+
+    session.clear()
+    session.permanent = True
+    session["auth"] = {
+        "username": str(account.get("username") or username),
+        "role": str(account.get("role") or "viewer"),
+        "projects": list(account.get("projects") or []),
+    }
+    return jsonify(_auth_session_payload())
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def auth_logout_api() -> Any:
+    session.clear()
+    return jsonify({"ok": True, "required": auth_enabled(), "authenticated": False})
 
 
 @app.route("/api/client-ip")
@@ -7544,7 +7848,7 @@ def diagnostics_scan_trace_api() -> Any:
 @app.route("/api/projects", methods=["GET", "POST"])
 def projects_api() -> Any:
     if request.method == "GET":
-        return jsonify({"items": list_projects()})
+        return jsonify({"items": _filter_projects_for_principal(list_projects())})
 
     payload = request.get_json(silent=True) or {}
     name = payload.get("name", "")
@@ -7857,27 +8161,27 @@ def project_assets_tags_api(project_id: str, asset_id: str) -> Any:
 
 @app.route("/api/assets")
 def assets_api() -> Any:
-    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
     return project_assets_api(project_id)
 
 
 @app.route("/api/assets", methods=["POST"])
 def assets_create_api() -> Any:
     payload = request.get_json(silent=True) or {}
-    project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(payload.get("project_id"))
     return project_assets_create_api(project_id)
 
 
 @app.route("/api/assets/<asset_id>/tags", methods=["PUT", "PATCH"])
 def assets_tags_api(asset_id: str) -> Any:
     payload = request.get_json(silent=True) or {}
-    project_id = (payload.get("project_id") or request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(payload.get("project_id") or request.args.get("project_id"))
     return project_assets_tags_api(project_id, asset_id)
 
 
 @app.route("/api/dashboard")
 def dashboard_api_compat() -> Any:
-    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
     lite = str(request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
     try:
         window_days = int(request.args.get("window_days", "30"))
@@ -7892,7 +8196,7 @@ def dashboard_api_compat() -> Any:
 
 @app.route("/api/findings")
 def findings_api_compat() -> Any:
-    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
     severity = (request.args.get("severity") or "all").lower()
     search = (request.args.get("search") or "").strip()
     sort_by = (request.args.get("sort_by") or "severity").lower()
@@ -8877,6 +9181,7 @@ def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -
 @app.route("/api/scan", methods=["POST"])
 def scan_api() -> Any:
     payload = request.get_json(silent=True) or {}
+    payload["project_id"] = _resolve_requested_project_id(payload.get("project_id"))
     client = request.headers.get("X-Forwarded-For", "")
     client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
@@ -8894,6 +9199,7 @@ def scan_api() -> Any:
 @app.route("/api/scan/v2", methods=["POST"])
 def scan_api_v2() -> Any:
     payload = request.get_json(silent=True) or {}
+    payload["project_id"] = _resolve_requested_project_id(payload.get("project_id"))
     client = request.headers.get("X-Forwarded-For", "")
     client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
@@ -8916,9 +9222,10 @@ def create_scan_job_api() -> Any:
     client_ip_value = client.split(",")[0].strip() if client else (request.remote_addr or "unknown")
 
     try:
-        project_id = (payload.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+        project_id = _resolve_requested_project_id(payload.get("project_id"))
         if not get_project(project_id):
             raise ScanInputError("Project not found.")
+        payload["project_id"] = project_id
         job_data = _submit_scan_job(payload, use_v2=use_v2, client_ip=client_ip_value)
         return jsonify(job_data), 202
     except ScanInputError as exc:
@@ -8930,7 +9237,8 @@ def create_scan_job_api() -> Any:
 @app.route("/api/scan/jobs")
 def list_scan_jobs_api() -> Any:
     _ensure_scan_jobs_reconciled()
-    project_id = (request.args.get("project_id") or "").strip()
+    requested_project_id = str(request.args.get("project_id") or "").strip()
+    project_id = _resolve_requested_project_id(requested_project_id) if requested_project_id else ""
     limit_raw = request.args.get("limit", "20")
     try:
         limit = max(1, min(int(limit_raw), 100))
@@ -8938,6 +9246,8 @@ def list_scan_jobs_api() -> Any:
         limit = 20
 
     items = _list_scan_job_records(project_id=project_id, limit=limit)
+    if auth_enabled() and not _principal_is_admin():
+        items = [item for item in items if _principal_can_access_project(str(item.get("project_id") or ""))]
     out = [
         {
             "id": str(item.get("id") or ""),
@@ -9101,7 +9411,11 @@ def list_reports_api() -> Any:
     except ValueError:
         limit = 40
     project_id = request.args.get("project_id", "").strip() or None
-    return jsonify({"items": list_report_entries(limit=limit, project_id=project_id)})
+    safe_project_id = _resolve_requested_project_id(project_id) if project_id else None
+    items = list_report_entries(limit=limit, project_id=safe_project_id)
+    if auth_enabled() and not _principal_is_admin() and not safe_project_id:
+        items = [item for item in items if _principal_can_access_project(str(item.get("project_id") or ""))][: max(1, min(limit, 200))]
+    return jsonify({"items": items})
 
 
 @app.route("/api/reports/<report_id>")
@@ -9207,7 +9521,7 @@ def report_latest_csv_api(scope: str) -> Any:
     if normalized_scope not in {"standard", "v2", "network", "stealth"}:
         return jsonify({"error": "Invalid export scope."}), 400
 
-    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
     data = get_latest_scan_for_export(project_id, normalized_scope)
     if not data:
         return jsonify({"error": "No recent scan available for export."}), 404
@@ -9241,7 +9555,7 @@ def report_latest_pdf_api(scope: str) -> Any:
     if normalized_scope not in {"standard", "v2", "network", "stealth"}:
         return jsonify({"error": "Invalid export scope."}), 400
 
-    project_id = (request.args.get("project_id") or DEFAULT_PROJECT_ID).strip() or DEFAULT_PROJECT_ID
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
     data = get_latest_scan_for_export(project_id, normalized_scope)
     if not data:
         return jsonify({"error": "No recent scan available for export."}), 404

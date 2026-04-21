@@ -238,6 +238,21 @@ body {
 .topbar h1 { margin: 0; font-family: "Sora", sans-serif; font-size: clamp(1.3rem, 2.2vw, 1.85rem); letter-spacing: -0.01em; }
 .topbar p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.84rem; }
 .top-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex-shrink: 0; }
+.auth-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.32rem 0.38rem 0.32rem 0.7rem;
+  border: 1px solid rgba(57,212,181,0.24);
+  border-radius: 999px;
+  background: rgba(8,16,28,0.56);
+  color: var(--text);
+}
+.auth-summary span {
+  font-size: 0.73rem;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
 
 /* ─── Inputs ─────────────────────────────────────────────────── */
 .input {
@@ -499,6 +514,43 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
   gap: 0.62rem;
 }
 .confirm-actions { display: flex; justify-content: flex-end; gap: 0.42rem; }
+
+.auth-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 8, 16, 0.72);
+  backdrop-filter: blur(10px);
+  z-index: 13000;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+.auth-modal.hidden { display: none; }
+.auth-dialog {
+  width: min(420px, 96vw);
+  display: grid;
+  gap: 0.85rem;
+  border-color: rgba(57,212,181,0.22);
+  box-shadow: var(--shadow-panel), 0 0 36px rgba(57,212,181,0.08);
+}
+.auth-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+.auth-dialog-head h3 {
+  margin: 0;
+  font-family: "Sora", sans-serif;
+}
+.auth-form {
+  display: grid;
+  gap: 0.72rem;
+}
+.auth-actions {
+  display: flex;
+  justify-content: flex-end;
+}
 
 /* Network suggestions / hints */
 .network-suggestions { margin-top: 0.55rem; display: grid; gap: 0.26rem; }
@@ -809,6 +861,8 @@ body[data-mode="bright"] .scanner-mode-card span { color: var(--muted); }
 body[data-mode="bright"] .chip { background: rgba(0,0,0,0.06); }
 body[data-mode="bright"] .chip strong { color: var(--text); }
 body[data-mode="bright"] .btn.ghost { background: rgba(0,0,0,0.06); border-color: rgba(0,0,0,0.12); color: var(--text); }
+body[data-mode="bright"] .auth-summary { background: rgba(255,255,255,0.72); border-color: rgba(0,0,0,0.12); }
+body[data-mode="bright"] .auth-modal { background: rgba(210, 220, 236, 0.62); }
 body[data-mode="bright"] .menu-item.active { background: linear-gradient(90deg, rgba(47,159,255,0.16), rgba(47,159,255,0.04)); border-color: rgba(47,159,255,0.5); color: var(--text); }
 body[data-mode="bright"] .scanner-mode-card { background: rgba(0,0,0,0.04); color: var(--text); }
 body[data-mode="bright"] .scanner-mode-card.active { background: rgba(0,0,0,0.06); border-color: var(--primary); }
