@@ -1096,6 +1096,7 @@ function createScanStatusController(container, variant = "risk", initial = {}) {
                 return;
             }
             const nowMs = Date.now();
+            const statusRaw = String(job.status || "").toLowerCase();
             const nextProgress = clamp(job.progress || 0, 0, 100);
             const phaseRaw = String(job.phase || backendPhase || "running").toLowerCase();
 
@@ -1113,7 +1114,16 @@ function createScanStatusController(container, variant = "risk", initial = {}) {
                 phaseEl.textContent = prettyPhase(backendPhase);
             }
             if (messageEl) {
-                messageEl.textContent = String(job.message || "Running scan...");
+                let nextMessage = String(job.message || "Running scan...");
+                if (statusRaw === "queued" && job.queue && typeof job.queue === "object") {
+                    const position = Number(job.queue.position || 0);
+                    const eta = Number(job.queue.estimated_start_seconds || 0);
+                    const etaText = eta > 0 ? formatEta(eta) : "--:--";
+                    if (position > 0) {
+                        nextMessage = `Queued (position ${position}, ETA ${etaText})`;
+                    }
+                }
+                messageEl.textContent = nextMessage;
             }
             renderEta();
         },

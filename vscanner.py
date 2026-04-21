@@ -243,6 +243,8 @@ TLS_CANDIDATE_PORTS = {443, 465, 636, 853, 990, 993, 995, 2376, 5061, 5671, 5986
 
 SEVERITY_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
 REQUEST_LOG: dict[str, list[float]] = {}
+API_REQUEST_LOG: dict[str, list[float]] = {}
+SCAN_ENQUEUE_LOG: dict[str, list[float]] = {}
 LATEST_SCAN_EXPORT_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE: dict[str, dict[str, Any]] = {}
 DASHBOARD_CACHE_TTL_SECONDS = 30.0
@@ -257,6 +259,9 @@ DB_URL = os.getenv("DATABASE_URL", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "vscanner").strip() or "vscanner"
 ADMIN_API_TOKEN = os.getenv("ADMIN_API_TOKEN", "").strip()
+INTEL_ALLOW_PRIVATE_TARGETS = os.getenv("VSCANNER_ALLOW_PRIVATE_INTEL", "0") == "1"
+PUBLIC_DIAGNOSTICS_ENABLED = os.getenv("VSCANNER_PUBLIC_DIAGNOSTICS", "0") == "1"
+TRUST_X_FORWARDED_FOR = os.getenv("VSCANNER_TRUST_X_FORWARDED_FOR", "1" if os.getenv("VERCEL") else "0") == "1"
 
 if os.getenv("VERCEL") and not DB_URL:
     DB_PATH = "/tmp/vscanner_reports.db"  # nosec B108 - intentional Vercel serverless path
@@ -7103,6 +7108,168 @@ def _is_admin_authorized() -> bool:
     return bool(provided) and hmac.compare_digest(provided, ADMIN_API_TOKEN)
 
 
+def _extract_client_ip() -> str:
+    if TRUST_X_FORWARDED_FOR:
+        forwarded = str(request.headers.get("X-Forwarded-For") or "").strip()
+        if forwarded:
+            candidate = forwarded.split(",")[0].strip()
+            if candidate:
+                return candidate
+    return str(request.remote_addr or "unknown").strip() or "unknown"
+
+
+def _apply_ip_rate_limit(
+    client_ip: str,
+    *,
+    request_log: dict[str, list[float]],
+    window_s: int,
+    max_calls: int,
+    error_message: str,
+) -> None:
+    now = time.time()
+    hits = request_log.get(client_ip, [])
+    hits = [stamp for stamp in hits if now - stamp <= max(1, int(window_s))]
+    if len(hits) >= max(1, int(max_calls)):
+        raise ScanInputError(error_message)
+    hits.append(now)
+    request_log[client_ip] = hits
+
+
+def _is_restricted_intel_ip(ip_s: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(ip_s)
+    except ValueError:
+        return True
+
+    if str(ip_obj) == "169.254.169.254":
+        return True
+
+    return any([
+        ip_obj.is_private,
+        ip_obj.is_loopback,
+        ip_obj.is_link_local,
+        ip_obj.is_multicast,
+        ip_obj.is_reserved,
+        ip_obj.is_unspecified,
+    ])
+
+
+def _enforce_intel_target_safety(target: str, target_type: str) -> None:
+    if target_type == "network":
+        raise ScanInputError("Intel endpoint does not support CIDR targets.")
+
+    ips = resolve_target_ips(target, target_type)
+    if not ips:
+        raise ScanInputError("Target could not be resolved to an IP address.")
+
+    if is_public_mode() or not INTEL_ALLOW_PRIVATE_TARGETS:
+        for ip_s in ips:
+            if _is_restricted_intel_ip(ip_s):
+                raise ScanInputError("Intel probing for private/internal targets is blocked.")
+
+
+def _queued_and_running_jobs(project_id: str = "") -> list[dict[str, Any]]:
+    if use_mongodb():
+        db = get_mongo_db()
+        query: dict[str, Any] = {"status": {"$in": ["queued", "running"]}}
+        if project_id:
+            query["project_id"] = project_id
+        rows = list(
+            db.scan_jobs.find(query, {"_id": 0, "id": 1, "project_id": 1, "status": 1, "created_at": 1})
+            .sort("created_at", ASCENDING)
+            .limit(400)
+        )
+        return [dict(row) for row in rows]
+
+    with db_connection() as connection:
+        if project_id:
+            rows = fetchall(
+                connection,
+                """
+                SELECT id, project_id, status, created_at
+                FROM scan_jobs
+                WHERE project_id = ? AND status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                LIMIT 400
+                """,
+                (project_id,),
+            )
+        else:
+            rows = fetchall(
+                connection,
+                """
+                SELECT id, project_id, status, created_at
+                FROM scan_jobs
+                WHERE status IN ('queued', 'running')
+                ORDER BY created_at ASC
+                LIMIT 400
+                """,
+            )
+    return [dict(row) for row in rows]
+
+
+def _estimate_queue_status(job_id: str, project_id: str = "") -> dict[str, Any]:
+    avg_runtime_s = max(20.0, float(os.getenv("SCAN_QUEUE_AVG_RUNTIME_SECONDS", "75") or 75.0))
+    rows = _queued_and_running_jobs(project_id=project_id)
+    if not rows:
+        return {
+            "position": 1,
+            "queued_ahead": 0,
+            "running_ahead": 0,
+            "estimated_start_seconds": 0,
+            "estimated_start": utc_now(),
+        }
+
+    queue_ids = [str(row.get("id") or "") for row in rows]
+    position = queue_ids.index(job_id) + 1 if job_id in queue_ids else len(queue_ids) + 1
+    queued_ahead = 0
+    running_ahead = 0
+    for row in rows[: max(0, position - 1)]:
+        if str(row.get("status") or "") == "queued":
+            queued_ahead += 1
+        elif str(row.get("status") or "") == "running":
+            running_ahead += 1
+
+    eta_seconds = int(queued_ahead * avg_runtime_s + running_ahead * max(8.0, avg_runtime_s * 0.35))
+    eta_seconds = max(0, eta_seconds)
+    return {
+        "position": int(max(1, position)),
+        "queued_ahead": int(queued_ahead),
+        "running_ahead": int(running_ahead),
+        "estimated_start_seconds": eta_seconds,
+        "estimated_start": datetime.fromtimestamp(time.time() + eta_seconds, timezone.utc).isoformat(),
+    }
+
+
+@app.before_request
+def enforce_api_safety_controls() -> Any:
+    if not request.path.startswith("/api/"):
+        return None
+
+    client_ip = _extract_client_ip()
+    try:
+        _apply_ip_rate_limit(
+            client_ip,
+            request_log=API_REQUEST_LOG,
+            window_s=60,
+            max_calls=160,
+            error_message="Too many API requests. Please slow down.",
+        )
+
+        if request.method == "POST" and request.path.startswith("/api/scan"):
+            _apply_ip_rate_limit(
+                client_ip,
+                request_log=SCAN_ENQUEUE_LOG,
+                window_s=60,
+                max_calls=12,
+                error_message="Too many scan submissions. Please wait and retry.",
+            )
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 429
+
+    return None
+
+
 @app.after_request
 def set_security_headers(response: Any) -> Any:
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -7166,20 +7333,20 @@ def health() -> Any:
 
 @app.route("/api/client-ip")
 def client_ip() -> Any:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
-    return jsonify({"ip": candidate})
+    return jsonify({"ip": _extract_client_ip()})
 
 
 @app.route("/api/network-hints")
 def network_hints_api() -> Any:
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    candidate = forwarded.split(",")[0].strip() if forwarded else request.remote_addr
+    candidate = _extract_client_ip()
     return jsonify({"hints": suggest_network_hints(candidate), "client_ip": candidate})
 
 
 @app.route("/api/diagnostics/storage")
 def diagnostics_storage_api() -> Any:
+    if not PUBLIC_DIAGNOSTICS_ENABLED and not _is_admin_authorized():
+        return jsonify({"error": "Forbidden."}), 403
+
     project_id = (request.args.get("project_id") or "").strip() or None
     try:
         return jsonify(get_storage_diagnostics(project_id=project_id))
@@ -7969,14 +8136,18 @@ def project_pdf_api(project_id: str) -> Any:
 def intel_api() -> Any:
     """Passive intel endpoint: WHOIS, DNS, SSL, service detection (no evasion)."""
     payload = request.get_json(silent=True) or {}
-    target = (payload.get("target") or "").strip()
+    raw_target = (payload.get("target") or "").strip()
 
-    if not target:
+    if not raw_target:
         return jsonify({"error": "Target required"}), 400
 
     try:
+        target, target_type = normalize_target(raw_target)
+        _enforce_intel_target_safety(target, target_type)
         intel = gather_passive_intel(target)
         return jsonify(intel)
+    except ScanInputError as exc:
+        return jsonify({"error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"error": "Intel gathering failed.", "details": str(exc)}), 500
 
@@ -8617,6 +8788,8 @@ def _load_latest_report_result(project_id: str, target: str, profile: str) -> di
 
 def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -> dict[str, Any]:
     _ensure_scan_jobs_reconciled()
+    enforce_rate_limit(client_ip)
+
     job_id = str(uuid.uuid4())
     now_iso = utc_now()
     safe_payload = {k: v for k, v in dict(payload).items() if not str(k).startswith("_")}
@@ -8686,12 +8859,14 @@ def _submit_scan_job(payload: dict[str, Any], *, use_v2: bool, client_ip: str) -
 
     SCAN_JOB_EXECUTOR.submit(_worker)
     _scan_job_log(job_id, "scan_job_enqueued")
+    queue_status = _estimate_queue_status(job_id, project_id=str(payload.get("project_id") or DEFAULT_PROJECT_ID))
     return {
         "id": job_id,
         "status": "queued",
         "phase": "queued",
         "progress": 0,
         "message": "Job queued",
+        "queue": queue_status,
         "project_id": str(payload.get("project_id") or DEFAULT_PROJECT_ID),
         "use_v2": bool(use_v2),
         "created_at": now_iso,
@@ -8809,7 +8984,114 @@ def get_scan_job_api(job_id: str) -> Any:
             response["result"] = result_payload
     if response["status"] == "failed":
         response["error"] = str(payload.get("error") or "Scan failed.")
+    if response["status"] == "queued":
+        response["queue"] = _estimate_queue_status(job_id, project_id=response.get("project_id", ""))
+    elif response["status"] == "running":
+        response["queue"] = {
+            "position": 1,
+            "queued_ahead": 0,
+            "running_ahead": 0,
+            "estimated_start_seconds": 0,
+            "estimated_start": utc_now(),
+        }
     return jsonify(response)
+
+
+def _finding_signature(item: dict[str, Any]) -> str:
+    host = str(item.get("host") or item.get("asset") or "-").strip().lower()
+    try:
+        port = int(item.get("port") or 0)
+    except Exception:
+        port = 0
+    ftype = str(item.get("type") or item.get("finding_type") or "-").strip().lower()
+    title = normalize_finding_title(str(item.get("title") or "finding"))
+    cve = str(item.get("cve") or "").strip().upper()
+    return f"{host}|{port}|{ftype}|{title}|{cve}"
+
+
+def _finding_index(report_data: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    for item in (report_data.get("finding_items") or []):
+        if not isinstance(item, dict):
+            continue
+        sig = _finding_signature(item)
+        if sig not in out:
+            out[sig] = dict(item)
+    return out
+
+
+def _find_previous_report_entry(current_report: dict[str, Any]) -> dict[str, Any] | None:
+    project_id = str(current_report.get("meta", {}).get("project_id") or DEFAULT_PROJECT_ID)
+    current_id = str(current_report.get("report_id") or "")
+    entries = list_report_entries(limit=200, project_id=project_id)
+    ids = [str(item.get("id") or "") for item in entries]
+    if current_id not in ids:
+        return None
+    idx = ids.index(current_id)
+    if idx + 1 >= len(ids):
+        return None
+    prev_id = ids[idx + 1]
+    return get_report_entry(prev_id)
+
+
+@app.route("/api/reports/<report_id>/diff")
+def report_diff_api(report_id: str) -> Any:
+    current = get_report_entry(report_id)
+    if not current:
+        return jsonify({"error": "Report not found."}), 404
+
+    baseline_id = str(request.args.get("baseline_report_id") or "").strip()
+    if baseline_id:
+        baseline = get_report_entry(baseline_id)
+        if not baseline:
+            return jsonify({"error": "Baseline report not found."}), 404
+    else:
+        baseline = _find_previous_report_entry(current)
+        if not baseline:
+            return jsonify({
+                "status": "insufficient_history",
+                "current_report_id": str(current.get("report_id") or report_id),
+                "baseline_report_id": "",
+                "summary": {"new": 0, "fixed": 0, "unchanged": 0},
+                "new_findings": [],
+                "fixed_findings": [],
+            })
+
+    current_idx = _finding_index(current)
+    baseline_idx = _finding_index(baseline)
+
+    current_keys = set(current_idx.keys())
+    baseline_keys = set(baseline_idx.keys())
+
+    new_keys = sorted(current_keys - baseline_keys)
+    fixed_keys = sorted(baseline_keys - current_keys)
+    unchanged_keys = sorted(current_keys & baseline_keys)
+
+    def _compact(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "severity": normalize_severity(str(item.get("severity") or "low")),
+            "title": str(item.get("title") or "Finding"),
+            "type": str(item.get("type") or item.get("finding_type") or "-"),
+            "host": str(item.get("host") or item.get("asset") or "-"),
+            "port": int(item.get("port") or 0),
+            "cve": str(item.get("cve") or ""),
+            "evidence": str(item.get("evidence") or "-")[:220],
+        }
+
+    return jsonify(
+        {
+            "status": "ok",
+            "current_report_id": str(current.get("report_id") or report_id),
+            "baseline_report_id": str(baseline.get("report_id") or ""),
+            "summary": {
+                "new": len(new_keys),
+                "fixed": len(fixed_keys),
+                "unchanged": len(unchanged_keys),
+            },
+            "new_findings": [_compact(current_idx[key]) for key in new_keys[:40]],
+            "fixed_findings": [_compact(baseline_idx[key]) for key in fixed_keys[:40]],
+        }
+    )
 
 
 @app.route("/api/reports")
