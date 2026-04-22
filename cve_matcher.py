@@ -34,9 +34,22 @@ _RANGE_RULES: list[dict[str, Any]] = [
         "severity": "high",
         "title": "Apache path traversal candidate",
     },
+    {
+        "product": "grafana",
+        "from": (8, 0, 0),
+        "to": (8, 3, 99),
+        "cve": "CVE-2021-43798",
+        "severity": "high",
+        "title": "Grafana public path traversal candidate",
+    },
 ]
 
-_KNOWN_PRODUCTS = ["nginx", "openssh", "apache", "postgresql", "redis", "mysql", "mongodb", "elasticsearch"]
+_KNOWN_PRODUCTS = [
+    "nginx", "openssh", "apache", "postgresql", "redis", "mysql", "mongodb", "elasticsearch",
+    "grafana", "kibana", "prometheus", "rabbitmq", "jenkins", "portainer", "gitlab", "gitea",
+    "keycloak", "nextcloud", "sonarqube", "webmin", "phpmyadmin", "tomcat", "jetty", "weblogic",
+    "consul", "minio", "confluence", "jira",
+]
 
 _INFERRED_BY_SERVICE: dict[str, str] = {
     "redis": "CVE-2022-0543",
@@ -76,6 +89,40 @@ def _extract_product_version(item: dict[str, Any]) -> tuple[str, str]:
         product = "postgresql"
     elif "redis" in text:
         product = "redis"
+    elif "grafana" in text:
+        product = "grafana"
+    elif "kibana" in text:
+        product = "kibana"
+    elif "prometheus" in text:
+        product = "prometheus"
+    elif "rabbitmq" in text:
+        product = "rabbitmq"
+    elif "jenkins" in text:
+        product = "jenkins"
+    elif "portainer" in text:
+        product = "portainer"
+    elif "gitlab" in text:
+        product = "gitlab"
+    elif "gitea" in text:
+        product = "gitea"
+    elif "keycloak" in text:
+        product = "keycloak"
+    elif "webmin" in text:
+        product = "webmin"
+    elif "phpmyadmin" in text:
+        product = "phpmyadmin"
+    elif "tomcat" in text:
+        product = "tomcat"
+    elif "weblogic" in text:
+        product = "weblogic"
+    elif "consul" in text:
+        product = "consul"
+    elif "minio" in text:
+        product = "minio"
+    elif "confluence" in text:
+        product = "confluence"
+    elif "jira" in text:
+        product = "jira"
 
     m = _VERSION_RE.search(text)
     version = m.group(0) if m else ""

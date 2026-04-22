@@ -277,6 +277,7 @@
                 <article class="panel">
                     <div class="panel-head">
                         <h3>Active Scanner Jobs</h3>
+                        <span id="recentScanLaneBadge" class="scanner-job-finish-badge">No lane has finished yet</span>
                     </div>
                     <div class="scanner-job-grid">
                         <section class="scanner-job-slot" data-scan-scope="standard">
@@ -290,6 +291,18 @@
                                 <span class="scanner-type-tag tag-v2">Adaptive V2</span>
                             </div>
                             <div id="scanStatusV2" class="scanner-job-slot-body"></div>
+                        </section>
+                        <section class="scanner-job-slot" data-scan-scope="network">
+                            <div class="scanner-job-slot-head">
+                                <span class="scanner-type-tag tag-network">Network Discovery</span>
+                            </div>
+                            <div id="scanStatusNetwork" class="scanner-job-slot-body"></div>
+                        </section>
+                        <section class="scanner-job-slot" data-scan-scope="stealth">
+                            <div class="scanner-job-slot-head">
+                                <span class="scanner-type-tag tag-stealth">Stealth Intel</span>
+                            </div>
+                            <div id="scanStatusStealth" class="scanner-job-slot-body"></div>
                         </section>
                     </div>
                 </article>

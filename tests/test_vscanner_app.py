@@ -168,6 +168,17 @@ class VscannerAppTests(unittest.TestCase):
         self.assertEqual(latest_risk["meta"]["export_scope"], "standard")
         self.assertEqual(latest_v2["meta"]["export_scope"], "v2")
 
+    def test_v2_deep_profile_mapping_and_banner_fingerprint(self) -> None:
+        vscanner = self._load_module()
+
+        self.assertEqual(vscanner.resolve_v2_profile("deep", "standard"), "aggressive")
+
+        product, version = vscanner.infer_service_version_from_banner(
+            "HTTP/1.1 200 OK | Server: Webmin/2.105 | Title: Webmin"
+        )
+        self.assertEqual(product, "Webmin")
+        self.assertEqual(version, "2.105")
+
     def test_auth_session_and_project_scope_enforcement(self) -> None:
         vscanner = self._load_module(
             auth_required=True,

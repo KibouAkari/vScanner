@@ -742,6 +742,20 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.9rem;
 }
+.scanner-job-finish-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.28rem 0.68rem;
+  border-radius: 999px;
+  border: 1px solid rgba(57,212,181,0.24);
+  background: rgba(57,212,181,0.08);
+  color: #7ff1d8;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .scanner-job-slot {
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-sm);
@@ -752,6 +766,10 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 .scanner-job-slot.is-active {
   border-color: rgba(57,212,181,0.38);
   box-shadow: inset 0 0 0 1px rgba(57,212,181,0.12);
+}
+.scanner-job-slot.is-recent-finished {
+  border-color: rgba(127,241,216,0.42);
+  box-shadow: 0 0 0 1px rgba(127,241,216,0.14), inset 0 0 0 1px rgba(127,241,216,0.1);
 }
 .scanner-job-slot-head {
   display: flex;
@@ -921,6 +939,11 @@ body[data-mode="bright"] .menu-ico svg { color: var(--text); }
 body[data-mode="bright"] .bg-grad-a, body[data-mode="bright"] .bg-grad-b { opacity: 0.04; }
 body[data-mode="bright"] .error { border-color: rgba(180,30,50,0.4); background: rgba(180,30,50,0.07); color: #600015; }
 body[data-mode="bright"] #cursor-glow { display: none; }
+body[data-mode="bright"] .scanner-job-finish-badge {
+  border-color: rgba(0,134,110,0.24);
+  background: rgba(0,134,110,0.08);
+  color: #006f5a;
+}
 
 /* ─── Keyframe animations ────────────────────────────────────── */
 @keyframes panelFadeIn {

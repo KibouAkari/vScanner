@@ -46,8 +46,11 @@ const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
+const recentScanLaneBadge = document.getElementById("recentScanLaneBadge");
 const scanStatusStandard = document.getElementById("scanStatusStandard");
 const scanStatusV2 = document.getElementById("scanStatusV2");
+const scanStatusNetwork = document.getElementById("scanStatusNetwork");
+const scanStatusStealth = document.getElementById("scanStatusStealth");
 
 const severityFilter = document.getElementById("severityFilter");
 const sinceDays = document.getElementById("sinceDays");
@@ -102,6 +105,17 @@ const COLORS = {
     medium: "#67b9ff",
     low: "#4cdd88",
 };
+const SCANNER_SCOPE_LABELS = {
+    standard: "Risk Scanner",
+    v2: "Adaptive V2",
+    network: "Network Discovery",
+    stealth: "Stealth Intel",
+};
+const timeOnlyFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+});
 
 let activeProjectId = "default";
 let lastReportId = null;
@@ -839,7 +853,34 @@ function scannerScopeFromMode(mode) {
 }
 
 function scannerStatusContainerForScope(scope) {
-    return scope === "v2" ? scanStatusV2 : scanStatusStandard;
+    if (scope === "v2") {
+        return scanStatusV2;
+    }
+    if (scope === "network") {
+        return scanStatusNetwork;
+    }
+    if (scope === "stealth") {
+        return scanStatusStealth;
+    }
+    return scanStatusStandard;
+}
+
+function scannerLabelForScope(scope) {
+    return SCANNER_SCOPE_LABELS[scope] || "Scanner";
+}
+
+function markRecentFinishedScannerLane(scope, finishedAt = Date.now()) {
+    const finishedMs = typeof finishedAt === "number" ? finishedAt : Date.parse(String(finishedAt || ""));
+    const label = scannerLabelForScope(scope);
+    const safeFinishedMs = Number.isFinite(finishedMs) ? finishedMs : Date.now();
+
+    if (recentScanLaneBadge) {
+        recentScanLaneBadge.textContent = `${label} finished ${timeOnlyFormatter.format(new Date(safeFinishedMs))}`;
+    }
+
+    document.querySelectorAll(".scanner-job-slot").forEach((slot) => {
+        slot.classList.toggle("is-recent-finished", String(slot.dataset.scanScope || "") === String(scope || ""));
+    });
 }
 
 function syncSelectedScannerScope(scope) {
@@ -1445,6 +1486,7 @@ async function runQueuedScan(payload, options = {}) {
         controller.update(job);
         if (status === "completed") {
             controller.complete(job.message || "Scan completed");
+            markRecentFinishedScannerLane(scope, job.finished_at || Date.now());
             scannerStatusControllers.delete(scope);
             return job.result || {};
         }
@@ -3448,7 +3490,7 @@ netScanForm?.addEventListener("submit", async (event) => {
     try {
         const data = await runQueuedScan(
             { target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId },
-            { useV2: false, uiMode: "network", statusContainer: netScanResult }
+            { useV2: false, uiMode: "network", scope: "network", statusContainer: scannerStatusContainerForScope("network") || netScanResult }
         );
         lastNetReportId = data.report_id;
         if (netReportPdfButton) netReportPdfButton.disabled = false;
@@ -3522,8 +3564,9 @@ async function runStealthScan(intelOnly = false) {
     stealthIntelButton.disabled = true;
     stealthScanButton.textContent = "Probing…";
     let stealthController = null;
-    if (intelOnly && stealthScanResult) {
-        stealthController = createScanStatusController(stealthScanResult, "stealth", {
+    if (intelOnly) {
+        const stealthLane = scannerStatusContainerForScope("stealth") || stealthScanResult;
+        stealthController = createScanStatusController(stealthLane, "stealth", {
             jobId: "intel",
             createdAt: new Date().toISOString(),
             progress: 10,
@@ -3536,11 +3579,12 @@ async function runStealthScan(intelOnly = false) {
             const intel = await fetchIntelData(tgt);
             const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
             stealthController?.complete("Intel collection completed");
+            markRecentFinishedScannerLane("stealth", Date.now());
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
         } else {
             const data = await runQueuedScan(
                 { target: tgt, profile: mode, port_strategy, project_id: activeProjectId },
-                { useV2: false, uiMode: "stealth", statusContainer: stealthScanResult }
+                { useV2: false, uiMode: "stealth", scope: "stealth", statusContainer: scannerStatusContainerForScope("stealth") || stealthScanResult }
             );
             lastStealthReportId = data.report_id;
             if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
@@ -3623,6 +3667,8 @@ function saveLastScan(scope, data) {
 
 function restoreLastScan() {
     const stored = readStoredLastScans();
+    let mostRecentScope = "";
+    let mostRecentTs = 0;
     for (const [scope, entry] of Object.entries(stored)) {
         const data = entry?.data;
         const ts = Number(entry?.ts || 0);
@@ -3631,6 +3677,10 @@ function restoreLastScan() {
         }
         if (String(entry?.project_id || "") !== String(activeProjectId || "default")) {
             continue;
+        }
+        if (ts > mostRecentTs && ["standard", "v2", "network", "stealth"].includes(scope)) {
+            mostRecentTs = ts;
+            mostRecentScope = scope;
         }
         if (scope === "network" && netScanResult) {
             netScanResult.innerHTML = buildScanResultMarkup(data);
@@ -3648,6 +3698,9 @@ function restoreLastScan() {
 
     const defaultScope = scannerScopeFromMode(scannerTypeSelect?.value || "standard");
     syncSelectedScannerScope(defaultScope);
+    if (mostRecentScope) {
+        markRecentFinishedScannerLane(mostRecentScope, mostRecentTs);
+    }
 }
 
 async function initializeWorkspace(forceRefresh = false) {

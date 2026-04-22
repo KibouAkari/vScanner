@@ -60,6 +60,15 @@ def _extract_product_version(text: str) -> tuple[str, str]:
         ("django", r"django(?:\s|/)?([\w\.-]+)?"),
         ("flask", r"flask(?:\s|/)?([\w\.-]+)?"),
         ("wordpress", r"wordpress(?:\s|/)?([\w\.-]+)?"),
+        ("tomcat", r"tomcat(?:\s|/)?([\w\.-]+)?"),
+        ("jetty", r"jetty(?:\s|/)?([\w\.-]+)?"),
+        ("weblogic", r"weblogic(?:\s|/)?([\w\.-]+)?"),
+        ("webmin", r"webmin(?:\s|/)?([\w\.-]+)?"),
+        ("phpmyadmin", r"phpmyadmin(?:\s|/)?([\w\.-]+)?"),
+        ("consul", r"consul(?:\s|/)?([\w\.-]+)?"),
+        ("minio", r"minio(?:\s|/)?([\w\.-]+)?"),
+        ("confluence", r"confluence(?:\s|/)?([\w\.-]+)?"),
+        ("jira", r"jira(?:\s|/)?([\w\.-]+)?"),
     ]
 
     for product, pattern in product_patterns:
@@ -97,6 +106,15 @@ def _extract_product_version(text: str) -> tuple[str, str]:
         "django",
         "flask",
         "wordpress",
+        "tomcat",
+        "jetty",
+        "weblogic",
+        "webmin",
+        "phpmyadmin",
+        "consul",
+        "minio",
+        "confluence",
+        "jira",
     ]:
         if keyword in src:
             m = _VERSION_RE.search(src)

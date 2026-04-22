@@ -117,7 +117,19 @@ COMMON_LOGIN_PATHS = [
 RISKY_PORTS = {
     21: ("FTP service exposed", "high"),
     23: ("Telnet service exposed", "critical"),
+    1433: ("MSSQL service exposed", "high"),
+    1521: ("Oracle listener exposed", "high"),
+    3306: ("MySQL service exposed", "high"),
     445: ("SMB service exposed", "high"),
+    5432: ("PostgreSQL service exposed", "high"),
+    5985: ("WinRM HTTP exposed", "high"),
+    5986: ("WinRM HTTPS exposed", "medium"),
+    6443: ("Kubernetes API exposed", "critical"),
+    7001: ("WebLogic administration surface exposed", "high"),
+    8161: ("ActiveMQ web console exposed", "high"),
+    8500: ("Consul API exposed", "high"),
+    10000: ("Webmin administrative interface exposed", "critical"),
+    15672: ("RabbitMQ management interface exposed", "high"),
     3389: ("RDP service exposed", "high"),
     5900: ("VNC service exposed", "high"),
     6379: ("Redis service exposed", "critical"),
@@ -170,6 +182,8 @@ COMMON_SERVICE_NAMES = {
     4500: "ipsec-nat-t",
     5000: "web-alt",
     5001: "web-alt",
+    50070: "hadoop-web",
+    50075: "hadoop-datanode-web",
     5060: "sip",
     5061: "sips",
     5432: "postgresql",
@@ -186,12 +200,18 @@ COMMON_SERVICE_NAMES = {
     7443: "https-alt",
     8080: "http-proxy",
     8081: "http-alt",
+    8082: "http-alt",
+    8083: "http-alt",
     8088: "http-alt",
     8090: "http-alt",
     8161: "activemq-web",
+    8181: "http-alt",
     8443: "https-alt",
+    8444: "https-alt",
     8500: "consul",
     8600: "consul-dns",
+    8800: "http-alt",
+    8880: "http-alt",
     8883: "mqtts",
     8888: "http-alt",
     9000: "php-fpm-or-web",
@@ -202,18 +222,23 @@ COMMON_SERVICE_NAMES = {
     9300: "elasticsearch-transport",
     9418: "git",
     10000: "webmin",
+    10443: "https-alt",
     10050: "zabbix-agent",
     10051: "zabbix-trapper",
     11211: "memcached",
     15672: "rabbitmq-management",
+    15692: "prometheus-metrics",
+    16379: "redis-cluster-bus",
     25565: "minecraft",
     25655: "minecraft-bungee",
     27017: "mongodb",
     27018: "mongodb-shard",
+    27019: "mongodb-config",
     28017: "mongodb-web",
     32400: "plex",
     50000: "jenkins",
     51820: "wireguard",
+    61616: "activemq-openwire",
 }
 
 WEB_CANDIDATE_PORTS = {
@@ -225,19 +250,29 @@ WEB_CANDIDATE_PORTS = {
     8008,
     8080,
     8081,
+    8082,
+    8083,
     8088,
     8090,
     8161,
+    8181,
     8443,
+    8444,
     8500,
+    8800,
+    8880,
     8888,
     9001,
     9090,
     9091,
     9443,
     10000,
+    10443,
     15672,
+    15692,
     50000,
+    50070,
+    50075,
     3000,
     3333,
     4000,
@@ -4515,6 +4550,22 @@ def infer_service_version_from_banner(banner: str) -> tuple[str, str]:
         ("RabbitMQ", r"rabbitmq(?:\s|/)?([\w\.-]+)?"),
         ("Elasticsearch", r"elasticsearch(?:\s|/)?([\w\.-]+)?"),
         ("Jenkins", r"jenkins(?:\s|/)?([\w\.-]+)?"),
+        ("Grafana", r"grafana(?:\s|/)?([\w\.-]+)?"),
+        ("Kibana", r"kibana(?:\s|/)?([\w\.-]+)?"),
+        ("Prometheus", r"prometheus(?:\s|/)?([\w\.-]+)?"),
+        ("Portainer", r"portainer(?:\s|/)?([\w\.-]+)?"),
+        ("Keycloak", r"keycloak(?:\s|/)?([\w\.-]+)?"),
+        ("GitLab", r"gitlab(?:\s|/)?([\w\.-]+)?"),
+        ("Gitea", r"gitea(?:\s|/)?([\w\.-]+)?"),
+        ("SonarQube", r"sonarqube(?:\s|/)?([\w\.-]+)?"),
+        ("Nextcloud", r"nextcloud(?:\s|/)?([\w\.-]+)?"),
+        ("phpMyAdmin", r"phpmyadmin(?:\s|/)?([\w\.-]+)?"),
+        ("Webmin", r"webmin(?:\s|/)?([\w\.-]+)?"),
+        ("Tomcat", r"tomcat(?:\s|/)?([\w\.-]+)?"),
+        ("Jetty", r"jetty(?:\s|/)?([\w\.-]+)?"),
+        ("Oracle WebLogic", r"weblogic(?:\s|/)?([\w\.-]+)?"),
+        ("Consul", r"consul(?:\s|/)?([\w\.-]+)?"),
+        ("MinIO", r"minio(?:\s|/)?([\w\.-]+)?"),
         ("Kubernetes API", r"kubernetes"),
         ("OpenVPN", r"openvpn(?:\s|/)?([\w\.-]+)?"),
         ("Redis", r"redis[_ ]server\s*v?([\w\.-]+)"),
@@ -4652,6 +4703,17 @@ def evaluate_version_findings(
                 "severity": "medium",
                 "title": "Apache HTTPD version appears outdated",
                 "evidence": f"Found: {product} {version}",
+            }
+        )
+    elif "grafana" in product_l and version_tuple and (8, 0, 0) <= version_tuple <= (8, 3, 99):
+        findings.append(
+            {
+                "port": int(port or 0),
+                "type": "cve_candidate",
+                "severity": "high",
+                "title": "Grafana version falls in a path traversal risk window",
+                "evidence": f"Found: {product} {version}",
+                "cve": "CVE-2021-43798",
             }
         )
 
@@ -5178,15 +5240,23 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         6667,
         7001,
         7443,
+        8008,
+        8010,
         8080,
         8081,
+        8082,
+        8083,
         18080,
         8088,
         8090,
         8161,
+        8181,
         8500,
         8600,
         8443,
+        8444,
+        8800,
+        8880,
         8888,
         8883,
         9001,
@@ -5197,18 +5267,25 @@ def build_port_list(profile: str, port_strategy: str) -> list[int]:
         9300,
         9418,
         10000,
+        10443,
         10050,
         10051,
         11211,
         15672,
+        15692,
+        16379,
         27017,
         25565,
         25655,
         27018,
+        27019,
         28017,
         32400,
         50000,
+        50070,
+        50075,
         51820,
+        61616,
         6000,
         9443,
     ]
@@ -6660,7 +6737,10 @@ def is_likely_web_port(port_entry: dict[str, Any]) -> bool:
     service_name = (port_entry.get("name") or "").lower()
     product = (port_entry.get("product") or "").lower()
     banner = (port_entry.get("banner") or "").lower()
-    markers = ["http", "nginx", "apache", "iis", "tomcat", "jetty"]
+    markers = [
+        "http", "nginx", "apache", "iis", "tomcat", "jetty", "weblogic", "grafana", "kibana",
+        "jenkins", "portainer", "webmin", "phpmyadmin", "consul", "minio", "keycloak", "sonarqube",
+    ]
     return any(marker in service_name or marker in product or marker in banner for marker in markers)
 
 
@@ -6934,7 +7014,7 @@ def resolve_v2_profile(profile: str, port_strategy: str) -> str:
     canonical = canonical_profile(profile)
     if canonical == "stealth":
         return "stealth"
-    if canonical == "deep" and port_strategy == "aggressive":
+    if canonical == "deep":
         return "aggressive"
     return "balanced"
 
@@ -7095,8 +7175,10 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         # Conditional phase 2: expand targeted probing only when suspicious indicators appear.
         phase2_pool = [
             p for p in [
-                81, 3000, 5000, 5001, 5601, 7001, 7443, 8081, 8443, 8888, 9000, 9090, 9091, 10000,
-                11211, 12222, 15672, 18080, 2375, 2376, 27018, 28017, 32400, 50000,
+                81, 82, 83, 3000, 5000, 5001, 5601, 7001, 7443, 8008, 8081, 8082, 8083, 8181,
+                8443, 8444, 8880, 8888, 9000, 9090, 9091, 10000, 10443, 11211, 12222, 15672,
+                15692, 16379, 18080, 18091, 2375, 2376, 27018, 27019, 28017, 32400, 50000,
+                50070, 50075, 61616,
             ]
             if p not in {int(x.get("port") or 0) for x in open_ports}
         ]
@@ -7220,7 +7302,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
     if needs_phase2:
         cve_query_budget = 10 if IS_SERVERLESS else (24 if port_strategy == "standard" else 40)
     else:
-        cve_query_budget = 6 if IS_SERVERLESS else (14 if port_strategy == "standard" else 24)
+        cve_query_budget = 8 if IS_SERVERLESS else (20 if port_strategy == "standard" else 32)
     dedup_findings, external_cves = enrich_findings_with_external_cve(
         dedup_findings,
         max_queries=cve_query_budget,

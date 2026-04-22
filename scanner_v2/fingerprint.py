@@ -11,11 +11,12 @@ _HTTP_TITLE_RE = re.compile(r"<title>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _HTTP_VERSION_RE = re.compile(r"(?<!\d)(\d+\.\d+(?:\.\d+){0,2}(?:[-_\.][a-z0-9]+)?)(?!\d)", re.IGNORECASE)
 
 _HTTP_PORT_HINTS = {
-    80, 81, 3000, 3001, 4000, 4440, 5000, 5001, 5601, 6900, 6901, 7001, 7443,
-    8000, 8080, 8081, 8088, 8090, 8161, 8500, 8888, 9000, 9090, 9091, 9200,
-    10000, 15672, 18080, 50000,
+    80, 81, 82, 83, 84, 3000, 3001, 4000, 4440, 5000, 5001, 5601, 6900, 6901,
+    7001, 7443, 8000, 8008, 8010, 8080, 8081, 8082, 8083, 8088, 8090, 8161,
+    8181, 8444, 8500, 8800, 8880, 8888, 9000, 9090, 9091, 9200, 9443, 10000,
+    10443, 15672, 15692, 18080, 18091, 50000, 50070, 50075,
 }
-_TLS_HTTP_PORT_HINTS = {443, 4443, 8443, 9443, 10443}
+_TLS_HTTP_PORT_HINTS = {443, 4443, 7443, 8443, 8444, 9443, 10443}
 
 
 _APP_VERSION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -30,6 +31,15 @@ _APP_VERSION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("Gitea", re.compile(r"gitea[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
     ("Keycloak", re.compile(r"keycloak[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
     ("SonarQube", re.compile(r"sonarqube[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Confluence", re.compile(r"confluence[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Jira", re.compile(r"jira[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Webmin", re.compile(r"webmin[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Consul", re.compile(r"consul[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("MinIO", re.compile(r"minio[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Nextcloud", re.compile(r"nextcloud[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("phpMyAdmin", re.compile(r"phpmyadmin[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("Drupal", re.compile(r"drupal[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
+    ("WordPress", re.compile(r"wordpress[^\d]{0,20}(\d+\.\d+(?:\.\d+)*)", re.IGNORECASE)),
 ]
 
 
@@ -63,6 +73,16 @@ _PRODUCT_SIGNATURES: list[tuple[str, re.Pattern[str]]] = [
     ("Nextcloud", re.compile(r"nextcloud(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
     ("phpMyAdmin", re.compile(r"phpmyadmin(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
     ("Webmin", re.compile(r"webmin(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Tomcat", re.compile(r"tomcat(?:/|\s)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Jetty", re.compile(r"jetty(?:/|\s)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Oracle WebLogic", re.compile(r"weblogic(?:/|\s)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Confluence", re.compile(r"confluence(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Jira", re.compile(r"jira(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Consul", re.compile(r"consul(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Vault", re.compile(r"vault(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("MinIO", re.compile(r"minio(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("Drupal", re.compile(r"drupal(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
+    ("WordPress", re.compile(r"wordpress(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
     ("Postfix SMTP", re.compile(r"postfix(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
     ("Exim SMTP", re.compile(r"exim(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
     ("Dovecot", re.compile(r"dovecot(?:\s|/)?([\w\.-]+)?", re.IGNORECASE)),
@@ -132,6 +152,14 @@ def _extract_app_fingerprint(headers: dict[str, str], body: str, title: str) -> 
         ("keycloak", r"\bkeycloak\b"),
         ("nextcloud", r"\bnextcloud\b"),
         ("phpmyadmin", r"\bphpmyadmin\b"),
+        ("webmin", r"\bwebmin\b"),
+        ("confluence", r"\bconfluence\b"),
+        ("jira", r"\bjira\b"),
+        ("consul", r"\bconsul\b"),
+        ("vault", r"\bvault\b"),
+        ("minio", r"\bminio\b"),
+        ("drupal", r"\bdrupal\b"),
+        ("wordpress", r"\bwordpress\b"),
     ]
     for tag, pattern in checks:
         if re.search(pattern, text, re.IGNORECASE):
@@ -145,6 +173,9 @@ def _extract_app_fingerprint(headers: dict[str, str], body: str, title: str) -> 
         headers.get("X-Kasm-Version", ""),
         headers.get("X-Grafana-Version", ""),
         headers.get("X-Jenkins", ""),
+        headers.get("X-Nextcloud-Version", ""),
+        headers.get("X-Webmin-Version", ""),
+        headers.get("X-Application-Version", ""),
     ]
     for candidate in header_version_candidates:
         ver = _generic_version_from_text(candidate)
@@ -177,6 +208,22 @@ def _extract_app_fingerprint(headers: dict[str, str], body: str, title: str) -> 
             app = "Jenkins"
         elif "portainer" in tags:
             app = "Portainer"
+        elif "webmin" in tags:
+            app = "Webmin"
+        elif "confluence" in tags:
+            app = "Confluence"
+        elif "jira" in tags:
+            app = "Jira"
+        elif "consul" in tags:
+            app = "Consul"
+        elif "vault" in tags:
+            app = "Vault"
+        elif "minio" in tags:
+            app = "MinIO"
+        elif "drupal" in tags:
+            app = "Drupal"
+        elif "wordpress" in tags:
+            app = "WordPress"
 
     return app, app_ver, tags
 
@@ -358,6 +405,15 @@ async def probe_tcp_banner(host: str, port: int, timeout_s: float) -> dict[str, 
         if port in _HTTP_PORT_HINTS and banner:
             metadata.update(_parse_http_payload(banner))
 
+        if port == 11211 and data:
+            metadata["protocol"] = "memcached"
+            memcached_match = re.search(r"STAT\s+version\s+([0-9][\w\.-]*)", banner, re.IGNORECASE)
+            if memcached_match:
+                metadata["memcached_version"] = memcached_match.group(1)[:40]
+
+        if port == 21 and banner:
+            metadata["protocol"] = "ftp"
+
         if port == 6379 and data and "redis" in banner.lower() and "redis_version" not in metadata:
             try:
                 writer.write(b"*2\r\n$4\r\nINFO\r\n$6\r\nserver\r\n")
@@ -374,7 +430,7 @@ async def probe_tcp_banner(host: str, port: int, timeout_s: float) -> dict[str, 
         if banner.startswith("SSH-"):
             metadata["protocol"] = "ssh"
 
-        if port == 25 and banner:
+        if port in {25, 465, 587} and banner:
             metadata["protocol"] = "smtp"
         if port in {110, 995} and banner:
             metadata["protocol"] = "pop3"
