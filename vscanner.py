@@ -5047,53 +5047,75 @@ def get_latest_scan_for_export(project_id: str, scope: str) -> dict[str, Any] | 
             if isinstance(data, dict):
                 return data
 
-    # 2. Cache miss or stale: fall back to the persisted last scan pointer.
+    # 2. Cache miss or stale: fall back to the most recent persisted report for the requested scope.
     if not DB_READY:
         return None
     try:
-        report_id = get_project_last_scan_id(project_id)
-        if not report_id:
-            entries = list_report_entries(limit=1, project_id=project_id)
-            if entries:
-                report_id = str(entries[0].get("id") or "")
-        if not report_id:
-            if use_mongodb():
-                db = get_mongo_db()
-                row = db.findings.find_one(
-                    {
-                        "project_id": project_id,
-                        "status": {"$in": ["active", "open", "stale"]},
-                        "scan_id": {"$nin": [None, ""]},
-                    },
-                    {"_id": 0, "scan_id": 1},
-                    sort=[("last_seen", DESCENDING)],
-                ) or {}
-                report_id = str(row.get("scan_id") or "")
-            else:
-                with db_connection() as connection:
-                    row = fetchone(
-                        connection,
-                        """
-                        SELECT scan_id
-                        FROM findings
-                        WHERE project_id = ?
-                          AND status IN ('active', 'open', 'stale')
-                          AND TRIM(COALESCE(scan_id, '')) != ''
-                        ORDER BY last_seen DESC
-                        LIMIT 1
-                        """,
-                        (project_id,),
-                    ) or {}
-                report_id = str(row.get("scan_id") or "")
+        normalized_scope = (scope or "standard").strip().lower() or "standard"
+        report_id = ""
+        if use_mongodb():
+            db = get_mongo_db()
+            row = db.reports.find_one(
+                {
+                    "project_id": project_id,
+                    "$or": [
+                        {"data_json.meta.export_scope": normalized_scope},
+                        {"data_json.meta.export_scope": {"$exists": False}, "profile": "light" if normalized_scope == "standard" else "__never__"},
+                    ],
+                },
+                {"_id": 0, "id": 1},
+                sort=[("created_at", DESCENDING)],
+            ) or {}
+            report_id = str(row.get("id") or "")
+        else:
+            with db_connection() as connection:
+                rows = fetchall(
+                    connection,
+                    """
+                    SELECT id, data_json
+                    FROM reports
+                    WHERE project_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 120
+                    """,
+                    (project_id,),
+                )
+            for row in rows:
+                payload = row.get("data_json")
+                if isinstance(payload, str):
+                    try:
+                        payload = json.loads(payload)
+                    except Exception:
+                        payload = None
+                if not isinstance(payload, dict):
+                    continue
+                meta = payload.get("meta") or {}
+                export_scope = str(meta.get("export_scope") or export_scope_from_profile(str(meta.get("profile") or row.get("profile") or "light"))).strip().lower() or "standard"
+                if export_scope == normalized_scope:
+                    report_id = str(row.get("id") or "")
+                    break
         if not report_id:
             return None
         report_data = get_report_entry(report_id)
         if isinstance(report_data, dict):
-            cache_latest_scan_for_export(project_id, scope, report_data)
+            cache_latest_scan_for_export(project_id, normalized_scope, report_data)
             return report_data
     except Exception:
         pass
     return None
+
+
+@app.route("/api/reports/latest/<scope>")
+def report_latest_json_api(scope: str) -> Any:
+    normalized_scope = (scope or "").strip().lower()
+    if normalized_scope not in {"standard", "v2", "network", "stealth"}:
+        return jsonify({"error": "Invalid export scope."}), 400
+
+    project_id = _resolve_requested_project_id(request.args.get("project_id"))
+    data = get_latest_scan_for_export(project_id, normalized_scope)
+    if not data:
+        return jsonify({"error": "No recent scan available for this scope."}), 404
+    return jsonify(data)
 
 
 def build_port_list(profile: str, port_strategy: str) -> list[int]:

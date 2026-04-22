@@ -6,7 +6,9 @@ import os
 import sys
 import tempfile
 import unittest
+from types import ModuleType
 from pathlib import Path
+from typing import Any, cast
 from unittest import mock
 
 
@@ -27,12 +29,12 @@ class VscannerAppTests(unittest.TestCase):
         self.addCleanup(env_patcher.stop)
 
         sys.modules.pop("vscanner", None)
-        module = importlib.import_module("vscanner")
-        module.DB_URL = ""
-        module.MONGODB_URI = ""
-        module.DB_PATH = str(Path(tmpdir.name) / "vscanner_reports.db")
-        module.AUTH_REQUIRED = auth_required
-        module.AUTH_USERS_JSON = env["VSCANNER_AUTH_USERS_JSON"]
+        module = cast(ModuleType, importlib.import_module("vscanner"))
+        setattr(module, "DB_URL", "")
+        setattr(module, "MONGODB_URI", "")
+        setattr(module, "DB_PATH", str(Path(tmpdir.name) / "vscanner_reports.db"))
+        setattr(module, "AUTH_REQUIRED", auth_required)
+        setattr(module, "AUTH_USERS_JSON", env["VSCANNER_AUTH_USERS_JSON"])
         module.API_REQUEST_LOG.clear()
         module.SCAN_ENQUEUE_LOG.clear()
         module.REQUEST_LOG.clear()
@@ -41,7 +43,7 @@ class VscannerAppTests(unittest.TestCase):
         module.init_report_store()
         return module
 
-    def _sample_result(self, findings: list[dict[str, object]], ports: list[dict[str, object]]) -> dict[str, object]:
+    def _sample_result(self, findings: list[dict[str, object]], ports: list[dict[str, object]]) -> dict[str, Any]:
         return {
             "meta": {"target": "example.com", "profile": "light", "risk_level": "high"},
             "true_risk_score": 72.0,
@@ -115,6 +117,56 @@ class VscannerAppTests(unittest.TestCase):
         self.assertEqual(detail["asset_count"], 1)
         self.assertEqual(detail["occurrence_count"], 1)
         self.assertEqual(detail["scan_hit_count"], 2)
+
+    def test_latest_scan_lookup_stays_scope_specific(self) -> None:
+        vscanner = self._load_module()
+
+        risk_report = self._sample_result(
+            findings=[
+                {
+                    "host": "risk.example.com",
+                    "port": 443,
+                    "severity": "high",
+                    "title": "Risk engine finding",
+                    "evidence": "risk banner",
+                    "finding_type": "http_exposure",
+                    "cve": "",
+                    "risk_score": 71.0,
+                }
+            ],
+            ports=[{"port": 443, "state": "open", "name": "https", "product": "Apache", "version": "2.4.58"}],
+        )
+        risk_report["meta"]["export_scope"] = "standard"
+
+        v2_report = self._sample_result(
+            findings=[
+                {
+                    "host": "v2.example.com",
+                    "port": 8443,
+                    "severity": "medium",
+                    "title": "V2 engine finding",
+                    "evidence": "v2 banner",
+                    "finding_type": "service_exposure",
+                    "cve": "",
+                    "risk_score": 63.0,
+                }
+            ],
+            ports=[{"port": 8443, "state": "open", "name": "https-alt", "product": "Envoy", "version": "1.30"}],
+        )
+        v2_report["meta"]["export_scope"] = "v2"
+
+        risk_id = vscanner.save_report_entry(dict(risk_report), "default", "General")
+        v2_id = vscanner.save_report_entry(dict(v2_report), "default", "General")
+
+        vscanner.LATEST_SCAN_EXPORT_CACHE.clear()
+
+        latest_risk = vscanner.get_latest_scan_for_export("default", "standard")
+        latest_v2 = vscanner.get_latest_scan_for_export("default", "v2")
+
+        self.assertEqual(latest_risk["report_id"], risk_id)
+        self.assertEqual(latest_v2["report_id"], v2_id)
+        self.assertEqual(latest_risk["meta"]["export_scope"], "standard")
+        self.assertEqual(latest_v2["meta"]["export_scope"], "v2")
 
     def test_auth_session_and_project_scope_enforcement(self) -> None:
         vscanner = self._load_module(

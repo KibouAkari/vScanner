@@ -46,6 +46,8 @@ const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
+const scanStatusStandard = document.getElementById("scanStatusStandard");
+const scanStatusV2 = document.getElementById("scanStatusV2");
 
 const severityFilter = document.getElementById("severityFilter");
 const sinceDays = document.getElementById("sinceDays");
@@ -114,9 +116,15 @@ let dashboardAbortController = null;
 let dashboardRequestSeq = 0;
 const CHART_ANIMATION_MS = 320;
 let selectedFindingKey = "";
-let activeScanJobId = "";
-let activeScanStatusController = null;
 let workspaceInitialized = false;
+let selectedScannerScope = "standard";
+const scannerStatusControllers = new Map();
+const scannerLastReports = {
+    standard: null,
+    v2: null,
+    network: null,
+    stealth: null,
+};
 
 const authState = {
     required: false,
@@ -826,8 +834,70 @@ function scannerSettings(mode) {
     };
 }
 
+function scannerScopeFromMode(mode) {
+    return mode === "advanced_v2" ? "v2" : "standard";
+}
+
+function scannerStatusContainerForScope(scope) {
+    return scope === "v2" ? scanStatusV2 : scanStatusStandard;
+}
+
+function syncSelectedScannerScope(scope) {
+    selectedScannerScope = scope === "v2" ? "v2" : "standard";
+    lastScannerScope = selectedScannerScope;
+    document.querySelectorAll(".scanner-job-slot").forEach((slot) => {
+        slot.classList.toggle("is-active", String(slot.dataset.scanScope || "") === selectedScannerScope);
+    });
+}
+
+async function loadLatestScannerScopeResult(scope, { preferStored = true } = {}) {
+    const safeScope = scope === "v2" ? "v2" : "standard";
+    const stored = preferStored ? getStoredLastScan(safeScope) : null;
+    if (stored?.data) {
+        scannerLastReports[safeScope] = stored.data.report_id || scannerLastReports[safeScope] || null;
+        renderScanResult(stored.data);
+        if (stored.data.report_id) {
+            lastReportId = stored.data.report_id;
+            reportPdfButton.disabled = false;
+            reportCsvButton.disabled = false;
+        }
+        return;
+    }
+
+    try {
+        const { response, data } = await fetchJsonWithTimeout(`/api/reports/latest/${encodeURIComponent(safeScope)}?project_id=${encodeURIComponent(activeProjectId)}`, {}, 15000);
+        if (!response.ok) {
+            if (response.status === 404) {
+                if (scanResult) {
+                    scanResult.innerHTML = "";
+                }
+                reportPdfButton.disabled = true;
+                reportCsvButton.disabled = true;
+                lastReportId = null;
+                return;
+            }
+            throw new Error(data?.error || "Could not load latest scan result");
+        }
+        saveLastScan(safeScope, data);
+        scannerLastReports[safeScope] = data.report_id || null;
+        renderScanResult(data);
+        lastReportId = data.report_id || null;
+        reportPdfButton.disabled = !lastReportId;
+        reportCsvButton.disabled = !lastReportId;
+    } catch (error) {
+        if (scanResult) {
+            scanResult.innerHTML = "";
+        }
+        reportPdfButton.disabled = true;
+        reportCsvButton.disabled = true;
+        lastReportId = null;
+        showError(error.message || "Could not load latest scan result");
+    }
+}
+
 function applyScannerMode(mode) {
     const cfg = scannerSettings(mode);
+    const scope = scannerScopeFromMode(mode);
     scannerTypeSelect.value = mode;
     targetInput.placeholder = cfg.placeholder;
     scanModeNote.textContent = cfg.note;
@@ -857,6 +927,8 @@ function applyScannerMode(mode) {
     profileSelect.disabled = cfg.disableProfile;
     profileSelect.value = cfg.profile;
     portStrategySelect.value = cfg.portStrategy;
+    syncSelectedScannerScope(scope);
+    void loadLatestScannerScopeResult(scope);
 }
 
 async function fetchIntelData(target) {
@@ -1332,7 +1404,8 @@ function createScanStatusController(container, variant = "risk", initial = {}) {
 async function runQueuedScan(payload, options = {}) {
     const useV2 = !!options.useV2;
     const uiMode = String(options.uiMode || (useV2 ? "v2" : "risk"));
-    const statusContainer = options.statusContainer || scanResult;
+    const scope = String(options.scope || (useV2 ? "v2" : "standard"));
+    const statusContainer = options.statusContainer || scannerStatusContainerForScope(scope) || scanResult;
 
     const { response, data } = await fetchJsonWithTimeout(
         "/api/scan/jobs",
@@ -1351,14 +1424,15 @@ async function runQueuedScan(payload, options = {}) {
         throw new Error("Invalid scan job response");
     }
 
-    activeScanStatusController?.dispose();
-    activeScanStatusController = createScanStatusController(statusContainer, uiMode, {
+    const existingController = scannerStatusControllers.get(scope);
+    existingController?.dispose();
+    const controller = createScanStatusController(statusContainer, uiMode, {
         jobId,
         createdAt: data?.created_at,
         progress: 0,
     });
+    scannerStatusControllers.set(scope, controller);
 
-    activeScanJobId = jobId;
     let polls = 0;
     while (polls < 500) {
         polls += 1;
@@ -1368,18 +1442,21 @@ async function runQueuedScan(payload, options = {}) {
         }
         const job = statusResponse.data || {};
         const status = String(job.status || "queued").toLowerCase();
-        activeScanStatusController?.update(job);
+        controller.update(job);
         if (status === "completed") {
-            activeScanStatusController?.complete(job.message || "Scan completed");
+            controller.complete(job.message || "Scan completed");
+            scannerStatusControllers.delete(scope);
             return job.result || {};
         }
         if (status === "failed") {
-            activeScanStatusController?.fail(job.error || job.message || "Scan job failed");
+            controller.fail(job.error || job.message || "Scan job failed");
+            scannerStatusControllers.delete(scope);
             throw new Error(job.error || job.message || "Scan job failed");
         }
         await delayMs(1400);
     }
-    activeScanStatusController?.fail("Scan job timeout. Please check backend status.");
+    controller.fail("Scan job timeout. Please check backend status.");
+    scannerStatusControllers.delete(scope);
     throw new Error("Scan job timeout. Please check job status in backend.");
 }
 
@@ -1423,18 +1500,21 @@ async function loadFindingDetail(findingKey) {
             </tr>
         `)
         .join("");
-
+            controller.update(job);
     findingDetail.innerHTML = `
-        <div class="finding-detail-grid">
+                controller.complete(job.message || "Scan completed");
+                scannerStatusControllers.delete(scope);
             <div class="finding-detail-kpis">
                 <div class="finding-detail-kpi"><span>Severity</span><strong>${esc(data.severity || "low")}</strong></div>
                 <div class="finding-detail-kpi"><span>Risk</span><strong>${esc(data.risk_score || 0)}</strong></div>
-                <div class="finding-detail-kpi"><span>Assets</span><strong>${esc(data.asset_count || 0)}</strong></div>
+                controller.fail(job.error || job.message || "Scan job failed");
+                scannerStatusControllers.delete(scope);
                 <div class="finding-detail-kpi"><span>Occurrences</span><strong>${esc(data.occurrence_count || 0)}</strong></div>
                 <div class="finding-detail-kpi"><span>Scan Hits</span><strong>${esc(data.scan_hit_count || data.occurrence_count || 0)}</strong></div>
             </div>
             <div class="list-item">
-                <div class="list-line"><strong>${esc(data.title || "Finding")}</strong><span>${esc(data.type || "-")}</span></div>
+        controller.fail("Scan job timeout. Please check job status in backend.");
+        scannerStatusControllers.delete(scope);
                 <div class="finding-section-title">Related CVEs</div>
                 <div class="finding-chip-row">${(cves.length ? cves : ["-"]).map((v) => `<span class="finding-chip">${esc(v)}</span>`).join("")}</div>
                 <div class="finding-section-title">Affected Assets</div>
@@ -2817,7 +2897,12 @@ window.openReport = async function openReport(reportId) {
             throw new Error(data.error || "Report not found");
         }
 
+        const scope = String(data?.meta?.export_scope || "standard").toLowerCase() === "v2" ? "v2" : "standard";
+        saveLastScan(scope, data);
+        scannerLastReports[scope] = reportId;
+        syncSelectedScannerScope(scope);
         lastReportId = reportId;
+        scannerTypeSelect.value = scope === "v2" ? "advanced_v2" : "standard";
         reportPdfButton.disabled = false;
         reportCsvButton.disabled = false;
         renderScanResult(data);
@@ -2932,7 +3017,7 @@ scanForm.addEventListener("submit", async (event) => {
     clearError();
 
     const scannerMode = scannerTypeSelect.value || "standard";
-    const exportScope = scannerMode === "v2" ? "v2" : "standard";
+    const exportScope = scannerScopeFromMode(scannerMode);
     const modeCfg = scannerSettings(scannerMode);
     const selectedProfile = modeCfg.disableProfile ? modeCfg.profile : profileSelect.value;
     const endpoint = modeCfg.endpoint || "/api/scan";
@@ -2954,34 +3039,31 @@ scanForm.addEventListener("submit", async (event) => {
         const data = await runQueuedScan(payload, {
             useV2,
             uiMode: useV2 ? "v2" : "risk",
-            statusContainer: scanResult,
+            scope: exportScope,
+            statusContainer: scannerStatusContainerForScope(exportScope),
         });
 
+        scannerLastReports[exportScope] = data.report_id || null;
+        syncSelectedScannerScope(exportScope);
         lastReportId = data.report_id || null;
         lastScannerScope = exportScope;
-        reportPdfButton.disabled = false;
-        reportCsvButton.disabled = false;
+        reportPdfButton.disabled = !lastReportId;
+        reportCsvButton.disabled = !lastReportId;
 
         if (data.persisted === false) {
             const persistMsg = data.persist_error ? `Save warning: ${data.persist_error}` : (data.warning || "Scan was completed but persistence reported an error.");
             showError(persistMsg);
         }
 
-    renderScanResult(data);
-    saveLastScan(exportScope, data);
+        renderScanResult(data);
+        saveLastScan(exportScope, data);
         await refreshWorkspaceViews("all");
         activateTab("dashboard");
     } catch (error) {
         showError(error.message || "Scan failed");
-        if (scanResult) {
-            scanResult.innerHTML = "";
-        }
     } finally {
         scanButton.disabled = false;
         scanButton.classList.remove("scanning");
-        if (activeScanJobId) {
-            activeScanJobId = "";
-        }
         const activeLanguage = localStorage.getItem("vscanner.language") || "de";
         scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
     }
@@ -2990,7 +3072,7 @@ scanForm.addEventListener("submit", async (event) => {
 reportPdfButton.addEventListener("click", () => {
     if (!lastReportId) {
         window.open(
-            `/api/reports/latest/${encodeURIComponent(lastScannerScope)}/pdf?project_id=${encodeURIComponent(activeProjectId)}`,
+            `/api/reports/latest/${encodeURIComponent(selectedScannerScope)}/pdf?project_id=${encodeURIComponent(activeProjectId)}`,
             "_blank",
             "noopener,noreferrer"
         );
@@ -3002,7 +3084,7 @@ reportPdfButton.addEventListener("click", () => {
 reportCsvButton.addEventListener("click", () => {
     if (!lastReportId) {
         window.open(
-            `/api/reports/latest/${encodeURIComponent(lastScannerScope)}/csv?project_id=${encodeURIComponent(activeProjectId)}`,
+            `/api/reports/latest/${encodeURIComponent(selectedScannerScope)}/csv?project_id=${encodeURIComponent(activeProjectId)}`,
             "_blank",
             "noopener,noreferrer"
         );
@@ -3111,6 +3193,7 @@ deleteProjectButton?.addEventListener("click", async () => {
 
 projectSelect.addEventListener("change", async () => {
     activeProjectId = projectSelect.value || "default";
+    await loadLatestScannerScopeResult(selectedScannerScope, { preferStored: true });
     await refreshWorkspaceViews("dashboard");
 });
 
@@ -3438,21 +3521,21 @@ async function runStealthScan(intelOnly = false) {
     stealthScanButton.disabled = true;
     stealthIntelButton.disabled = true;
     stealthScanButton.textContent = "Probing…";
+    let stealthController = null;
     if (intelOnly && stealthScanResult) {
-        activeScanStatusController?.dispose();
-        activeScanStatusController = createScanStatusController(stealthScanResult, "stealth", {
+        stealthController = createScanStatusController(stealthScanResult, "stealth", {
             jobId: "intel",
             createdAt: new Date().toISOString(),
             progress: 10,
         });
-        activeScanStatusController.update({ phase: "intel", progress: 22, message: "Collecting passive intelligence..." });
+        stealthController.update({ phase: "intel", progress: 22, message: "Collecting passive intelligence..." });
     }
 
     try {
         if (intelOnly) {
             const intel = await fetchIntelData(tgt);
             const mockData = { metrics: { hosts_scanned: 0, open_ports: 0, cve_candidates: 0 }, true_risk_score: 0, finding_items: [], hosts: [], intel };
-            activeScanStatusController?.complete("Intel collection completed");
+            stealthController?.complete("Intel collection completed");
             if (stealthScanResult) stealthScanResult.innerHTML = buildScanResultMarkup(mockData);
         } else {
             const data = await runQueuedScan(
@@ -3469,7 +3552,7 @@ async function runStealthScan(intelOnly = false) {
     } catch (err) {
         if (stealthScanError) { stealthScanError.textContent = err.message || "Stealth scan failed"; stealthScanError.classList.remove("hidden"); }
         if (stealthScanResult) stealthScanResult.innerHTML = "";
-        activeScanStatusController?.fail(err.message || "Stealth scan failed");
+        stealthController?.fail(err.message || "Stealth scan failed");
     } finally {
         stealthScanButton.disabled = false;
         stealthIntelButton.disabled = false;
@@ -3503,22 +3586,52 @@ stealthReportCsvButton?.addEventListener("click", () => {
 });
 
 // ─── 24h Last Scan Persistence ─────────────────────────────────────────────
-const _LAST_SCAN_KEY = "vscanner.lastScan";
+const _LAST_SCAN_KEY = "vscanner.lastScans";
 const _24H = 86_400_000;
+
+function readStoredLastScans() {
+    try {
+        const raw = localStorage.getItem(_LAST_SCAN_KEY);
+        if (!raw) {
+            return {};
+        }
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function getStoredLastScan(scope) {
+    const entry = readStoredLastScans()[scope];
+    if (!entry || !entry.data || !entry.ts || Date.now() - Number(entry.ts) > _24H) {
+        return null;
+    }
+    if (String(entry.project_id || "") !== String(activeProjectId || "default")) {
+        return null;
+    }
+    return entry;
+}
 
 function saveLastScan(scope, data) {
     try {
-        const payload = { scope, data, ts: Date.now() };
-        localStorage.setItem(_LAST_SCAN_KEY, JSON.stringify(payload));
+        const current = readStoredLastScans();
+        current[scope] = { data, ts: Date.now(), project_id: activeProjectId || "default" };
+        localStorage.setItem(_LAST_SCAN_KEY, JSON.stringify(current));
     } catch (_) {}
 }
 
 function restoreLastScan() {
-    try {
-        const raw = localStorage.getItem(_LAST_SCAN_KEY);
-        if (!raw) return;
-        const { scope, data, ts } = JSON.parse(raw);
-        if (!data || Date.now() - ts > _24H) return;
+    const stored = readStoredLastScans();
+    for (const [scope, entry] of Object.entries(stored)) {
+        const data = entry?.data;
+        const ts = Number(entry?.ts || 0);
+        if (!data || Date.now() - ts > _24H) {
+            continue;
+        }
+        if (String(entry?.project_id || "") !== String(activeProjectId || "default")) {
+            continue;
+        }
         if (scope === "network" && netScanResult) {
             netScanResult.innerHTML = buildScanResultMarkup(data);
             updateNetStats(data);
@@ -3528,13 +3641,13 @@ function restoreLastScan() {
             stealthScanResult.innerHTML = buildScanResultMarkup(data);
             if (stealthReportPdfButton && data.report_id) { stealthReportPdfButton.disabled = false; lastStealthReportId = data.report_id; }
             if (stealthReportCsvButton && data.report_id) { stealthReportCsvButton.disabled = false; }
-        } else if ((scope === "standard" || scope === "v2") && scanResult) {
-            renderScanResult(data);
-            lastScannerScope = scope;
-            if (reportPdfButton && data.report_id) { reportPdfButton.disabled = false; lastReportId = data.report_id; }
-            if (reportCsvButton && data.report_id) { reportCsvButton.disabled = false; }
+        } else if (scope === "standard" || scope === "v2") {
+            scannerLastReports[scope] = data.report_id || null;
         }
-    } catch (_) {}
+    }
+
+    const defaultScope = scannerScopeFromMode(scannerTypeSelect?.value || "standard");
+    syncSelectedScannerScope(defaultScope);
 }
 
 async function initializeWorkspace(forceRefresh = false) {
@@ -3549,6 +3662,7 @@ async function initializeWorkspace(forceRefresh = false) {
         showError("No projects are assigned to this account.");
         return;
     }
+    await loadLatestScannerScopeResult(selectedScannerScope);
     await Promise.all([loadDashboard(), loadAggregatedFindings(), loadHistory(), loadAssets()]);
     workspaceInitialized = true;
 }

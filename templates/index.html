@@ -276,6 +276,26 @@
 
                 <article class="panel">
                     <div class="panel-head">
+                        <h3>Active Scanner Jobs</h3>
+                    </div>
+                    <div class="scanner-job-grid">
+                        <section class="scanner-job-slot" data-scan-scope="standard">
+                            <div class="scanner-job-slot-head">
+                                <span class="scanner-type-tag tag-risk">Risk Scanner</span>
+                            </div>
+                            <div id="scanStatusStandard" class="scanner-job-slot-body"></div>
+                        </section>
+                        <section class="scanner-job-slot" data-scan-scope="v2">
+                            <div class="scanner-job-slot-head">
+                                <span class="scanner-type-tag tag-v2">Adaptive V2</span>
+                            </div>
+                            <div id="scanStatusV2" class="scanner-job-slot-body"></div>
+                        </section>
+                    </div>
+                </article>
+
+                <article class="panel">
+                    <div class="panel-head">
                         <h3 id="latestScanFindingsTitle">Latest Scan Findings</h3>
                         <div class="control-inline">
                             <button id="reportCsvButton" class="btn ghost" type="button" disabled>Report CSV</button>
