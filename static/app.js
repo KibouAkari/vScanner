@@ -133,6 +133,7 @@ let selectedFindingKey = "";
 let workspaceInitialized = false;
 let selectedScannerScope = "standard";
 const scannerStatusControllers = new Map();
+const activeScannerScopes = new Set();
 const scannerLastReports = {
     standard: null,
     v2: null,
@@ -865,11 +866,37 @@ function scannerStatusContainerForScope(scope) {
     return scanStatusStandard;
 }
 
+function scannerSlotForScope(scope) {
+    return document.querySelector(`.scanner-job-slot[data-scan-scope="${scope}"]`);
+}
+
+function ensureScannerLaneVisible(scope) {
+    const slot = scannerSlotForScope(scope);
+    slot?.classList.add("has-content");
+}
+
+function updateSharedScanButtonState() {
+    if (!scanButton || !scannerTypeSelect) {
+        return;
+    }
+    const currentScope = scannerScopeFromMode(scannerTypeSelect.value || "standard");
+    const blocked = activeScannerScopes.has(currentScope);
+    scanButton.disabled = blocked;
+    scanButton.classList.toggle("scanning", blocked);
+    if (blocked) {
+        scanButton.textContent = t("scanning");
+        return;
+    }
+    const activeLanguage = localStorage.getItem("vscanner.language") || "de";
+    scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
+}
+
 function scannerLabelForScope(scope) {
     return SCANNER_SCOPE_LABELS[scope] || "Scanner";
 }
 
 function markRecentFinishedScannerLane(scope, finishedAt = Date.now()) {
+    ensureScannerLaneVisible(scope);
     const finishedMs = typeof finishedAt === "number" ? finishedAt : Date.parse(String(finishedAt || ""));
     const label = scannerLabelForScope(scope);
     const safeFinishedMs = Number.isFinite(finishedMs) ? finishedMs : Date.now();
@@ -969,6 +996,7 @@ function applyScannerMode(mode) {
     profileSelect.value = cfg.profile;
     portStrategySelect.value = cfg.portStrategy;
     syncSelectedScannerScope(scope);
+    updateSharedScanButtonState();
     void loadLatestScannerScopeResult(scope);
 }
 
@@ -1446,7 +1474,11 @@ async function runQueuedScan(payload, options = {}) {
     const useV2 = !!options.useV2;
     const uiMode = String(options.uiMode || (useV2 ? "v2" : "risk"));
     const scope = String(options.scope || (useV2 ? "v2" : "standard"));
-    const statusContainer = options.statusContainer || scannerStatusContainerForScope(scope) || scanResult;
+    const laneContainer = scannerStatusContainerForScope(scope) || null;
+    const requestedContainers = Array.isArray(options.statusContainers)
+        ? options.statusContainers
+        : [options.statusContainer || laneContainer || scanResult];
+    const statusContainers = [...new Set(requestedContainers.filter(Boolean))];
 
     const { response, data } = await fetchJsonWithTimeout(
         "/api/scan/jobs",
@@ -1465,14 +1497,22 @@ async function runQueuedScan(payload, options = {}) {
         throw new Error("Invalid scan job response");
     }
 
+    ensureScannerLaneVisible(scope);
     const existingController = scannerStatusControllers.get(scope);
     existingController?.dispose();
-    const controller = createScanStatusController(statusContainer, uiMode, {
-        jobId,
-        createdAt: data?.created_at,
-        progress: 0,
-    });
-    scannerStatusControllers.set(scope, controller);
+    const controllers = statusContainers.map((container) =>
+        createScanStatusController(container, uiMode, {
+            jobId,
+            createdAt: data?.created_at,
+            progress: 0,
+        })
+    );
+    const laneController = laneContainer
+        ? controllers[statusContainers.findIndex((container) => container === laneContainer)]
+        : controllers[0];
+    if (laneController) {
+        scannerStatusControllers.set(scope, laneController);
+    }
 
     let polls = 0;
     while (polls < 500) {
@@ -1483,21 +1523,21 @@ async function runQueuedScan(payload, options = {}) {
         }
         const job = statusResponse.data || {};
         const status = String(job.status || "queued").toLowerCase();
-        controller.update(job);
+        controllers.forEach((controller) => controller.update(job));
         if (status === "completed") {
-            controller.complete(job.message || "Scan completed");
+            controllers.forEach((controller) => controller.complete(job.message || "Scan completed"));
             markRecentFinishedScannerLane(scope, job.finished_at || Date.now());
             scannerStatusControllers.delete(scope);
             return job.result || {};
         }
         if (status === "failed") {
-            controller.fail(job.error || job.message || "Scan job failed");
+            controllers.forEach((controller) => controller.fail(job.error || job.message || "Scan job failed"));
             scannerStatusControllers.delete(scope);
             throw new Error(job.error || job.message || "Scan job failed");
         }
         await delayMs(1400);
     }
-    controller.fail("Scan job timeout. Please check backend status.");
+    controllers.forEach((controller) => controller.fail("Scan job timeout. Please check backend status."));
     scannerStatusControllers.delete(scope);
     throw new Error("Scan job timeout. Please check job status in backend.");
 }
@@ -3070,11 +3110,14 @@ scanForm.addEventListener("submit", async (event) => {
         port_strategy: portStrategySelect.value,
         project_id: activeProjectId,
     };
-    const targetForIntel = payload.target;
+    if (activeScannerScopes.has(exportScope)) {
+        showError(`${scannerLabelForScope(exportScope)} is already running.`);
+        return;
+    }
 
-    scanButton.disabled = true;
-    scanButton.classList.add("scanning");
-    scanButton.textContent = t("scanning");
+    activeScannerScopes.add(exportScope);
+    updateSharedScanButtonState();
+    ensureScannerLaneVisible(exportScope);
 
     try {
         const useV2 = endpoint.includes("/api/scan/v2") || scannerMode === "advanced_v2";
@@ -3104,10 +3147,8 @@ scanForm.addEventListener("submit", async (event) => {
     } catch (error) {
         showError(error.message || "Scan failed");
     } finally {
-        scanButton.disabled = false;
-        scanButton.classList.remove("scanning");
-        const activeLanguage = localStorage.getItem("vscanner.language") || "de";
-        scanButton.textContent = (I18N[activeLanguage] || I18N.de).startScan;
+        activeScannerScopes.delete(exportScope);
+        updateSharedScanButtonState();
     }
 });
 
@@ -3490,7 +3531,12 @@ netScanForm?.addEventListener("submit", async (event) => {
     try {
         const data = await runQueuedScan(
             { target: cidr, profile: "network", port_strategy: depth, project_id: activeProjectId },
-            { useV2: false, uiMode: "network", scope: "network", statusContainer: scannerStatusContainerForScope("network") || netScanResult }
+            {
+                useV2: false,
+                uiMode: "network",
+                scope: "network",
+                statusContainers: [scannerStatusContainerForScope("network"), netScanResult],
+            }
         );
         lastNetReportId = data.report_id;
         if (netReportPdfButton) netReportPdfButton.disabled = false;
@@ -3584,7 +3630,12 @@ async function runStealthScan(intelOnly = false) {
         } else {
             const data = await runQueuedScan(
                 { target: tgt, profile: mode, port_strategy, project_id: activeProjectId },
-                { useV2: false, uiMode: "stealth", scope: "stealth", statusContainer: scannerStatusContainerForScope("stealth") || stealthScanResult }
+                {
+                    useV2: false,
+                    uiMode: "stealth",
+                    scope: "stealth",
+                    statusContainers: [scannerStatusContainerForScope("stealth"), stealthScanResult],
+                }
             );
             lastStealthReportId = data.report_id;
             if (stealthReportPdfButton) stealthReportPdfButton.disabled = false;
@@ -3683,21 +3734,25 @@ function restoreLastScan() {
             mostRecentScope = scope;
         }
         if (scope === "network" && netScanResult) {
+            ensureScannerLaneVisible("network");
             netScanResult.innerHTML = buildScanResultMarkup(data);
             updateNetStats(data);
             if (netReportPdfButton && data.report_id) { netReportPdfButton.disabled = false; lastNetReportId = data.report_id; }
             if (netReportCsvButton && data.report_id) { netReportCsvButton.disabled = false; }
         } else if (scope === "stealth" && stealthScanResult) {
+            ensureScannerLaneVisible("stealth");
             stealthScanResult.innerHTML = buildScanResultMarkup(data);
             if (stealthReportPdfButton && data.report_id) { stealthReportPdfButton.disabled = false; lastStealthReportId = data.report_id; }
             if (stealthReportCsvButton && data.report_id) { stealthReportCsvButton.disabled = false; }
         } else if (scope === "standard" || scope === "v2") {
+            ensureScannerLaneVisible(scope);
             scannerLastReports[scope] = data.report_id || null;
         }
     }
 
     const defaultScope = scannerScopeFromMode(scannerTypeSelect?.value || "standard");
     syncSelectedScannerScope(defaultScope);
+    updateSharedScanButtonState();
     if (mostRecentScope) {
         markRecentFinishedScannerLane(mostRecentScope, mostRecentTs);
     }

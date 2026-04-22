@@ -219,6 +219,54 @@ class VscannerAppTests(unittest.TestCase):
         after_logout = client.get("/api/projects")
         self.assertEqual(after_logout.status_code, 401)
 
+    def test_startup_reconcile_interrupts_only_stale_jobs(self) -> None:
+        vscanner = self._load_module()
+        now_iso = vscanner.utc_now()
+
+        stale_id = "job-stale"
+        fresh_id = "job-fresh"
+        vscanner._create_scan_job_record(
+            {
+                "id": stale_id,
+                "status": "running",
+                "phase": "collect",
+                "progress": 32,
+                "message": "running",
+                "use_v2": False,
+                "created_at": now_iso,
+                "updated_at": "2000-01-01T00:00:00+00:00",
+                "project_id": "default",
+                "payload_json": "{}",
+                "result_json": "{}",
+                "error": "",
+            }
+        )
+        vscanner._create_scan_job_record(
+            {
+                "id": fresh_id,
+                "status": "running",
+                "phase": "collect",
+                "progress": 55,
+                "message": "running",
+                "use_v2": True,
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "project_id": "default",
+                "payload_json": "{}",
+                "result_json": "{}",
+                "error": "",
+            }
+        )
+
+        vscanner._mark_inflight_scan_jobs_interrupted()
+
+        stale = vscanner._get_scan_job_record(stale_id)
+        fresh = vscanner._get_scan_job_record(fresh_id)
+        self.assertIsNotNone(stale)
+        self.assertIsNotNone(fresh)
+        self.assertEqual((stale or {}).get("status"), "failed")
+        self.assertEqual((fresh or {}).get("status"), "running")
+
 
 if __name__ == "__main__":
     unittest.main()

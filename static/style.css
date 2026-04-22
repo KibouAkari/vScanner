@@ -757,11 +757,15 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
   text-transform: uppercase;
 }
 .scanner-job-slot {
+  display: none;
   border: 1px solid var(--panel-border);
   border-radius: var(--radius-sm);
   background: rgba(8, 16, 28, 0.48);
   min-height: 136px;
   padding: 0.85rem;
+}
+.scanner-job-slot.has-content {
+  display: block;
 }
 .scanner-job-slot.is-active {
   border-color: rgba(57,212,181,0.38);
@@ -779,16 +783,6 @@ canvas { display: block; max-width: 100%; border-radius: 10px; border: 1px solid
 }
 .scanner-job-slot-body {
   min-height: 84px;
-}
-.scanner-job-slot-body:empty::before {
-  content: "No active scan";
-  display: block;
-  color: var(--muted);
-  font-size: 0.82rem;
-  border: 1px dashed rgba(130,165,210,0.18);
-  border-radius: 12px;
-  padding: 1rem 0.9rem;
-  background: rgba(255,255,255,0.015);
 }
 
 /* Pattern layer */
