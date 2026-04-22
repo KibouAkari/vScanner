@@ -7185,6 +7185,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
         phase2_limit = 28 if IS_SERVERLESS else 84
         phase2_timeout = 0.9 if IS_SERVERLESS else (1.0 if port_strategy == "standard" else 1.25)
         phase2_workers = 72 if IS_SERVERLESS else 96
+        extra_open_port_entries: list[dict[str, Any]] = []
         extra_port_entries = lightweight_port_scan(
             target,
             phase2_pool[:phase2_limit],
@@ -7192,8 +7193,13 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
             max_workers=phase2_workers,
         )
         if extra_port_entries:
-            open_ports.extend(extra_port_entries)
-            for entry in extra_port_entries:
+            extra_open_port_entries = [
+                entry
+                for entry in extra_port_entries
+                if str(entry.get("state") or "").lower() == "open"
+            ]
+            open_ports.extend(extra_open_port_entries)
+            for entry in extra_open_port_entries:
                 product = str(entry.get("product") or entry.get("name") or "")
                 version = str(entry.get("version") or "")
                 host_findings.extend(
@@ -7209,7 +7215,7 @@ def orchestrate_scan_v2(raw_target: str, profile: str, port_strategy: str) -> di
                 "phase": "phase_2",
                 "decision": "conditional_expansion_executed",
                 "expanded_probe_ports": len(phase2_pool[:phase2_limit]),
-                "new_open_ports": len(extra_port_entries),
+                "new_open_ports": len(extra_open_port_entries),
                 "deeper_web_probe": True,
                 "version_detection": True,
             }

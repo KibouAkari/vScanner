@@ -46,6 +46,7 @@ const reportPdfButton = document.getElementById("reportPdfButton");
 const reportCsvButton = document.getElementById("reportCsvButton");
 const scanError = document.getElementById("scanError");
 const scanResult = document.getElementById("scanResult");
+const activeScannerJobsPanel = document.getElementById("activeScannerJobsPanel");
 const recentScanLaneBadge = document.getElementById("recentScanLaneBadge");
 const scanStatusStandard = document.getElementById("scanStatusStandard");
 const scanStatusV2 = document.getElementById("scanStatusV2");
@@ -875,6 +876,28 @@ function ensureScannerLaneVisible(scope) {
     slot?.classList.add("has-content");
 }
 
+function clearScannerLane(scope) {
+    const slot = scannerSlotForScope(scope);
+    const container = scannerStatusContainerForScope(scope);
+    if (container) {
+        container.innerHTML = "";
+    }
+    slot?.classList.remove("has-content", "is-active", "is-recent-finished");
+}
+
+function updateActiveScannerJobsVisibility() {
+    const hasActiveJobs = activeScannerScopes.size > 0;
+    activeScannerJobsPanel?.classList.toggle("hidden", !hasActiveJobs);
+    if (!hasActiveJobs) {
+        if (recentScanLaneBadge) {
+            recentScanLaneBadge.textContent = "No lane has finished yet";
+        }
+        document.querySelectorAll(".scanner-job-slot").forEach((slot) => {
+            slot.classList.remove("has-content", "is-active", "is-recent-finished");
+        });
+    }
+}
+
 function updateSharedScanButtonState() {
     if (!scanButton || !scannerTypeSelect) {
         return;
@@ -896,7 +919,6 @@ function scannerLabelForScope(scope) {
 }
 
 function markRecentFinishedScannerLane(scope, finishedAt = Date.now()) {
-    ensureScannerLaneVisible(scope);
     const finishedMs = typeof finishedAt === "number" ? finishedAt : Date.parse(String(finishedAt || ""));
     const label = scannerLabelForScope(scope);
     const safeFinishedMs = Number.isFinite(finishedMs) ? finishedMs : Date.now();
@@ -914,7 +936,8 @@ function syncSelectedScannerScope(scope) {
     selectedScannerScope = scope === "v2" ? "v2" : "standard";
     lastScannerScope = selectedScannerScope;
     document.querySelectorAll(".scanner-job-slot").forEach((slot) => {
-        slot.classList.toggle("is-active", String(slot.dataset.scanScope || "") === selectedScannerScope);
+        const slotScope = String(slot.dataset.scanScope || "");
+        slot.classList.toggle("is-active", slotScope === selectedScannerScope && activeScannerScopes.has(slotScope));
     });
 }
 
@@ -1498,6 +1521,7 @@ async function runQueuedScan(payload, options = {}) {
     }
 
     ensureScannerLaneVisible(scope);
+    updateActiveScannerJobsVisibility();
     const existingController = scannerStatusControllers.get(scope);
     existingController?.dispose();
     const controllers = statusContainers.map((container) =>
@@ -3148,6 +3172,8 @@ scanForm.addEventListener("submit", async (event) => {
         showError(error.message || "Scan failed");
     } finally {
         activeScannerScopes.delete(exportScope);
+        clearScannerLane(exportScope);
+        updateActiveScannerJobsVisibility();
         updateSharedScanButtonState();
     }
 });
@@ -3524,9 +3550,18 @@ netScanForm?.addEventListener("submit", async (event) => {
     const cidr = document.getElementById("netTarget")?.value?.trim() || "";
     const depth = document.getElementById("netPortStrategy")?.value || "standard";
     if (!cidr) { netScanError.textContent = "CIDR target required."; netScanError.classList.remove("hidden"); return; }
+    if (activeScannerScopes.has("network")) {
+        if (netScanError) {
+            netScanError.textContent = "Network Discovery is already running.";
+            netScanError.classList.remove("hidden");
+        }
+        return;
+    }
 
     netScanButton.disabled = true;
     netScanButton.textContent = "Scanning…";
+    activeScannerScopes.add("network");
+    updateActiveScannerJobsVisibility();
 
     try {
         const data = await runQueuedScan(
@@ -3549,6 +3584,9 @@ netScanForm?.addEventListener("submit", async (event) => {
         if (netScanError) { netScanError.textContent = err.message || "Network scan failed"; netScanError.classList.remove("hidden"); }
         if (netScanResult) netScanResult.innerHTML = "";
     } finally {
+        activeScannerScopes.delete("network");
+        clearScannerLane("network");
+        updateActiveScannerJobsVisibility();
         netScanButton.disabled = false;
         netScanButton.textContent = "Scan Network";
     }
@@ -3605,13 +3643,23 @@ async function runStealthScan(intelOnly = false) {
     const mode = document.getElementById("stealthModeInput")?.value || "stealth";
     const port_strategy = document.getElementById("stealthPortStrategy")?.value || "standard";
     if (!tgt) { stealthScanError.textContent = "Target required."; stealthScanError.classList.remove("hidden"); return; }
+    if (activeScannerScopes.has("stealth")) {
+        if (stealthScanError) {
+            stealthScanError.textContent = "Stealth Intel is already running.";
+            stealthScanError.classList.remove("hidden");
+        }
+        return;
+    }
 
     stealthScanButton.disabled = true;
     stealthIntelButton.disabled = true;
     stealthScanButton.textContent = "Probing…";
+    activeScannerScopes.add("stealth");
+    updateActiveScannerJobsVisibility();
     let stealthController = null;
     if (intelOnly) {
         const stealthLane = scannerStatusContainerForScope("stealth") || stealthScanResult;
+        ensureScannerLaneVisible("stealth");
         stealthController = createScanStatusController(stealthLane, "stealth", {
             jobId: "intel",
             createdAt: new Date().toISOString(),
@@ -3649,6 +3697,9 @@ async function runStealthScan(intelOnly = false) {
         if (stealthScanResult) stealthScanResult.innerHTML = "";
         stealthController?.fail(err.message || "Stealth scan failed");
     } finally {
+        activeScannerScopes.delete("stealth");
+        clearScannerLane("stealth");
+        updateActiveScannerJobsVisibility();
         stealthScanButton.disabled = false;
         stealthIntelButton.disabled = false;
         stealthScanButton.textContent = "Run Stealth Scan";
@@ -3740,12 +3791,10 @@ function restoreLastScan() {
             if (netReportPdfButton && data.report_id) { netReportPdfButton.disabled = false; lastNetReportId = data.report_id; }
             if (netReportCsvButton && data.report_id) { netReportCsvButton.disabled = false; }
         } else if (scope === "stealth" && stealthScanResult) {
-            ensureScannerLaneVisible("stealth");
             stealthScanResult.innerHTML = buildScanResultMarkup(data);
             if (stealthReportPdfButton && data.report_id) { stealthReportPdfButton.disabled = false; lastStealthReportId = data.report_id; }
             if (stealthReportCsvButton && data.report_id) { stealthReportCsvButton.disabled = false; }
         } else if (scope === "standard" || scope === "v2") {
-            ensureScannerLaneVisible(scope);
             scannerLastReports[scope] = data.report_id || null;
         }
     }
@@ -3753,6 +3802,7 @@ function restoreLastScan() {
     const defaultScope = scannerScopeFromMode(scannerTypeSelect?.value || "standard");
     syncSelectedScannerScope(defaultScope);
     updateSharedScanButtonState();
+    updateActiveScannerJobsVisibility();
     if (mostRecentScope) {
         markRecentFinishedScannerLane(mostRecentScope, mostRecentTs);
     }

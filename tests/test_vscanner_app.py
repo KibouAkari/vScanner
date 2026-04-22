@@ -12,6 +12,14 @@ from typing import Any, cast
 from unittest import mock
 
 
+class _DummyV2Result:
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self._payload = payload
+
+    def to_dict(self) -> dict[str, Any]:
+        return self._payload
+
+
 class VscannerAppTests(unittest.TestCase):
     def _load_module(self, *, auth_required: bool = False, users: list[dict[str, object]] | None = None):
         tmpdir = tempfile.TemporaryDirectory(prefix="vscanner-tests-")
@@ -266,6 +274,49 @@ class VscannerAppTests(unittest.TestCase):
         self.assertIsNotNone(fresh)
         self.assertEqual((stale or {}).get("status"), "failed")
         self.assertEqual((fresh or {}).get("status"), "running")
+
+    def test_v2_phase2_only_counts_open_extra_ports(self) -> None:
+        vscanner = self._load_module()
+        fake_v2_result = _DummyV2Result(
+            {
+                "meta": {
+                    "started_at": "2026-04-22T10:00:00+00:00",
+                    "finished_at": "2026-04-22T10:00:05+00:00",
+                },
+                "open_ports": [
+                    {
+                        "port": 22,
+                        "state": "open",
+                        "service": "ssh",
+                        "product": "OpenSSH",
+                        "version": "10.0p2",
+                        "banner": "SSH-2.0-OpenSSH_10.0p2 Debian-7",
+                        "metadata": {},
+                    }
+                ],
+                "findings": [],
+                "stats": {"ports_open": 1},
+            }
+        )
+
+        with mock.patch.object(vscanner, "run_scan_v2_sync", return_value=fake_v2_result), \
+             mock.patch.object(
+                 vscanner,
+                 "lightweight_port_scan",
+                 return_value=[
+                     {"port": 8443, "state": "closed", "name": "https-alt", "product": "", "version": "", "banner": ""},
+                     {"port": 2375, "state": "open", "name": "docker", "product": "docker", "version": "", "banner": "Docker API"},
+                 ],
+             ), \
+             mock.patch.object(vscanner, "probe_http_service", return_value=None), \
+             mock.patch.object(vscanner, "enrich_findings_with_external_cve", side_effect=lambda items, **_: (items, [])):
+            result = vscanner.orchestrate_scan_v2("5.9.113.102", "deep", "standard")
+
+        host_ports = result["hosts"][0]["ports"]
+        self.assertEqual(sorted(int(item["port"]) for item in host_ports), [22, 2375])
+        findings = result["finding_items"]
+        self.assertFalse(any("8443" in str(item.get("evidence") or "") for item in findings))
+        self.assertTrue(any("2375" in str(item.get("evidence") or "") for item in findings))
 
 
 if __name__ == "__main__":
