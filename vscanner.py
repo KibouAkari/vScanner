@@ -8843,18 +8843,32 @@ def _list_scan_job_records(project_id: str = "", limit: int = 20) -> list[dict[s
 def _mark_inflight_scan_jobs_interrupted() -> None:
     now_iso = utc_now()
     interruption_msg = "Scan interrupted by service restart."
-    stale_after_seconds = max(30, int(os.getenv("SCAN_JOB_RECONCILE_STALE_SECONDS", "180") or 180))
-    stale_cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_seconds)).isoformat(timespec="seconds")
+    queued_stale_after_seconds = max(30, int(os.getenv("SCAN_JOB_RECONCILE_QUEUED_STALE_SECONDS", "300") or 300))
+    running_stale_after_seconds = max(600, int(os.getenv("SCAN_JOB_RECONCILE_RUNNING_STALE_SECONDS", "7200") or 7200))
+    queued_cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=queued_stale_after_seconds)).isoformat(timespec="seconds")
+    running_cutoff_iso = (datetime.now(timezone.utc) - timedelta(seconds=running_stale_after_seconds)).isoformat(timespec="seconds")
 
     if use_mongodb():
         db = get_mongo_db()
         db.scan_jobs.update_many(
             {
-                "status": {"$in": ["queued", "running"]},
                 "$or": [
-                    {"updated_at": {"$exists": False}},
-                    {"updated_at": ""},
-                    {"updated_at": {"$lte": stale_cutoff_iso}},
+                    {
+                        "status": "queued",
+                        "$or": [
+                            {"updated_at": {"$exists": False}},
+                            {"updated_at": ""},
+                            {"updated_at": {"$lte": queued_cutoff_iso}},
+                        ],
+                    },
+                    {
+                        "status": "running",
+                        "$or": [
+                            {"updated_at": {"$exists": False}},
+                            {"updated_at": ""},
+                            {"updated_at": {"$lte": running_cutoff_iso}},
+                        ],
+                    },
                 ],
             },
             {
@@ -8883,10 +8897,16 @@ def _mark_inflight_scan_jobs_interrupted() -> None:
                    error = ?,
                    updated_at = ?,
                    result_json = '{}'
-                         WHERE status IN ('queued', 'running')
-                             AND (updated_at IS NULL OR updated_at = '' OR updated_at <= ?)
+             WHERE (
+                       status = 'queued'
+                   AND (updated_at IS NULL OR updated_at = '' OR updated_at <= ?)
+                   )
+                OR (
+                       status = 'running'
+                   AND (updated_at IS NULL OR updated_at = '' OR updated_at <= ?)
+                   )
             """,
-                        (interruption_msg, interruption_msg, now_iso, stale_cutoff_iso),
+            (interruption_msg, interruption_msg, now_iso, queued_cutoff_iso, running_cutoff_iso),
         )
         connection.commit()
 
